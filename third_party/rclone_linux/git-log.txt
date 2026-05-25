@@ -1,0 +1,267 @@
+commit b22fe9811c672e4d226ae2c054d7c965d8783805
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Fri May 22 17:11:48 2026 +0100
+
+    Version v1.74.2
+
+commit ce64f4edb8b1d99156bb917a93ac303676ab7118
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Fri May 22 16:30:02 2026 +0100
+
+    gui: update embedded release to 1.1.8
+
+commit f3986e2bb72788c84b94686c6acaf37e631a44d6
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Fri May 22 12:08:35 2026 +0100
+
+    lib/http: replace deprecated h2c.NewHandler with http.Server.Protocols
+    
+    The golang.org/x/net/http2/h2c package was deprecated in v0.54.0 in
+    favour of setting the http.Server Protocols field to enable unencrypted
+    HTTP/2.
+    
+    This replaces the h2c.NewHandler wrapping added in e863f751f with
+    http.Server.Protocols, which is supported by the standard library
+    since Go 1.24.
+    
+    Note that the stdlib only supports HTTP/2 prior-knowledge on cleartext
+    connections, not HTTP/1.1 Upgrade: h2c negotiation. In practice clients
+    use prior-knowledge or require TLS, so this should not affect users.
+
+commit f0961f4a8dd354caf79c20f8d5eaf76476e01cc2
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Fri May 22 11:54:29 2026 +0100
+
+    build: update golang.org/x dependencies to address multiple CVEs
+    
+    Upgrade to v0.55.0 of golang.org/x/net in order to address:
+    
+    - CVE-2026-42506: html: incorrect handling of namespaced elements in foreign content
+    - CVE-2026-39821: idna: failure to reject ASCII-only Punycode-encoded labels
+    - CVE-2026-42502: html: incorrect handling of HTML elements in foreign content
+    - CVE-2026-25680: html: denial of service when parsing arbitrary HTML
+    - CVE-2026-25681: html: incorrect handling of character references in DOCTYPE nodes
+    - CVE-2026-27136: html: duplicate attributes can cause XSS
+    
+    Upgrade to version v0.52.0 of golang.org/x/crypto to address:
+    
+    - CVE-2026-46598: ssh/agent: pathological inputs can lead to client panic
+    - CVE-2026-46597: ssh: byte arithmetic causes underflow and panic
+    - CVE-2026-39828: ssh: bypass of certificate restrictions
+    - CVE-2026-39835: ssh: server panic during CheckHostKey/Authenticate
+    - CVE-2026-39833: ssh/agent: key constraints not enforced
+    - CVE-2026-39832: ssh/agent: agent constraints dropped when forwarding keys
+    - CVE-2026-39827: ssh: memory leak when rejecting channels can lead to DoS
+    - CVE-2026-39830: ssh: client can cause server deadlock on unexpected responses
+    - CVE-2026-39829: ssh: pathological RSA/DSA parameters may cause DoS
+    - CVE-2026-39831: ssh: bypass of FIDO/U2F security keys physical interaction
+    - CVE-2026-39834: ssh: infinite loop on large channel writes
+    - CVE-2026-42508: ssh/knownhosts: auth bypass via unenforced @revoked status
+    - CVE-2026-46595: ssh: VerifiedPublicKeyCallback permissions skip enforcement
+    
+    Upgrade to version v0.41.0 of golang.org/x/image to address:
+    
+    - CVE-2026-42500: bmp: panic when reading out of bound palette index
+    - CVE-2026-33809: tiff: excessive resource consumption in PackBits decompression
+    
+    Upgrade to version v0.45.0 of golang.org/x/sys to address:
+    
+    - CVE-2026-39824: windows: integer overflow in NewNTUnicodeString
+
+commit 139ccc7ffd6fb9bb71f39b2e7ee5f0bdd5961824
+Author: Iizuki <36295229+Iizuki@users.noreply.github.com>
+Date:   Thu May 21 12:09:25 2026 +0300
+
+    docs: s3: update doc link for force_path_style
+
+commit b3ddec50c679fc06f24a1d0a9b9af0f473fd4e10
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Wed May 20 12:08:05 2026 +0100
+
+    s3: add new MEGA S4 endpoints on megas4.com including Asia-Pacific region
+    
+    MEGA S4 has launched a new dedicated domain megas4.com with three new
+    endpoints, including their first Asia-Pacific location in Tokyo, plus
+    new endpoints in Paris and Barcelona. The existing Amsterdam,
+    Luxembourg, Montreal and Vancouver locations have been renamed onto
+    the new domain.
+    
+    All current s4.mega.io endpoints continue to be supported and are
+    retained as legacy options. New accounts use the megas4.com endpoints.
+
+commit 3cd224e03fead317638602d46a64f83d7d10561d
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Wed May 20 11:52:10 2026 +0100
+
+    docs: fix heading levels so sections appear in the table of contents
+    
+    The "Import/Export of google documents" section in drive.md and the
+    "--b2-versions" examples section in b2.md were both at H4 instead of H3,
+    which excluded them from the ToC even though they are top-level topics
+    in their respective sections.
+
+commit 52af9caa14ca0f53895f8e9a74540fc1440994bd
+Author: William Tange <github@tan.ge>
+Date:   Tue May 19 10:18:58 2026 +0000
+
+    protondrive: fix corrupted on transfer: sha1 hashes differ
+    
+    Some SHA1 hashes of protondrive files are uppercase, so always
+    converting to lowercase before comparing seems to be the solution.
+    
+    Fixes #7345
+
+commit b2cb7f89c18dc129de991f2e590b110883295eac
+Author: Lucky945H <1355363613@qq.com>
+Date:   Sun May 17 00:52:59 2026 +0800
+
+    vfs/vfscache: fix silent write failure when mounting with remote:.
+    
+    When mounting with 'remote:.' (dot notation for current directory),
+    the '.' is passed through toOSPath() which encodes it to full-width
+    '.' (U+FF0E) via EncodeDot. This caused the VFS cache data/meta root
+    to be written to a full-width-dot directory while the local cache
+    backend pointed to the canonicalized path, resulting in writes being
+    cached but never uploaded.
+    
+    Fix by calling clean() on the relativeDirPath before toOSPath(),
+    so path.Clean() strips the trailing '/.' removing the dot before
+    encoding.
+
+commit 2292ba0cd45af97428ac7e051ce6af2567740198
+Author: Leon Brocard <acme@astray.com>
+Date:   Fri May 15 19:12:47 2026 +0100
+
+    docs: fix misspellings
+    
+    Fix several misspellings in documentation and config comments detected by `misspell`.
+
+commit 07c87327ae821a7e64b00d3ca6b1d89c20e32978
+Author: Sai Asish Y <say.apm35@gmail.com>
+Date:   Wed May 13 00:15:50 2026 -0700
+
+    webdav: honour auth_redirect on listAll PROPFIND - fixes #9159
+
+commit 6cc0d1a0b0c2dcc997cb5f2f2fcf59a51b093d55
+Author: Tore Anderson <tore@fud.no>
+Date:   Thu May 14 01:15:04 2026 +0200
+
+    jottacloud: support whitelabel service Phonero Sky
+    
+    Phonero is a Norwegian mobile provider focusing on the enterprise
+    market. They provide rebranded Jottacloud service through their «Phonero
+    Sky» (Norwegian for «Phonero Cloud»).
+    
+    The Client ID `desktop` used by most of the other whitelabel services
+    does not work for Phonero Sky. Both `desktop-win` and `desktop-mac`
+    work, though. Authentication does not work when the `jotta-default`
+    scope is present, so drop it. This results in a Client ID and scope
+    setup that is identical with that of Let's Go Cloud (Germany).
+
+commit 7a5e01b01501cab96002f8876bdc1f07a7357659
+Author: FTCHD <144691102+FTCHD@users.noreply.github.com>
+Date:   Thu May 14 00:04:19 2026 +0300
+
+    docs: add note about using config/update to reconnect an oauth remote
+
+commit bf111df84af6565930c6f102d78e1936d6d500c9
+Author: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>
+Date:   Wed May 13 19:56:17 2026 +0100
+
+    build: bump github.com/go-git/go-billy/v5 to 5.9.0 to fix CVE-2026-44740 (again)
+    
+    The previous commit had no content due to copilot deleting it as I was
+    merging it!
+    
+    Bumps [github.com/go-git/go-billy/v5](https://github.com/go-git/go-billy) from 5.8.0 to 5.9.0.
+    - [Release notes](https://github.com/go-git/go-billy/releases)
+    - [Commits](https://github.com/go-git/go-billy/compare/v5.8.0...v5.9.0)
+    
+    ---
+    updated-dependencies:
+    - dependency-name: github.com/go-git/go-billy/v5
+      dependency-version: 5.9.0
+      dependency-type: direct:production
+    ...
+    
+    Signed-off-by: dependabot[bot] <support@github.com>
+    Co-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>
+
+commit 0b73e2b8587a8f90dc6ec8edc9dd6b2e253b9d1d
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Tue May 12 12:04:50 2026 +0100
+
+    docs: upgrade protondrive to tier 4 tests pass and community maintains
+
+commit e0f210cdc48f0060029cbfd914ad3929346adee1
+Author: Alvinwylim <31592545+Alvinwylim@users.noreply.github.com>
+Date:   Wed May 13 16:55:06 2026 +0800
+
+    drime: fix 500 errors when listing shared folders
+    
+    When using the drime backend to access a folder shared from another
+    Drime account (via root_folder_id config option), listing the folder's
+    children fails with HTTP 500. This makes cross-account read-only
+    mounts non-functional.
+    
+    This fixes the problem by changing listAll to use `folderId` instead
+    of `parentIds[]`
+    
+    Fixes #9420
+
+commit 1c06bb92723c1eb225b7e65011f30c786f194c88
+Author: nielash <nielronash@gmail.com>
+Date:   Sun May 10 23:49:03 2026 -0400
+
+    bisync: fix --conflict-loser pathname with --conflict-resolve newer
+    
+    Before this change, --conflict-loser pathname assumed --conflict-resolve none,
+    following the legacy behavior prior to v1.66. This produced unexpected behavior
+    when used with a different --conflict-resolve option.
+    
+    This change fixes the issue by ensuring that --conflict-loser pathname looks for
+    the correct name on the side not being renamed, when only one side should be
+    renamed.
+    
+    https://forum.rclone.org/t/bisync-does-not-copy-the-winner-file-to-the-loser-site/53768
+
+commit b2e1aa65dc8cc69ff9453221b2c5db2c458cdbe7
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Mon May 11 11:51:29 2026 +0100
+
+    rc: remove duplicate metrics_addr option registration
+    
+    The metrics_addr option was registered twice: once explicitly and once
+    implicitly via AddPrefix(libhttp.ConfigInfo, "metrics", ...). Both
+    pointed at the same MetricsHTTP.ListenAddr field, so options/info
+    returned a duplicate entry.
+    
+    Drop the explicit entry and use SetDefault to keep the empty default
+    (so the metrics server stays off unless configured), matching the
+    pattern already used for rc_addr.
+    
+    Fixes #9419
+
+commit 3a414d8262f54e743eecad6c45f19060587d2833
+Author: John Volk <volkjohn@users.noreply.github.com>
+Date:   Mon May 11 08:04:49 2026 -0400
+
+    drime: fix file doesn't exists error when trying to delete
+    
+    When using rcat to upload a new version of a file that already existed,
+    the file upload would succeed. The subsequent deletion of the old file
+    is attempted after the upload. Drime appears to handle the deletion of
+    the old file automatically and returns HTTP status code 422, stating
+    the "The selected entry ids is invalid."
+    
+    The deletion and the rcat would fail before this change. This is with
+    file history enabled on my Drime account.
+    
+    This change detects the error and ignores it since the file has
+    already been deleted.
+
+commit 24054305ce01c26be1e7808bb23528eafac9f81c
+Author: Nick Craig-Wood <nick@craig-wood.com>
+Date:   Fri May 8 17:14:19 2026 +0100
+
+    Start v1.74.2-DEV development

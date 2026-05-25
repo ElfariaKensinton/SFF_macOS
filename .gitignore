@@ -1,0 +1,101 @@
+# Sensitive data (paths, passwords, local output)
+settings.bin
+settings_export.json
+credentials.json
+debug.log
+crash.log
+recent_files.json
+api_cache.json
+analytics.json
+
+# Build artifacts and caches
+greenluma/
+build/
+dist/
+.hypothesis/
+.pytest_cache/
+htmlcov/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+Codestouse/
+Codes to use/
+third_party/Codes to use/
+third_party/SteamAutoCrack/Steam-auto-crack-*/
+third_party/SteamAutoCrack/SteamAutoCrack/
+third_party/SteamAutoCrack/old/
+third_party/gbe_fork/generate_emu_config/
+Steam-auto-crack-*/
+SteamAutoCrack/SteamAutoCrack/
+typings/
+typings/steam/
+
+# Virtual environments & user-specific data
+.venv/
+venv/
+GreenLuma/
+dlc_unlocker_cache/
+backups/
+saved_lua/
+
+# Test / temp folders
+tmp/
+
+# Docs & special files
+docs/REPO_SETTINGS_AND_CONTRIBUTORS*
+scripts/git-hooks/prepare-commit-msg
+UPLOAD_AND_PRIVACY.md
+
+# Archives & large files
+*.zip
+*.7z
+*.rar
+SteaMidra-*.zip
+
+# Tools & cleanup artifacts
+*.jar
+.git.bfg-report/
+bfg-report/
+uv.lock
+notes.txt
+
+# Dev/internal-only scripts and docs (not needed by end users)
+docs/FUTURE_MANIFEST_INTEGRATION.md
+prepare_consumer_release.py
+BEFORE_UPLOAD.md
+debug_analytics.py
+validate_installation.py
+convert_icon.py
+release-note.md
+
+# Tests and test tooling
+tests/
+pytest.ini
+run_tests.bat
+.coverage
+htmlcov/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+
+# DLL Analysis
+DLL_files/
+DLL_Analysis/
+analyze_dlls.py
+deep_analyze_dlls.py
+even_deeper_analyze_dlls.py
+tmp_stfixer/
+GLDLL/
+GLDLL_Analysis/
+diff_gl.py
+diff_output.txt
+_gc.py
+sff/_gc.py"

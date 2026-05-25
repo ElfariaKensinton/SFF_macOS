@@ -1,0 +1,3935 @@
+# SteaMidra - Steam game setup and manifest tool (SFF)
+# Copyright (c) 2025-2026 Midrag (https://github.com/Midrags)
+#
+# This file is part of SteaMidra.
+#
+# SteaMidra is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# SteaMidra is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with SteaMidra.  If not, see <https://www.gnu.org/licenses/>.
+
+"""
+QWebChannel bridge — exposes Python backend functions to the web UI.
+
+All I/O methods dispatch to QThread workers and emit results via pyqtSignal.
+Only trivial getters use synchronous result= slots.
+"""
+
+import json
+import logging
+import shutil
+import ssl as _ssl
+import sys
+from pathlib import Path
+
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtWidgets import QFileDialog
+
+logger = logging.getLogger(__name__)
+
+_SSL_CTX = None
+
+
+def _get_ssl_ctx():
+    global _SSL_CTX
+    if _SSL_CTX is None:
+        try:
+            import certifi as _certifi
+            _SSL_CTX = _ssl.create_default_context(cafile=_certifi.where())
+        except Exception:
+            _SSL_CTX = _ssl.create_default_context()
+    return _SSL_CTX
+
+
+class _Worker(QObject):
+    """Generic thread worker for async bridge operations."""
+    finished = pyqtSignal(object)
+    error = pyqtSignal(str)
+
+    def __init__(self, func, *args, **kwargs):
+        super().__init__()
+        self._func = func
+        self._args = args
+        self._kwargs = kwargs
+
+    def run(self):
+        try:
+            result = self._func(*self._args, **self._kwargs)
+            self.finished.emit(result)
+        except Exception as e:
+            logger.exception("Worker error: %s", e)
+            self.error.emit(str(e))
+            self.finished.emit(None)
+
+
+def _should_show_software() -> str:
+    """Return ``"1"`` when STORE_SHOW_SOFTWARE is ON, ``"0"`` when OFF.
+
+    A17 widens the Store list filter to ``{game, application}``. Default
+    is ON: missing / empty / True / "True" all resolve to ``"1"``. Only
+    an explicit ``False`` / ``"False"`` clamps the list back to games.
+    Both Store list callsites in this module share this single helper.
+    """
+    try:
+        from sff.storage.settings import get_setting as _get
+        from sff.structs import Settings
+        val = _get(Settings.STORE_SHOW_SOFTWARE)
+    except Exception:
+        return "1"
+    if val is False or val == "False" or val == "false" or val == "0":
+        return "0"
+    return "1"
+
+
+class WebBridge(QObject):
+    """QObject subclass registered via QWebChannel.
+    JS accesses this as ``channel.objects.bridge``.
+    """
+
+    # --- Signals (Python → JS) ---
+    search_results = pyqtSignal(str)
+    depot_history_results = pyqtSignal(str)
+    download_progress = pyqtSignal(str)
+    task_finished = pyqtSignal(str)
+    log_message = pyqtSignal(str)
+    lc_progress = pyqtSignal(str)
+
+    def __init__(self, ui, steam_path, parent=None):
+        super().__init__(parent)
+        self._ui = ui
+        self._steam_path = Path(steam_path) if steam_path else None
+        self._active_library = None
+        self._api_key = None
+        self._store_client = None
+        self._workers = []  # prevent GC of running workers
+
+    # ── helpers ──────────────────────────────────────────────────
+
+    def _run_async(self, func, *args, on_done=None, on_error=None, **kwargs):
+        """Spawn a QThread worker for the given function."""
+        # Forward stdout/stderr from the background thread to the parent window's
+        # StreamEmitter so that print() output appears in the Modern UI log panel.
+        # Classic UI's _start_worker does this too; we mirror that behaviour here.
+        parent = self.parent()
+        stream = getattr(parent, '_stream_emitter', None) if parent else None
+        if stream is not None:
+            _orig_func = func
+            def func(*_a, **_kw):   # noqa: E731
+                import sys as _sys
+                _old_out, _old_err = _sys.stdout, _sys.stderr
+                _sys.stdout = stream
+                _sys.stderr = stream
+                try:
+                    return _orig_func(*_a, **_kw)
+                finally:
+                    _sys.stdout = _old_out
+                    _sys.stderr = _old_err
+        thread = QThread()
+        worker = _Worker(func, *args, **kwargs)
+        worker.moveToThread(thread)
+
+        def _cleanup(result):
+            thread.quit()
+            thread.wait()
+            if worker in self._workers:
+                self._workers.remove(worker)
+            if on_done:
+                on_done(result)
+
+        def _on_error(msg):
+            thread.quit()
+            thread.wait()
+            if worker in self._workers:
+                self._workers.remove(worker)
+            if on_error:
+                on_error(msg)
+            else:
+                self.task_finished.emit(json.dumps({
+                    "task": "unknown", "success": False, "message": msg
+                }))
+
+        worker.finished.connect(_cleanup)
+        worker.error.connect(_on_error)
+        thread.started.connect(worker.run)
+        self._workers.append(worker)
+        thread.start()
+
+    def _emit_task_result(self, task_name, success, message="", **extra):
+        data = {"task": task_name, "success": success, "message": message}
+        data.update(extra)
+        self.task_finished.emit(json.dumps(data))
+
+    def _get_store_client(self):
+        if self._store_client is None:
+            if not self._api_key:
+                try:
+                    from sff.storage.settings import get_setting
+                    from sff.structs import Settings
+                    key = get_setting(Settings.HUBCAP_KEY)
+                    if key and isinstance(key, str) and key.strip():
+                        self._api_key = key.strip()
+                except Exception:
+                    pass
+            if self._api_key:
+                from sff.store_browser import StoreApiClient
+                self._store_client = StoreApiClient(self._api_key)
+        return self._store_client
+
+    # ── ASYNC slots — dispatch to QThread ────────────────────────
+
+    @pyqtSlot(str, int, int, str)
+    def search_games(self, query, offset, per_page, sort_by='updated'):
+        """Search Steam catalog (primary), then merge fresh hits from
+        Hubcap on top.
+
+        Steam's IStoreService catalog is the authoritative source for
+        active titles. Hubcap fills in delisted classics (the original
+        GTA: San Andreas, GTA Legacy Collection, etc) and exposes a
+        manifest-status overlay for matched titles. Both /library and
+        /search are queried, and the user query is alias-expanded
+        ("gta" -> "grand theft auto", "re" -> "resident evil", ...)
+        before being sent to Hubcap so abbreviated typing still hits
+        full Hubcap names. Hubcap-only hits are tagged with
+        source='hubcap' so the UI can label them. When Steam returns
+        nothing, Hubcap becomes the primary result set.
+        """
+        def _do():
+            # Steam catalog is always the primary source.
+            result = _search_steam_catalog(query, offset, per_page)
+            result.pop('fallback', None)
+
+            client = self._get_store_client()
+            if not client:
+                return result
+
+            result['has_hubcap'] = True
+            queries = _alias_expanded_queries(query) if query else [None]
+            if not queries:
+                queries = [query]
+
+            # Aggregate everything Hubcap returns across the original
+            # query AND each alias-expanded variant. Dedup by app_id
+            # so the same classic title doesn't appear twice.
+            hubcap_hits = {}
+            try:
+                for q in queries:
+                    try:
+                        page = client.get_library(
+                            limit=200, offset=0,
+                            search=q,
+                            sort_by=sort_by or 'updated',
+                        )
+                        for hg in page.games or []:
+                            if hg.app_id and hg.app_id not in hubcap_hits:
+                                hubcap_hits[hg.app_id] = hg
+                    except Exception as e:
+                        logger.debug(
+                            "Hubcap /library failed for %r: %s", q, e,
+                        )
+                    if q:
+                        try:
+                            search_hits = client.search_library(
+                                q, limit=50, search_by_appid=False,
+                            )
+                            for hg in search_hits or []:
+                                if hg.app_id and hg.app_id not in hubcap_hits:
+                                    hubcap_hits[hg.app_id] = hg
+                        except Exception as e:
+                            logger.debug(
+                                "Hubcap /search failed for %r: %s", q, e,
+                            )
+            except Exception as e:
+                logger.warning("Hubcap merge step crashed: %s", e)
+
+            if not hubcap_hits:
+                logger.debug(
+                    "search_games: query=%r yielded no Hubcap hits across %d variant(s)",
+                    query, len(queries),
+                )
+                return result
+
+            # Drop Hubcap entries that Steam's appdetails reports as
+            # macOS-only or Linux-only (e.g. appid 12250 GTA: San Andreas
+            # Mac port). Hubcap's own response doesn't carry platform
+            # info, so we look it up via Steam's `appdetails?filters=basic`
+            # endpoint and cache the result for the lifetime of the
+            # process. Entries Steam can't resolve (delisted, no data)
+            # are kept so genuine classics aren't dropped.
+            steam_ids = {g.get('app_id') for g in result.get('games', []) or []}
+            extra_ids = [aid for aid in hubcap_hits.keys() if aid not in steam_ids]
+            plat_map = _fetch_steam_platforms(extra_ids)
+            non_windows_filtered = 0
+            kept_hubcap = {}
+            for app_id, hg in hubcap_hits.items():
+                if app_id in steam_ids:
+                    # Steam already vouched for this appid; trust it.
+                    kept_hubcap[app_id] = hg
+                    continue
+                tags = plat_map.get(app_id, {"_unknown"})
+                if "_unknown" in tags or "windows" in tags:
+                    kept_hubcap[app_id] = hg
+                else:
+                    non_windows_filtered += 1
+                    logger.debug(
+                        "search_games: filtered Hubcap appid=%s name=%r platforms=%s (no windows)",
+                        app_id, hg.name, sorted(tags),
+                    )
+            hubcap_hits = kept_hubcap
+
+            logger.info(
+                "search_games: query=%r got %d Steam + %d Hubcap hit(s) across %d variant(s) (%d non-windows filtered)",
+                query, len(result.get('games', [])), len(hubcap_hits),
+                len(queries), non_windows_filtered,
+            )
+
+            # Overlay Hubcap status on Steam rows that share an app_id.
+            for g in result.get('games', []) or []:
+                hg = hubcap_hits.get(g.get('app_id'))
+                if not hg:
+                    continue
+                if hg.status:
+                    g['status'] = hg.status
+                if hg.last_updated:
+                    g['last_updated'] = hg.last_updated
+                if hg.size:
+                    g['size'] = hg.size
+
+            # Append Hubcap-only entries to the result list.
+            seen_ids = {g.get('app_id') for g in result.get('games', []) or []}
+            extras = []
+            for app_id, hg in hubcap_hits.items():
+                if app_id in seen_ids:
+                    continue
+                extras.append({
+                    'app_id': hg.app_id,
+                    'name': hg.name,
+                    'status': hg.status or '',
+                    'last_updated': hg.last_updated or '',
+                    'size': hg.size or '',
+                    'image_url': '',
+                    'source': 'hubcap',
+                })
+
+            if not result.get('games'):
+                # Steam had nothing. Use Hubcap as the primary result
+                # set so the UI doesn't show an empty page.
+                result['games'] = extras
+                result['total'] = len(extras)
+                result['fallback_source'] = 'hubcap'
+            elif extras:
+                result['games'].extend(extras)
+                result['total'] = (result.get('total') or 0) + len(extras)
+
+            return result
+
+        def _on_done(data):
+            if data:
+                self.search_results.emit(json.dumps(data))
+            else:
+                self.search_results.emit(json.dumps({"games": [], "total": 0}))
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str, bool)
+    def fetch_depot_history(self, app_id, force_refresh):
+        """Fetch depot/manifest history for a game. Emits depot_history_results."""
+        def _progress(msg):
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": msg, "progress": -1
+            }))
+
+        def _do():
+            from sff.manifest.depot_history import get_depots_for_app, group_by_version, get_build_ids
+            depots = get_depots_for_app(app_id, force_refresh=force_refresh, progress_cb=_progress)
+            build_ids = get_build_ids(app_id)
+            groups = group_by_version(depots, build_ids=build_ids)
+            result = []
+            for group in groups:
+                result.append({
+                    "label": group.label,
+                    "date": group.date,
+                    "branch": group.branch,
+                    "source": group.source,
+                    "build_id": group.build_id,
+                    "entries": [
+                        {"depot_id": str(d), "manifest_id": str(m)}
+                        for d, m in group.entries
+                    ],
+                })
+            return result
+
+        def _on_done(data):
+            self.depot_history_results.emit(json.dumps(data or []))
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def download_game_fastest(self, app_id):
+        """Platform-aware fastest download (auto-selects source).
+        Windows: prompt-free 11-step pipeline mirroring process_lua_full().
+        Linux: auto-selects latest manifests, wraps process_from_store().
+        Emits download_progress + task_finished signals."""
+        if not app_id or not app_id.strip().isdigit():
+            self._emit_task_result("download_fastest", False, f"Invalid App ID: '{app_id}'")
+            return
+        def _do():
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Starting", "progress": 0
+            }))
+
+            if sys.platform == "win32":
+                return self._run_windows_fastest(app_id)
+            else:
+                return self._run_linux_fastest(app_id)
+
+        def _on_done(result):
+            success = result is True
+            self._emit_task_result(
+                "download_fastest",
+                success,
+                f"Download {'completed' if success else 'failed'} for App {app_id}",
+                app_id=app_id,
+            )
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str, str, str)
+    def download_game_with_source(self, app_id, source, request_update='0'):
+        """Fastest download with explicit source choice ('hubcap' or 'oureveryday').
+        Emits download_progress + task_finished signals."""
+        if not app_id or not app_id.strip().isdigit():
+            self._emit_task_result("download_fastest", False, f"Invalid App ID: '{app_id}'")
+            return
+        def _do():
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Starting", "progress": 0
+            }))
+            if sys.platform == "win32":
+                return self._run_windows_fastest(app_id, source=source, request_update=(request_update == '1'))
+            else:
+                return self._run_linux_fastest(app_id)
+
+        def _on_done(result):
+            success = result is True
+            self._emit_task_result(
+                "download_fastest",
+                success,
+                f"Download {'completed' if success else 'failed'} for App {app_id}",
+                app_id=app_id,
+            )
+
+        self._run_async(_do, on_done=_on_done)
+
+    def _run_windows_fastest(self, app_id, source='', request_update=False):
+        """Prompt-free 11-step pipeline for Windows."""
+        try:
+            from sff.lua.choices import download_lua_direct
+            from sff.lua.manager import parse_lua_contents
+            from sff.lua.writer import ACFWriter, ConfigVDFWriter
+            from sff.steam_tools_compat import install_lua_to_steam
+            from sff.storage.vdf import ensure_library_has_app
+            from sff.registry_access import set_stats_and_achievements
+            from sff.structs import LuaEndpoint
+
+            steam_path = self._steam_path
+            lib_path = Path(self._active_library) if self._active_library else steam_path
+
+            # Step 1: download lua
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Downloading Lua", "progress": 10
+            }))
+            if source == "hubcap":
+                selected_source = LuaEndpoint.HUBCAP
+            elif source == "oureveryday":
+                selected_source = LuaEndpoint.OUREVERYDAY
+            elif source == "ryuu":
+                selected_source = LuaEndpoint.RYUU
+            else:
+                selected_source = LuaEndpoint.HUBCAP if self._api_key else LuaEndpoint.OUREVERYDAY
+            # Download lua into the per-user backup folder, NOT into
+            # <steam>/config/. install_lua_to_steam then copies it into
+            # <steam>/config/stplug-in/. Writing to <steam>/config/ directly
+            # left a stray <steam>/config/<app_id>.lua next to stplug-in/
+            # that the Remove from Library helper never cleans up.
+            saved_lua_root = Path.cwd() / "saved_lua"
+            saved_lua_root.mkdir(exist_ok=True)
+            lua_path = download_lua_direct(
+                dest=saved_lua_root,
+                app_id=app_id,
+                source=selected_source,
+                steam_path=steam_path,
+                request_update=request_update,
+            )
+            if not lua_path:
+                return False
+
+            saved_lua = saved_lua_root
+            backup_target = saved_lua / f"{app_id}.lua"
+            try:
+                if lua_path != backup_target:
+                    shutil.copyfile(lua_path, backup_target)
+            except Exception:
+                pass
+
+            # Step 2: parse lua
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Parsing Lua", "progress": 20
+            }))
+            lua_contents = lua_path.read_text(encoding="utf-8", errors="replace")
+            parsed = parse_lua_contents(lua_contents, lua_path)
+            if not parsed:
+                return False
+
+            # Step 3: set stats and achievements (Windows only)
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Setting up achievements", "progress": 30
+            }))
+            try:
+                set_stats_and_achievements(app_id)
+            except Exception as e:
+                logger.warning("set_stats_and_achievements failed: %s", e)
+
+            # Step 4: register app ID for injection
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Registering app ID", "progress": 40
+            }))
+            if hasattr(self._ui, 'app_list_man') and self._ui.app_list_man:
+                try:
+                    self._ui.app_list_man.add_ids(parsed)
+                except Exception as e:
+                    logger.warning("add_ids failed: %s", e)
+
+            # Step 5: write decryption keys
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Writing decryption keys", "progress": 50
+            }))
+            config_writer = ConfigVDFWriter(steam_path)
+            try:
+                config_writer.add_decryption_keys_to_config(parsed)
+            except Exception as e:
+                logger.warning("add_decryption_keys failed: %s", e)
+
+            # Step 6: backup & install lua to Steam plugin dir
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Installing Lua to Steam", "progress": 60
+            }))
+            try:
+                install_lua_to_steam(steam_path, app_id, lua_path)
+            except Exception as e:
+                logger.warning("install_lua_to_steam failed: %s", e)
+
+            # Step 7: write ACF + patch workshop ACF
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Writing ACF files", "progress": 70
+            }))
+            acf_writer = ACFWriter(lib_path)
+            try:
+                acf_writer.write_acf(parsed)
+            except Exception as e:
+                logger.warning("write_acf failed: %s", e)
+            try:
+                if hasattr(acf_writer, 'patch_workshop_acf'):
+                    acf_writer.patch_workshop_acf(parsed)
+            except Exception as e:
+                logger.warning("patch_workshop_acf failed: %s", e)
+
+            # Step 8: register in libraryfolders.vdf
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Registering in library", "progress": 80
+            }))
+            try:
+                ensure_library_has_app(steam_path, lib_path, app_id)
+            except Exception as e:
+                logger.warning("ensure_library_has_app failed: %s", e)
+
+            # Step 9: download manifests
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Downloading manifests", "progress": 85
+            }))
+            try:
+                from sff.manifest.downloader import ManifestDownloader
+                from sff.steam_client import create_provider_for_current_thread
+                from sff.storage.settings import get_setting as _get_setting
+                from sff.structs import Settings as _Settings
+                _provider = create_provider_for_current_thread()
+                _dl = ManifestDownloader(_provider, steam_path)
+                _use_parallel = _get_setting(_Settings.USE_PARALLEL_DOWNLOADS)
+                if _use_parallel:
+                    _dl.download_manifests_parallel(parsed, auto_manifest=True)
+                else:
+                    _dl.download_manifests(parsed, auto_manifest=True)
+            except Exception as e:
+                logger.warning("download_manifests failed: %s", e)
+
+            # Step 10: track in download manager
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Updating download tracker", "progress": 95
+            }))
+            if hasattr(self._ui, 'download_manager') and self._ui.download_manager:
+                try:
+                    dl_id = self._ui.download_manager.track_external(
+                        app_id=app_id,
+                        game_name=parsed.name if hasattr(parsed, 'name') else f"App {app_id}",
+                    )
+                    self._ui.download_manager.complete_external(dl_id, success=True)
+                except Exception as e:
+                    logger.warning("download tracking failed: %s", e)
+
+            # Step 11: done
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Complete", "progress": 100
+            }))
+            return True
+
+        except Exception as e:
+            logger.exception("Windows fastest download failed: %s", e)
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": f"Error: {e}", "progress": 0
+            }))
+            return False
+
+    def _run_linux_fastest(self, app_id):
+        """Wraps process_from_store; distinguishes real, partial, and no-sls runs."""
+        # Refuse to run when SLSSteam is not initialized; the old code returned
+        # silently and the UI rendered 100% complete despite no work happening.
+        sls_man = getattr(self._ui, "sls_man", None)
+        if sls_man is None:
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id,
+                "status": "SLSSteam not initialized — cannot proceed",
+                "progress": 0,
+                "error": True,
+            }))
+            return False
+
+        try:
+            from sff.manifest.depot_history import get_depots_for_app
+            from sff.structs import MainReturnCode
+
+            depots = get_depots_for_app(app_id)
+            manifest_override = {}
+            for depot_id, entries in depots.items():
+                if entries:
+                    manifest_override[str(depot_id)] = str(entries[0].manifest_id)
+
+            if not manifest_override:
+                return False
+
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Downloading via DepotDownloader", "progress": 30
+            }))
+
+            from pathlib import Path as _Path
+            lib_override = _Path(self._active_library) if self._active_library else self._steam_path
+            result = self._ui.process_from_store(
+                app_id=app_id,
+                manifest_override=manifest_override,
+                use_hubcap=bool(self._api_key),
+                lib_path=lib_override,
+            )
+
+            # process_from_store on Linux + sls_man writes ACF and the library
+            # entry, then returns LOOP_NO_PROMPT without running DepotDownloader.
+            # Surface a partial-success status, nudge Steam, and skip the bogus
+            # Complete/100 emit instead of pretending the download finished.
+            if result is MainReturnCode.LOOP_NO_PROMPT:
+                import webbrowser
+                try:
+                    webbrowser.open("steam://updateappinfo/" + str(app_id))
+                except Exception as exc:
+                    logger.warning("steam:// nudge failed: %s", exc)
+                self.download_progress.emit(json.dumps({
+                    "app_id": app_id,
+                    "status": "Partial: ACF written, download not triggered. Opened Steam to nudge update.",
+                    "progress": 60,
+                    "partial": True,
+                }))
+                self._show_linux_fastest_workflow_notice(app_id)
+                return False
+
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Complete", "progress": 100
+            }))
+            return True
+
+        except Exception as e:
+            logger.exception("Linux fastest download failed: %s", e)
+            return False
+
+    def _show_linux_fastest_workflow_notice(self, app_id):
+        # One-time info-shaped progress event so the Web UI can render a banner
+        # explaining the SLSSteam workflow when DepotDownloader was bypassed.
+        if getattr(self, "_linux_fastest_notice_shown", False):
+            return
+        self._linux_fastest_notice_shown = True
+        self.download_progress.emit(json.dumps({
+            "app_id": app_id,
+            "status": (
+                "ACF and library entry written. Open Steam, find the game, "
+                "click Update — SLSSteam pulls the content directly."
+            ),
+            "progress": -1,
+            "info": True,
+        }))
+
+    @pyqtSlot(str, str)
+    def download_game_version(self, app_id, manifest_override_json):
+        """Download specific version via process_from_store().
+        Emits download_progress + task_finished signals."""
+        if not app_id or not app_id.strip().isdigit():
+            return
+        def _do():
+            try:
+                manifest_override = json.loads(manifest_override_json)
+            except (json.JSONDecodeError, TypeError):
+                return False
+
+            if not manifest_override:
+                return False
+
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Starting version download", "progress": 10
+            }))
+
+            from pathlib import Path as _Path
+            lib_override = _Path(self._active_library) if self._active_library else self._steam_path
+            self._ui.process_from_store(
+                app_id=app_id,
+                manifest_override=manifest_override,
+                use_hubcap=bool(self._api_key),
+                lib_path=lib_override,
+            )
+
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Complete", "progress": 100
+            }))
+            return True
+
+        def _on_done(result):
+            success = result is True
+            self._emit_task_result(
+                "download_version",
+                success,
+                f"Version download {'completed' if success else 'failed'} for App {app_id}",
+                app_id=app_id,
+            )
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str, str)
+    def run_game_action(self, app_id, action):
+        """Routes to backend action (crack, dlc_check, etc.).
+        Game-specific actions need an ACFInfo; non-game actions call ui methods directly.
+        Emits task_finished signal."""
+        # SteamAutoCrack must run on the main thread — it uses _start_worker internally.
+        # Calling it from _run_async (background thread) causes immediate 'completed'
+        # and a freeze/deadlock on the second click.
+        if action == "steam_auto":
+            from sff.steamauto import get_steamauto_cli_path
+            if get_steamauto_cli_path() is None:
+                self._emit_task_result("steam_auto", False, "SteamAutoCrack CLI not found")
+
+                return
+            acf = self._resolve_acf(app_id)
+            if acf is None:
+                self._emit_task_result("steam_auto", False, "No game found for the selected App ID")
+
+                return
+            parent = self.parent()
+            if parent and hasattr(parent, '_run_steam_auto_with_acf'):
+                # Web UI showed its own confirm dialog already — suppress the
+                # Qt-side double-prompt for this single delegate call.
+                if hasattr(parent, '_skip_next_achievement_warn'):
+                    parent._skip_next_achievement_warn = True
+                else:
+                    setattr(parent, '_skip_next_achievement_warn', True)
+                parent._run_steam_auto_with_acf(acf)
+
+            return
+
+        def _do():
+            from sff.structs import MainMenu
+
+            # Non-game-specific actions — call ui methods directly
+            non_game_actions = {
+                "download_games": lambda: self._ui.process_lua_full(),
+                "download_manifests": lambda: self._ui.process_lua_minimal(),
+                "recent_lua": lambda: self._ui.recent_files_menu(),
+                "update_manifests": lambda: self._ui.update_all_manifests(),
+                "injection_menu": lambda: self._ui.injection_menu(),
+                "applist_menu": lambda: self._ui.injection_menu(),
+                "remove_game": lambda: self._ui.remove_game_menu(),
+                "context_menu": lambda: self._ui.manage_context_menu(),
+                "check_updates": lambda: self._ui.check_updates(self._ui.os_type),
+                "scan_library": lambda: self._ui.scan_library_menu(),
+                "analytics": lambda: self._ui.analytics_dashboard_menu(),
+            }
+
+            if action in non_game_actions:
+                try:
+                    from sff.structs import MainReturnCode
+                    result = non_game_actions[action]()
+                    if result is MainReturnCode.EXIT:
+                        return f"Action '{action}' is not supported on this platform or configuration."
+                    return None
+                except Exception as e:
+                    return str(e)
+
+            # Mute toggle — special handling, not a MainMenu choice
+            if action == "mute_toggle":
+                try:
+                    parent = self.parent()
+                    if parent and hasattr(parent, '_toggle_mute'):
+                        parent._toggle_mute()
+                    elif self._ui and hasattr(self._ui, 'midi_player') and self._ui.midi_player:
+                        self._ui.midi_player.set_muted(not self._ui.midi_player._muted)
+                    return None
+                except Exception as e:
+                    return str(e)
+
+            # Game-specific actions — need an ACFInfo from app_id
+            game_action_map = {
+                "crack": MainMenu.CRACK_GAME,
+                "steamstub": MainMenu.REMOVE_DRM,
+                "dlc_check": MainMenu.DLC_CHECK,
+                "workshop": MainMenu.DL_WORKSHOP_ITEM,
+                "multiplayer": MainMenu.MULTIPLAYER_FIX,
+                "community_fixes": MainMenu.CRACK_FIX,
+                "hv_fix": MainMenu.HV_FIX,
+                "achievements": MainMenu.DL_USER_GAME_STATS,
+                "dlc_unlockers": MainMenu.MANAGE_DLC_UNLOCKERS,
+                "check_mod_updates": MainMenu.CHECK_MOD_UPDATES,
+            }
+
+            menu_choice = game_action_map.get(action)
+            if menu_choice is None:
+                return f"Unknown action: {action}"
+
+            # Build ACFInfo from app_id
+            acf = self._resolve_acf(app_id)
+            if acf is None:
+                return f"No game found for App ID: {app_id}"
+
+            # Steamless / Remove DRM: route through the same Qt-side helper
+            # the classic Library button uses, so the user sees a single file
+            # dialog rooted at the game folder and gets the (success, message)
+            # tuple back. Avoids the "explorer window + drag-drop dialog" mess
+            # the menu fallback path used to produce.
+            if action == "steamstub":
+                parent = self.parent()
+                if parent and hasattr(parent, "_run_steamless_for_acf"):
+                    parent._run_steamless_for_acf(acf)
+                    return None
+                # Fall through to default dispatch if the helper is missing
+                # (e.g. running headless / non-GUI tests).
+
+            try:
+                result = self._ui.run_game_action_with_selection(menu_choice, acf)
+                # Steamless / Remove DRM returns a (success, message) tuple.
+                # Surface it to the JS layer so the user sees the actual
+                # outcome instead of a generic "completed" toast.
+                if action == "steamstub" and isinstance(result, tuple) and len(result) == 2:
+                    ok, msg = result
+                    self._emit_task_result("steamstub", bool(ok), str(msg))
+                    return None
+                return None
+            except Exception as e:
+                return str(e)
+
+        def _on_done(error_msg):
+            if error_msg:
+                self._emit_task_result(action, False, str(error_msg))
+            else:
+                self._emit_task_result(action, True, f"Action '{action}' completed")
+
+        self._run_async(_do, on_done=_on_done)
+
+    def _resolve_acf(self, app_id):
+        """Find ACFInfo for a given app_id by scanning Steam libraries.
+
+        Falls back to a synthetic ACFInfo (steam_path / "common") for actions
+        that only need the app_id (DLC check, Workshop browse, achievement
+        data download). Without this fallback, a SteaMidra-registered game
+        whose depot fetch hasn't happened yet would surface "No game found
+        for App ID" even though the Store API call doesn't need a game
+        folder.
+        """
+        if not app_id:
+            return None
+        try:
+            from sff.game_specific import ACFInfo
+            from sff.storage.vdf import get_steam_libs, vdf_load
+            libs = get_steam_libs(self._steam_path) if self._steam_path else []
+            for lib in libs:
+                steamapps = lib / "steamapps"
+                if not steamapps.exists():
+                    continue
+                acf_path = steamapps / f"appmanifest_{app_id}.acf"
+                if acf_path.exists():
+                    data = vdf_load(acf_path)
+                    state = data.get("AppState", {})
+                    installdir = state.get("installdir", "")
+                    game_path = steamapps / "common" / installdir
+                    return ACFInfo(str(app_id), game_path)
+            # Synthetic ACFInfo for app_id-only actions (DLC check, Workshop,
+            # achievement data). Game-specific actions that need a real game
+            # folder (crack, steamstub) gate on path.exists() themselves.
+            if self._steam_path:
+                synthetic_path = self._steam_path / "steamapps" / "common" / f"app_{app_id}"
+                return ACFInfo(str(app_id), synthetic_path)
+        except Exception as e:
+            logger.warning("_resolve_acf failed: %s", e)
+        return None
+
+    @pyqtSlot(str)
+    def fix_game(self, config_json):
+        """Apply emulator fix to a game. Emits task_finished."""
+        def _do():
+            try:
+                config = json.loads(config_json)
+                from sff.fix_game.service import FixGameService
+                raw_id = config.get("app_id", "")
+                app_id = int(raw_id) if str(raw_id).strip().isdigit() else 0
+                svc = FixGameService()
+                success = svc.fix_game(
+                    app_id=app_id,
+                    game_dir=config.get("game_path", ""),
+                    emu_mode=config.get("emu_mode", "regular"),
+                    skip_steamstub=not config.get("unpack_steamstub", True),
+                    steamless_experimental=config.get("use_experimental_steamless", True),
+                    skip_goldberg_update=not config.get("goldberg_update", False),
+                    create_launch_bat=config.get("create_launch_bat", False),
+                    player_name=config.get("username") or "Player",
+                    steam_id=config.get("steam_id") or "76561198001737783",
+                    avatar_path=config.get("avatar_path") or None,
+                    simple_settings=config.get("simple_settings", False),
+                    gse_auth_mode=config.get("gse_auth_mode", "anonymous"),
+                    gse_username=config.get("gse_username", ""),
+                    gse_password=config.get("gse_password", ""),
+                )
+                return success
+            except Exception as e:
+                logger.exception("fix_game failed: %s", e)
+                return str(e)
+
+        def _on_done(result):
+            if result is True:
+                self._emit_task_result("fix_game", True, "Game fix applied successfully")
+            else:
+                self._emit_task_result("fix_game", False, str(result) if result else "Fix failed")
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def revert_game(self, game_path):
+        """Revert emulator changes."""
+        def _do():
+            try:
+                from sff.fix_game.service import FixGameService
+                # FixGameService is not stateless — instantiate then call.
+                # Returns (success, message) tuple.
+                svc = FixGameService()
+                success, msg = svc.restore_game(game_path)
+                return (bool(success), str(msg) if msg else "Changes reverted")
+            except Exception as e:
+                logger.exception("revert_game failed")
+                return (False, f"Revert failed: {e}")
+
+        def _on_done(result):
+            if isinstance(result, tuple) and len(result) == 2:
+                ok, msg = result
+                self._emit_task_result("revert_game", bool(ok), str(msg))
+            else:
+                self._emit_task_result("revert_game", False, "Revert failed: unexpected result")
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def generate_gbe_token(self, config_json):
+        """Generate GBE token files."""
+        def _do():
+            config = json.loads(config_json)
+            api_key = config.get("api_key", "").strip()
+            app_id_str = str(config.get("app_id", "")).strip()
+            output_dir = config.get("output_dir", "").strip()
+            if not api_key:
+                return (False, "No Steam Web API key provided.")
+            if not app_id_str.isdigit():
+                return (False, "App ID must be a number.")
+            if not output_dir:
+                return (False, "No output directory provided.")
+            from sff.tools.gbe_token_generator import GBETokenGenerator
+            log_lines = []
+            def _log(msg):
+                log_lines.append(msg)
+                self.log_message.emit(msg)
+            gen = GBETokenGenerator(steam_web_api_key=api_key)
+            success = gen.generate(int(app_id_str), output_dir, log_func=_log)
+            if success:
+                try:
+                    from sff.storage.settings import set_setting
+                    from sff.structs import Settings
+                    set_setting(Settings.STEAM_WEB_API_KEY, api_key)
+                except Exception:
+                    pass
+            return (success, "\n".join(log_lines))
+
+        def _on_done(result):
+            if isinstance(result, tuple):
+                ok, log_text = result
+                msg = "GBE config generated successfully" if ok else log_text.split("\n")[-1]
+                self._emit_task_result("generate_gbe_token", ok, msg, log=log_text)
+            else:
+                self._emit_task_result("generate_gbe_token", False, "Generation failed")
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str, str)
+    def scan_cloud_games(self, steam_path, steam32_id):
+        """Scan userdata for cloud saves."""
+        def _do():
+            from sff.cloud_saves import CloudSaves
+            pairs = CloudSaves.list_steam_games(steam_path, steam32_id)
+            games = []
+            for app_id, game_name in pairs:
+                remote_dir = Path(steam_path) / "userdata" / steam32_id / str(app_id) / "remote"
+                size = 0
+                if remote_dir.exists():
+                    try:
+                        size = sum(f.stat().st_size for f in remote_dir.rglob("*") if f.is_file())
+                    except Exception:
+                        pass
+                games.append({
+                    "app_id": str(app_id),
+                    "name": game_name,
+                    "size": _format_size(size),
+                })
+            return games
+
+        def _on_done(games):
+            self._emit_task_result("scan_cloud_games", True, "", games=games or [])
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def backup_cloud_save(self, config_json):
+        """Backup cloud saves for a game."""
+        def _do():
+            config = json.loads(config_json)
+            app_id = str(config.get("app_id", "")).strip()
+            dest_path = config.get("dest_path", "").strip()
+            steam_path = config.get("steam_path", "").strip()
+            steam32_id = str(config.get("steam32_id", "")).strip()
+            game_name = config.get("game_name", f"App {app_id}").strip() or f"App {app_id}"
+            if not app_id or not dest_path or not steam_path or not steam32_id:
+                return (False, "", "Missing required parameters for backup")
+            from sff.cloud_saves import CloudSaves
+            log_lines = []
+            result = CloudSaves().backup_steam_save(
+                steam_path, steam32_id, int(app_id), game_name, dest_path,
+                log_func=log_lines.append,
+            )
+            log_text = "\n".join(log_lines)
+            if result:
+                return (True, log_text, f"Saves backed up for {game_name}")
+            return (False, log_text, "Backup failed — check log")
+
+        def _on_done(result):
+            if isinstance(result, tuple):
+                ok, log_text, msg = result
+                self._emit_task_result("backup_cloud_save", ok, msg, log=log_text)
+            else:
+                self._emit_task_result("backup_cloud_save", False, "Backup failed")
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def restore_cloud_save(self, config_json):
+        """Restore cloud saves from backup."""
+        def _do():
+            config = json.loads(config_json)
+            backup_path = config.get("backup_path", "").strip()
+            app_id = str(config.get("app_id", "")).strip()
+            steam_path = config.get("steam_path", "").strip()
+            steam32_id = str(config.get("steam32_id", "")).strip()
+            if not backup_path or not app_id or not steam_path or not steam32_id:
+                return (False, "", "Missing required parameters for restore")
+            from sff.cloud_saves import CloudSaves
+            log_lines = []
+            ok = CloudSaves().restore_steam_save(
+                backup_path, steam_path, steam32_id, int(app_id),
+                log_func=log_lines.append,
+            )
+            log_text = "\n".join(log_lines)
+            if ok:
+                return (True, log_text, "Saves restored successfully")
+            return (False, log_text, "Restore failed — check log")
+
+        def _on_done(result):
+            if isinstance(result, tuple):
+                ok, log_text, msg = result
+                self._emit_task_result("restore_cloud_save", ok, msg, log=log_text)
+            else:
+                self._emit_task_result("restore_cloud_save", False, "Restore failed")
+
+        self._run_async(_do, on_done=_on_done)
+
+    # ── Bundled tool resolution ───────────────────────────────────
+
+    @staticmethod
+    def _get_bundled_tool_path(tool: str) -> Path | None:
+        """Return path to a bundled executable in third_party/<tool>/<tool>.exe.
+        Checks sys._MEIPASS first (frozen EXE), then project root (dev mode).
+        Returns None if not found.
+
+        rclone has a Linux-only sibling layout: `third_party/rclone_linux/rclone`
+        (no .exe, no rclone_linux folder name on Windows). The helper resolves
+        the right location based on sys.platform without altering the Windows
+        path.
+        """
+        from sff.utils import root_folder
+        ext = ".exe" if sys.platform == "win32" else ""
+        # rclone ships as a per-platform folder so the Windows .exe and the
+        # Linux ELF binary can coexist in the source tree without one
+        # clobbering the other.
+        if tool == "rclone":
+            tool_folder = "rclone" if sys.platform == "win32" else "rclone_linux"
+        else:
+            tool_folder = tool
+        rel = Path("third_party") / tool_folder / f"{tool}{ext}"
+        if getattr(sys, "frozen", False):
+            meipass = Path(getattr(sys, "_MEIPASS", ""))
+            p = meipass / rel
+            if p.exists():
+                return p
+        try:
+            p = root_folder() / rel
+            if p.exists():
+                return p
+        except Exception:
+            pass
+        return None
+
+    @pyqtSlot(str, result=str)
+    def get_bundled_tool_path(self, tool_name: str) -> str:
+        """Return the absolute path to a bundled tool executable, or empty string."""
+        p = self._get_bundled_tool_path(tool_name)
+        return str(p) if p else ""
+
+    @pyqtSlot(str)
+    def rclone_backup_save(self, config_json):
+        """Upload a game's Steam userdata saves to an rclone remote."""
+        def _do():
+            import subprocess
+            import tempfile
+            config = json.loads(config_json)
+            app_id = str(config.get("app_id", "")).strip()
+            rclone_exe = config.get("rclone_exe", "").strip()
+            remote_dest = config.get("remote_dest", "").strip()
+            steam_path = config.get("steam_path", "").strip()
+            steam32_id = str(config.get("steam32_id", "")).strip()
+            game_name = config.get("game_name", f"App {app_id}").strip() or f"App {app_id}"
+            if not rclone_exe:
+                bundled = WebBridge._get_bundled_tool_path("rclone")
+                if bundled:
+                    rclone_exe = str(bundled)
+            if not app_id or not rclone_exe or not remote_dest or not steam_path or not steam32_id:
+                return (False, "", "Missing rclone configuration")
+            if not Path(rclone_exe).exists():
+                return (False, "", f"rclone executable not found: {rclone_exe}")
+            from sff.cloud_saves import CloudSaves
+            log_lines = []
+            tmp = Path(tempfile.mkdtemp(prefix="steamidra_rclone_"))
+            try:
+                result = CloudSaves().backup_steam_save(
+                    steam_path, steam32_id, int(app_id), game_name, str(tmp),
+                    log_func=log_lines.append,
+                )
+                if not result:
+                    return (False, "\n".join(log_lines), "Local backup step failed")
+                local_dir = Path(result)
+                remote_path = remote_dest.rstrip("/") + "/" + local_dir.name
+                _no_win = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+                proc = subprocess.run(
+                    [
+                        rclone_exe, "copy", str(local_dir), remote_path,
+                        "--update",
+                        "--transfers", "10", "--checkers", "20",
+                        "--create-empty-src-dirs",
+                        "--fast-list",
+                    ],
+                    capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300, **_no_win,
+                )
+                log_lines.append(proc.stdout)
+                if proc.returncode == 0:
+                    return (True, "\n".join(log_lines), f"Uploaded to {remote_path}")
+                log_lines.append(proc.stderr)
+                return (False, "\n".join(log_lines), f"rclone failed (exit {proc.returncode})")
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+
+        def _on_done(result):
+            if isinstance(result, tuple):
+                ok, log_text, msg = result
+                self._emit_task_result("rclone_backup_save", ok, msg, log=log_text)
+            else:
+                self._emit_task_result("rclone_backup_save", False, "Upload failed")
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def rclone_list_remotes(self, rclone_exe_json):
+        """Run rclone listremotes --long and return JSON list of configured remote names."""
+        def _do():
+            import subprocess
+            try:
+                rclone_exe = json.loads(rclone_exe_json).get("rclone_exe", "").strip()
+            except Exception:
+                rclone_exe = ""
+            if not rclone_exe:
+                bundled = WebBridge._get_bundled_tool_path("rclone")
+                rclone_exe = str(bundled) if bundled else ""
+            if not rclone_exe or not Path(rclone_exe).exists():
+                return json.dumps({"ok": False, "error": "rclone executable not found"})
+            _no_win = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+            try:
+                proc = subprocess.run(
+                    [rclone_exe, "listremotes", "--long"],
+                    capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=15, **_no_win,
+                )
+                if proc.returncode != 0:
+                    return json.dumps({"ok": False, "error": proc.stderr.strip()[:300]})
+                remotes = []
+                for line in proc.stdout.splitlines():
+                    line = line.strip()
+                    if line:
+                        name = line.split()[0]
+                        remotes.append(name)
+                return json.dumps({"ok": True, "remotes": remotes})
+            except Exception as e:
+                return json.dumps({"ok": False, "error": str(e)})
+
+        def _on_done(result):
+            try:
+                parsed = json.loads(result or "{}")
+            except Exception:
+                parsed = {}
+            if parsed.get("ok"):
+                self._emit_task_result("rclone_list_remotes", True, "", remotes=parsed.get("remotes", []))
+            else:
+                self._emit_task_result("rclone_list_remotes", False, "", error=parsed.get("error", "Failed to list remotes"))
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def rclone_test_remote(self, config_json):
+        """Test an rclone remote by running lsd with a short timeout. Returns JSON ok/error."""
+        def _do():
+            import subprocess
+            config = json.loads(config_json)
+            rclone_exe = config.get("rclone_exe", "").strip()
+            remote = config.get("remote", "").strip()
+            if not rclone_exe:
+                bundled = WebBridge._get_bundled_tool_path("rclone")
+                rclone_exe = str(bundled) if bundled else ""
+            if not rclone_exe or not Path(rclone_exe).exists():
+                return json.dumps({"ok": False, "error": "rclone executable not found"})
+            if not remote:
+                return json.dumps({"ok": False, "error": "No remote specified"})
+            # Test only the remote root — the backup subfolder may not exist yet
+            remote_root = remote.split(":")[0] + ":" if ":" in remote else remote + ":"
+            _no_win = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+            try:
+                proc = subprocess.run(
+                    [rclone_exe, "lsd", remote_root, "--max-depth", "1", "--timeout", "15s"],
+                    capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=20, **_no_win,
+                )
+                if proc.returncode == 0:
+                    return json.dumps({"ok": True})
+                return json.dumps({"ok": False, "error": proc.stderr.strip()[:300]})
+            except subprocess.TimeoutExpired:
+                return json.dumps({"ok": False, "error": "Timed out after 20s"})
+            except Exception as e:
+                return json.dumps({"ok": False, "error": str(e)})
+
+        def _on_done(result):
+            try:
+                parsed = json.loads(result or "{}")
+            except Exception:
+                parsed = {}
+            if parsed.get("ok"):
+                self._emit_task_result("rclone_test_remote", True, "")
+            else:
+                self._emit_task_result("rclone_test_remote", False, "", error=parsed.get("error", "Remote test failed")[:300])
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def rclone_open_config(self, rclone_exe_json):
+        """Open rclone config in a new terminal window so the user can add or edit remotes."""
+        import sys
+        import subprocess
+        try:
+            rclone_exe = json.loads(rclone_exe_json).get("rclone_exe", "").strip()
+        except Exception:
+            rclone_exe = ""
+        if not rclone_exe:
+            bundled = WebBridge._get_bundled_tool_path("rclone")
+            rclone_exe = str(bundled) if bundled else ""
+        if not rclone_exe or not Path(rclone_exe).exists():
+            self._emit_task_result("rclone_open_config", False, "", error="rclone executable not found")
+            return
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(
+                    ["cmd", "/k", rclone_exe, "config"],
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                )
+            else:
+                cmd = [rclone_exe, "config"]
+                launched = False
+                for term, args in [
+                    ("x-terminal-emulator", ["-e"]),
+                    ("gnome-terminal", ["--"]),
+                    ("xterm", ["-e"]),
+                    ("konsole", ["-e"]),
+                    ("xfce4-terminal", ["-e"]),
+                ]:
+                    try:
+                        subprocess.Popen([term] + args + cmd)
+                        launched = True
+                        break
+                    except FileNotFoundError:
+                        continue
+                if not launched:
+                    self._emit_task_result("rclone_open_config", False, "", error="No terminal emulator found. Open a terminal and run: rclone config")
+                    return
+            self._emit_task_result("rclone_open_config", True, "")
+        except Exception as e:
+            self._emit_task_result("rclone_open_config", False, "", error=str(e))
+
+    @pyqtSlot(str)
+    def open_workshop(self, app_id):
+        """Open the workshop browser for a game."""
+        try:
+            from sff.gui.workshop_browser import open_workshop_browser
+            open_workshop_browser(app_id, self.parent())
+        except Exception as e:
+            logger.exception("open_workshop failed: %s", e)
+
+    @pyqtSlot(str)
+    def download_workshop_item(self, params_json):
+        """Download a workshop item using 4-method cascade (SteamWebAPI, GGNetwork, SteamCMD).
+        params_json: {"app_id": "...", "item_url": "..."} or {"app_id": "...", "item_id": "..."}
+        Emits task_finished with task='workshop_download'."""
+        def _do():
+            try:
+                params = json.loads(params_json)
+                app_id = str(params.get("app_id", "0"))
+                item_url = params.get("item_url") or params.get("item_id") or ""
+                from sff.manifest.workshop_dl import (
+                    download_workshop_item as _dl,
+                    parse_workshop_item_id,
+                )
+                from sff.storage.settings import get_setting
+                from sff.structs import Settings
+                item_id = parse_workshop_item_id(item_url)
+                if not item_id:
+                    return {"success": False, "error": f"Could not parse item ID from: {item_url}"}
+                out_dir = Path.cwd() / "downloaded_files" / "workshop" / item_id
+                user = get_setting(Settings.STEAM_USER) or "anonymous"
+                pwd = get_setting(Settings.STEAM_PASS) or ""
+                result = _dl(item_id, app_id, out_dir, steam_username=user, steam_password=pwd)
+                return result
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        def _on_done(result):
+            result = result or {}
+            self._emit_task_result(
+                "workshop_download",
+                bool(result.get("success")),
+                result.get("method") or result.get("error") or "",
+                path=result.get("path") or "",
+            )
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def check_game_update(self, app_id):
+        """Compare installed ACF buildid against Steam CM public buildid.
+        If Steam CM is newer: download updated manifests and patch the ACF.
+        Emits task_finished with task='update_check'."""
+        def _do():
+            try:
+                from pathlib import Path as _Path
+                from sff.storage.vdf import get_steam_libs, vdf_load
+                from sff.lua.writer import ACFWriter
+                from sff.manifest.downloader import ManifestDownloader
+                from sff.lua.manager import LuaManager, LuaChoice
+                from sff.steam_client import create_provider_for_current_thread
+                from sff.storage.settings import get_setting
+                from sff.structs import OSType, Settings
+                from sff.steam_tools_compat import install_lua_to_steam
+
+                steam_libs = get_steam_libs(self._steam_path) if self._steam_path else []
+                acf_path = None
+                lib_path = None
+                for lib in steam_libs:
+                    candidate = lib / "steamapps" / f"appmanifest_{app_id}.acf"
+                    if candidate.exists():
+                        acf_path = candidate
+                        lib_path = lib
+                        break
+
+                if acf_path is None:
+                    return {"found": False, "error": f"ACF not found for App ID {app_id}"}
+
+                acf_data = vdf_load(acf_path)
+                state = acf_data.get("AppState", {})
+                installed_buildid = str(state.get("buildid", "0")).strip()
+
+                provider = create_provider_for_current_thread()
+                app_data = provider.get_single_app_info(int(app_id))
+                cm_buildid = str(
+                    app_data.get("depots", {})
+                    .get("branches", {})
+                    .get("public", {})
+                    .get("buildid", "0")
+                ).strip()
+
+                if not cm_buildid or cm_buildid == "0":
+                    return {"found": True, "error": "Could not retrieve buildid from Steam CM"}
+
+                if installed_buildid == cm_buildid:
+                    return {
+                        "found": True,
+                        "up_to_date": True,
+                        "installed_buildid": installed_buildid,
+                        "cm_buildid": cm_buildid,
+                    }
+
+                os_type = OSType.WINDOWS if sys.platform == "win32" else OSType.LINUX
+                lua_manager = LuaManager(os_type)
+                saved_lua_path = _Path.cwd() / "saved_lua" / f"{app_id}.lua"
+                if not saved_lua_path.exists():
+                    return {
+                        "found": True,
+                        "up_to_date": False,
+                        "installed_buildid": installed_buildid,
+                        "cm_buildid": cm_buildid,
+                        "error": f"No saved .lua for App ID {app_id} — run Download Games first",
+                    }
+
+                parsed_lua = lua_manager.fetch_lua(LuaChoice.ADD_LUA, saved_lua_path)
+                if parsed_lua is None:
+                    return {
+                        "found": True,
+                        "up_to_date": False,
+                        "error": "Failed to parse saved .lua file",
+                    }
+
+                install_lua_to_steam(self._steam_path, str(parsed_lua.app_id), saved_lua_path)
+
+                downloader = ManifestDownloader(provider, self._steam_path)
+                use_parallel = get_setting(Settings.USE_PARALLEL_DOWNLOADS)
+                if use_parallel:
+                    manifest_paths = downloader.download_manifests_parallel(parsed_lua, auto_manifest=True)
+                else:
+                    manifest_paths = downloader.download_manifests(parsed_lua, auto_manifest=True)
+
+                new_manifest_map = {}
+                for mp in (manifest_paths or []):
+                    stem = _Path(mp).stem
+                    parts = stem.split("_")
+                    if len(parts) == 2 and all(p.isdigit() for p in parts):
+                        new_manifest_map[parts[0]] = parts[1]
+
+                if new_manifest_map:
+                    acf_writer = ACFWriter(lib_path)
+                    acf_writer.patch_acf_depot_manifests(acf_path, new_manifest_map)
+                    acf_writer._patch_acf_error_state(acf_path)
+
+                return {
+                    "found": True,
+                    "up_to_date": False,
+                    "updated": True,
+                    "installed_buildid": installed_buildid,
+                    "cm_buildid": cm_buildid,
+                    "manifests_updated": len(new_manifest_map),
+                }
+
+            except Exception as e:
+                logger.exception("check_game_update failed: %s", e)
+                return {"found": True, "error": str(e)}
+
+        def _on_done(result):
+            result = result or {}
+            success = bool(result.get("up_to_date") or result.get("updated"))
+            msg = ""
+            if result.get("up_to_date"):
+                msg = f"Already up to date (build {result.get('installed_buildid', '')})"
+            elif result.get("updated"):
+                msg = f"Updated to build {result.get('cm_buildid', '')}"
+            elif result.get("error"):
+                msg = result["error"]
+            # Strip keys that collide with _emit_task_result's positional params,
+            # otherwise we get TypeError: got multiple values for 'success'/'message'/'task'.
+            extras = {
+                k: v for k, v in result.items()
+                if k not in ("error", "success", "message", "task")
+            }
+            self._emit_task_result("update_check", success, msg, **extras)
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def lure_fix_acf(self, app_id):
+        """Patch the game's ACF with the latest Steam CM manifest IDs and buildid.
+        No files are downloaded — pure ACF update to suppress Steam's update prompt.
+        Emits task_finished with task='lure_fix'."""
+        def _do():
+            try:
+                from pathlib import Path as _Path
+                from sff.storage.vdf import get_steam_libs, vdf_load, vdf_dump
+                from sff.lua.writer import ACFWriter
+                from sff.steam_client import create_provider_for_current_thread
+
+                steam_libs = get_steam_libs(self._steam_path) if self._steam_path else []
+                acf_path = None
+                lib_path = None
+                for lib in steam_libs:
+                    candidate = lib / "steamapps" / f"appmanifest_{app_id}.acf"
+                    if candidate.exists():
+                        acf_path = candidate
+                        lib_path = lib
+                        break
+
+                if acf_path is None:
+                    return {"success": False, "error": f"ACF not found for App ID {app_id}"}
+
+                provider = create_provider_for_current_thread()
+                app_data = provider.get_single_app_info(int(app_id))
+                depots_data = app_data.get("depots", {})
+
+                cm_buildid = str(
+                    depots_data.get("branches", {})
+                    .get("public", {})
+                    .get("buildid", "0")
+                ).strip()
+
+                if not cm_buildid or cm_buildid == "0":
+                    return {"success": False, "error": "Could not retrieve buildid from Steam CM"}
+
+                acf_data = vdf_load(acf_path)
+                state = acf_data.get("AppState", {})
+                installed = state.get("InstalledDepots", {})
+
+                new_manifest_map = {}
+                for depot_id in list(installed.keys()):
+                    mani_pub = (
+                        depots_data.get(str(depot_id), {})
+                        .get("manifests", {})
+                        .get("public", {})
+                    )
+                    if isinstance(mani_pub, dict):
+                        gid = mani_pub.get("gid")
+                    else:
+                        gid = mani_pub
+                    if gid:
+                        new_manifest_map[depot_id] = str(gid)
+
+                if new_manifest_map:
+                    acf_writer = ACFWriter(lib_path)
+                    acf_writer.patch_acf_depot_manifests(acf_path, new_manifest_map)
+
+                acf_data = vdf_load(acf_path)
+                state = acf_data.get("AppState", {})
+                state["buildid"] = cm_buildid
+                state["StateFlags"] = "4"
+                state["TargetBuildID"] = "0"
+                state["DownloadType"] = "0"
+                state["UpdateResult"] = "0"
+                state["ScheduledAutoUpdate"] = "0"
+                state["BytesToDownload"] = "0"
+                state["BytesDownloaded"] = "0"
+                state["BytesToStage"] = "0"
+                state["BytesStaged"] = "0"
+                acf_data["AppState"] = state
+                vdf_dump(acf_path, acf_data)
+
+                return {
+                    "success": True,
+                    "cm_buildid": cm_buildid,
+                    "depots_patched": len(new_manifest_map),
+                }
+
+            except Exception as e:
+                logger.exception("lure_fix_acf failed: %s", e)
+                return {"success": False, "error": str(e)}
+
+        def _on_done(result):
+            result = result or {}
+            if result.get("success"):
+                msg = (
+                    f"ACF patched to build {result.get('cm_buildid', '')} "
+                    f"({result.get('depots_patched', 0)} depot(s)). Restart Steam."
+                )
+            else:
+                msg = result.get("error", "Lure fix failed")
+            # Strip keys that collide with _emit_task_result's positional params.
+            # The previous code spread the whole `result` dict and crashed on
+            # success because `success` and `message` would arrive twice (once
+            # positional, once keyword) — TypeError, propagated through Qt signal
+            # delivery, which closed the whole window.
+            extras = {
+                k: v for k, v in result.items()
+                if k not in ("error", "success", "message", "task")
+            }
+            self._emit_task_result("lure_fix", bool(result.get("success")), msg, **extras)
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot()
+    def restart_steam(self):
+        """Restart or launch Steam."""
+        def _do():
+            if sys.platform == "win32":
+                import time
+                from sff.processes import (
+                    SteamProcess,
+                    is_proc_running,
+                    launch_steam_unelevated,
+                )
+
+                if not self._steam_path:
+                    return (False, "Steam path not set")
+
+                steam_proc = SteamProcess(self._steam_path)
+
+                # Kill Steam if running
+                if is_proc_running(steam_proc.exe_name):
+                    print("Killing Steam...", end="", flush=True)
+                    steam_proc.kill()
+                    max_wait = 10
+                    waited = 0
+                    while is_proc_running(steam_proc.exe_name) and waited < max_wait:
+                        time.sleep(0.5)
+                        waited += 0.5
+                    if is_proc_running(steam_proc.exe_name):
+                        return (False, "Steam did not close in time — try again")
+                    print(" Done!")
+
+                injector = self._steam_path / "steam.exe"
+                print("Launching Steam...")
+                ok, msg = launch_steam_unelevated(injector, self._steam_path)
+                return (ok, msg)
+
+            else:
+                from sff.linux.steam_process import kill_steam, start_steam
+                kill_steam()
+                result = start_steam()
+                if result == "SUCCESS":
+                    return (True, "Steam restarted")
+                return (False, f"Steam start failed: {result}")
+
+        def _on_done(result):
+            if isinstance(result, tuple):
+                success, msg = result
+            else:
+                success, msg = bool(result), "Steam restarted" if result else "Failed to restart Steam"
+            self._emit_task_result("restart_steam", success, msg)
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot()
+    def open_log_window(self):
+        """Opens the existing GlobalLogWindow as a standalone native window."""
+        parent = self.parent()
+        if hasattr(parent, '_log_window'):
+            parent._log_window.show()
+            parent._log_window.raise_()
+            parent._log_window.activateWindow()
+
+    @pyqtSlot(str)
+    def copy_to_clipboard(self, text):
+        """Copy text to system clipboard via Qt (works in QWebEngine)."""
+        from PyQt6.QtWidgets import QApplication
+        QApplication.clipboard().setText(text)
+
+    @pyqtSlot(result=str)
+    def browse_game_folder(self):
+        """Open a native folder-picker dialog and return the selected path (or '')."""
+        from PyQt6.QtWidgets import QFileDialog
+        path = QFileDialog.getExistingDirectory(self.parent(), "Select game folder")
+        return path or ""
+
+    @pyqtSlot(str, str, str)
+    def run_game_action_outside(self, game_path, app_id, action):
+        """Run a game action against a folder outside the Steam library.
+        Builds ACFInfo from the explicit path instead of scanning steamapps."""
+        from pathlib import Path as _Path
+        from sff.game_specific import ACFInfo
+
+        p = _Path(game_path)
+        if not p.is_dir():
+            self._emit_task_result(action, False, f"Folder not found: {game_path}")
+            return
+
+        acf = ACFInfo(app_id or "0", p)
+
+        if action == "steam_auto":
+            from sff.steamauto import get_steamauto_cli_path
+            if get_steamauto_cli_path() is None:
+                self._emit_task_result("steam_auto", False, "SteamAutoCrack CLI not found")
+                return
+            parent = self.parent()
+            if parent and hasattr(parent, '_run_steam_auto_with_acf'):
+                # Web UI showed its own confirm dialog already — suppress the
+                # Qt-side double-prompt for this single delegate call.
+                setattr(parent, '_skip_next_achievement_warn', True)
+                parent._run_steam_auto_with_acf(acf)
+            return
+
+        def _do():
+            from sff.structs import MainMenu
+            game_action_map = {
+                "crack": MainMenu.CRACK_GAME,
+                "steamstub": MainMenu.REMOVE_DRM,
+                "dlc_check": MainMenu.DLC_CHECK,
+                "workshop": MainMenu.DL_WORKSHOP_ITEM,
+                "multiplayer": MainMenu.MULTIPLAYER_FIX,
+                "community_fixes": MainMenu.CRACK_FIX,
+                "hv_fix": MainMenu.HV_FIX,
+                "achievements": MainMenu.DL_USER_GAME_STATS,
+                "dlc_unlockers": MainMenu.MANAGE_DLC_UNLOCKERS,
+                "check_mod_updates": MainMenu.CHECK_MOD_UPDATES,
+            }
+            menu_choice = game_action_map.get(action)
+            if menu_choice is None:
+                return f"Unknown action: {action}"
+            try:
+                self._ui.run_game_action_with_selection(menu_choice, acf)
+                return None
+            except Exception as e:
+                return str(e)
+
+        def _on_done(error_msg):
+            if error_msg:
+                self._emit_task_result(action, False, str(error_msg))
+            else:
+                self._emit_task_result(action, True, f"Action '{action}' completed")
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def install_lumacore(self, steam_path_str):
+        """Copy LumaCore DLLs into the Steam folder and clean up legacy injection files."""
+        def _do():
+            from pathlib import Path
+            from sff.lumacore_setup import install_lumacore
+            steam_path = Path(steam_path_str) if steam_path_str else self._ui.steam_path
+            def _progress(msg):
+                self.lc_progress.emit(msg)
+            success, message = install_lumacore(steam_path, _progress)
+            return success, message
+
+        def _on_done(result):
+            success, message = result if isinstance(result, tuple) else (False, str(result))
+            self._emit_task_result("auto_lc_setup", success, message)
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(result=str)
+    def lumacore_check_update(self):
+        """Return JSON {installed, latest, update_available, source} for the
+        Settings / Home update banner. Honours the 6-hour cooldown so the
+        first call after launch hits GitHub and subsequent calls reuse the
+        cached answer.
+        """
+        try:
+            from sff.lumacore_setup import check_for_lumacore_update
+            data = check_for_lumacore_update(self._steam_path)
+            return json.dumps(data)
+        except Exception as exc:
+            logger.warning("lumacore_check_update failed: %s", exc)
+            return json.dumps({
+                "installed": "",
+                "latest": "",
+                "update_available": False,
+                "source": "error",
+                "error": str(exc),
+            })
+
+    @pyqtSlot()
+    def lumacore_deactivate(self):
+        """Close Steam, remove LumaCore + dwmapi + lcoverlay DLLs, clear the
+        installed-version cache. Emits lc_progress for each step and
+        task_finished{auto_lc_deactivate} when done.
+        """
+        def _do():
+            from sff.lumacore_setup import deactivate_lumacore
+            def _progress(msg):
+                self.lc_progress.emit(msg)
+            success, message = deactivate_lumacore(self._steam_path, _progress)
+            return success, message
+
+        def _on_done(result):
+            success, message = result if isinstance(result, tuple) else (False, str(result))
+            self._emit_task_result("auto_lc_deactivate", success, message)
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def toggle_online_fix(self, app_id):
+        """Toggle the LC Online Fix launch option for app_id in localconfig.vdf.
+
+        Steam is automatically closed first when running, otherwise it would
+        clobber the localconfig.vdf write on next shutdown.
+        """
+        def _do():
+            from sff.launch_options import toggle_online_fix
+            from sff.processes import SteamProcess, is_proc_running
+            import time
+
+            if sys.platform == "win32" and is_proc_running("steam.exe"):
+                print("Closing Steam before toggling LC Online Fix...", flush=True)
+                steam_proc = SteamProcess(self._steam_path) if self._steam_path else None
+                if steam_proc:
+                    steam_proc.kill()
+                    waited = 0.0
+                    while is_proc_running("steam.exe") and waited < 10.0:
+                        time.sleep(0.5)
+                        waited += 0.5
+                    if is_proc_running("steam.exe"):
+                        return False, "Steam did not close in time. Close it manually and try again."
+                    print("Steam closed.", flush=True)
+
+            success, message = toggle_online_fix(self._ui.steam_path, app_id)
+            return success, message
+
+        def _on_done(result):
+            success, message = result if isinstance(result, tuple) else (False, str(result))
+            self._emit_task_result("lc_online_fix", success, message)
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str, result=str)
+    def get_launch_option_status(self, app_id):
+        """Return a human-readable string describing the current LC Online Fix state for app_id."""
+        try:
+            from sff.launch_options import online_fix_enabled
+            enabled = online_fix_enabled(self._ui.steam_path, app_id)
+            return "LC Online Fix: enabled" if enabled else "LC Online Fix: disabled"
+        except Exception as exc:
+            return f"Error: {exc}"
+
+    # ── SYNC slots — fast, no I/O ────────────────────────────────
+
+    @pyqtSlot(result=str)
+    def get_applist_games(self):
+        """Returns JSON list of {app_id, name} for installed Steam games with saved .lua files."""
+        try:
+            from pathlib import Path as _Path
+            saved_lua = _Path().cwd() / "saved_lua"
+            saved_ids = {p.stem for p in saved_lua.glob("*.lua")} if saved_lua.exists() else set()
+            installed = json.loads(self.get_installed_games())
+            games = [
+                {"app_id": str(g["app_id"]), "name": g["name"]}
+                for g in installed
+                if str(g["app_id"]) in saved_ids
+            ]
+            games.sort(key=lambda x: x["name"].lower())
+            return json.dumps(games)
+        except Exception as e:
+            logger.warning("get_applist_games failed: %s", e)
+            return json.dumps([])
+
+    @pyqtSlot(result=str)
+    def get_platform(self):
+        """Returns 'win32' or 'linux'."""
+        return sys.platform
+
+    @pyqtSlot(result=str)
+    def get_app_version(self):
+        """Returns the current SteaMidra version string."""
+        from sff.strings import VERSION
+        return VERSION
+
+    @pyqtSlot(str, result=str)
+    def get_disk_usage(self, path):
+        """Return disk usage JSON {total, used, free} for the given path."""
+        import shutil
+        import json as _json
+        try:
+            usage = shutil.disk_usage(path)
+            return _json.dumps({"total": usage.total, "used": usage.used, "free": usage.free})
+        except Exception:
+            return _json.dumps({"error": True})
+
+    @pyqtSlot(str)
+    def connect_store(self, api_key):
+        """Validates and stores Hubcap API key."""
+        from sff.store_browser import StoreApiClient
+        self._api_key = api_key
+        self._store_client = StoreApiClient(api_key)
+        # Save to settings
+        from sff.storage.settings import set_setting
+        from sff.structs import Settings
+        set_setting(Settings.HUBCAP_KEY, api_key)
+        self.task_finished.emit(json.dumps({"task": "api_key_connected"}))
+
+    @pyqtSlot()
+    def test_ryuu_key(self):
+        """Probe the Ryuu test/refresh endpoint with appid=440 to verify the saved key.
+
+        Emits ``task_finished`` with task=``test_ryuu_key`` and a payload
+        shaped like ``{ok: True}``, ``{ok: False, reason: 'appid not in db'}``,
+        or ``{ok: False, status: <code>, body: <truncated_body>}``. When no
+        key is configured we return ``{ok: False, reason: 'no_api_key'}``
+        without firing any HTTP request — never send an empty ``auth_code``.
+        """
+        from sff.storage.settings import get_setting
+        from sff.structs import Settings
+
+        key = (get_setting(Settings.RYUU_KEY) or "").strip()
+        if not key:
+            self._emit_task_result(
+                "test_ryuu_key", False, "", ok=False, reason="no_api_key"
+            )
+            return
+
+        def _do():
+            import httpx as _httpx
+            url = (
+                "https://generator.ryuu.lol/resellerrequestupdate"
+                f"?appid=440&auth_code={key}"
+            )
+            try:
+                resp = _httpx.get(url, timeout=30, follow_redirects=True)
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+            if resp.status_code == 200:
+                return {"ok": True}
+            if resp.status_code == 400:
+                return {"ok": False, "reason": "appid not in db"}
+            return {
+                "ok": False,
+                "status": resp.status_code,
+                "body": (resp.text or "")[:4096],
+            }
+
+        def _on_done(result):
+            result = result or {"ok": False, "error": "unknown"}
+            self._emit_task_result(
+                "test_ryuu_key",
+                bool(result.get("ok")),
+                "",
+                **{k: v for k, v in result.items() if k != "ok"},
+                ok=bool(result.get("ok")),
+            )
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(result=str)
+    def get_stored_api_key(self):
+        """Returns saved API key from settings (may be empty)."""
+        from sff.storage.settings import get_setting
+        from sff.structs import Settings
+        key = get_setting(Settings.HUBCAP_KEY)
+        if key:
+            self._api_key = key
+        return key or ""
+
+    @pyqtSlot(str)
+    def open_url(self, url):
+        """Open a URL in the system default browser."""
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl(url))
+
+    @pyqtSlot(str, str)
+    def set_setting(self, key, value):
+        """Set a setting by key name, then apply it live (same as classic UI)."""
+        from sff.storage.settings import set_setting as _set
+        from sff.structs import Settings
+        for s in Settings:
+            if s.key_name == key or s.name.lower() == key.lower():
+                # Convert string "True"/"False" to real bool for bool-typed settings
+                if s.type == bool:
+                    value = value in ('True', 'true', '1')
+                _set(s, value)
+                # A17: flipping store_show_software invalidates the Steam
+                # applist cache so the next Store browse rebuilds the
+                # list with the new filter. Drop the in-memory cache and
+                # nuke the on-disk all_games.txt mirror in lockstep.
+                if s.key_name == "store_show_software":
+                    try:
+                        global _STEAM_APPLIST_CACHE, _STEAM_APPLIST_CACHE_TIME
+                        _STEAM_APPLIST_CACHE = None
+                        _STEAM_APPLIST_CACHE_TIME = 0.0
+                        from sff.utils import root_folder
+                        _all_games = root_folder(outside_internal=True) / "all_games.txt"
+                        if _all_games.exists():
+                            _all_games.unlink()
+                    except Exception as _e:
+                        logger.debug("store_show_software cache flush failed: %s", _e)
+                # Apply live so changes take effect immediately
+                parent = self.parent()
+                if parent and hasattr(parent, '_apply_setting_live'):
+                    try:
+                        parent._apply_setting_live(s)
+                    except Exception as e:
+                        logger.warning("_apply_setting_live(%s) failed: %s", key, e)
+                return
+
+    @pyqtSlot(str, result=str)
+    def get_setting(self, key):
+        """Get a setting by key name."""
+        from sff.storage.settings import get_setting as _get
+        from sff.structs import Settings
+        for s in Settings:
+            if s.key_name == key or s.name.lower() == key.lower():
+                val = _get(s)
+                return str(val) if val is not None else ""
+        return ""
+
+    @pyqtSlot(str, result=str)
+    def get_webui_translations(self, lang):
+        """Return the webui translation JSON for the given language."""
+        from sff.utils import root_folder
+        from pathlib import Path as _Path
+        locales_dir = root_folder() / "sff" / "locales"
+        if lang in ("Auto", "", None):
+            lang = "en"
+        path = locales_dir / f"webui_{lang}.json"
+        if not path.exists():
+            path = locales_dir / "webui_en.json"
+        if not path.exists():
+            return "{}"
+        try:
+            return path.read_text(encoding="utf-8")
+        except Exception:
+            return "{}"
+
+    @pyqtSlot(result=str)
+    def get_steam_libraries(self):
+        """Returns JSON array of Steam library paths."""
+        from sff.storage.vdf import get_steam_libs
+        if not self._steam_path:
+            return "[]"
+        try:
+            libs = get_steam_libs(self._steam_path)
+            return json.dumps([str(p) for p in libs])
+        except Exception:
+            return "[]"
+
+    @pyqtSlot(str)
+    def set_active_library(self, path):
+        """Sets the library path for the next download."""
+        self._active_library = path
+
+    @pyqtSlot(result=str)
+    def open_file_dialog(self):
+        """Opens native QFileDialog, returns selected path."""
+        parent = self.parent()
+        path = QFileDialog.getExistingDirectory(parent, "Select Folder")
+        return path or ""
+
+    @pyqtSlot(result=str)
+    def open_archive_dialog(self):
+        """Opens a file picker for ZIP/RAR/7z archives. Returns selected file path."""
+        path, _ = QFileDialog.getOpenFileName(
+            self.parent(),
+            "Select Archive",
+            "",
+            "Archives (*.zip *.rar *.7z);;All Files (*)",
+        )
+        return path or ""
+
+    @pyqtSlot(result=str)
+    def open_exe_file_dialog(self):
+        """Opens a file picker for executables. Returns selected file path."""
+        path, _ = QFileDialog.getOpenFileName(
+            self.parent(),
+            "Select Executable",
+            "",
+            "Executables (*.exe);;All Files (*)",
+        )
+        return path or ""
+
+    @pyqtSlot(result=str)
+    def browse_image_file(self):
+        """Opens a native file picker filtered to PNG/JPG/JPEG images. Returns selected path or ''."""
+        from PyQt6.QtWidgets import QFileDialog as _QFD
+        path, _ = _QFD.getOpenFileName(
+            self.parent(),
+            "Select Avatar Image",
+            "",
+            "Image Files (*.png *.jpg *.jpeg)",
+        )
+        return path or ""
+
+    @pyqtSlot(result=str)
+    def open_lua_file_dialog(self):
+        """Opens a file picker for Lua files. Returns selected file path."""
+        path, _ = QFileDialog.getOpenFileName(
+            self.parent(),
+            "Select Lua File",
+            "",
+            "Lua Files (*.lua *.zip);;All Files (*)",
+        )
+        return path or ""
+
+    @pyqtSlot(result=str)
+    def open_manifest_folder_dialog(self):
+        """Opens a folder picker for selecting a directory containing .manifest files."""
+        path = QFileDialog.getExistingDirectory(
+            self.parent(),
+            "Select Manifest Folder",
+            "",
+        )
+        return path or ""
+
+    # ── A12 Bulk Import bridge slots ─────────────────────────────
+    #
+    # Folder Scan, Drag-and-Drop, and Batch Queue all funnel into the
+    # same singleton BulkImportQueue so per-file dedupe works across the
+    # three surfaces. Single-file imports never touch this code path.
+
+    def _get_bulk_import_queue(self):
+        """Return a singleton BulkImportQueue, creating it on first use."""
+        from sff.gui.bulk_import import BulkImportQueue
+
+        existing = getattr(self, "_bulk_import_queue", None)
+        if existing is not None:
+            return existing
+        queue = BulkImportQueue(
+            ui=self._ui,
+            steam_path=self._steam_path,
+            active_library=self._active_library,
+            progress_cb=self._emit_bulk_progress,
+        )
+        self._bulk_import_queue = queue
+        return queue
+
+    def _reset_bulk_import_queue(self):
+        self._bulk_import_queue = None
+
+    def _emit_bulk_progress(self, payload):
+        try:
+            self.download_progress.emit(json.dumps(payload))
+        except Exception as exc:
+            logger.debug("bulk download_progress emit failed: %s", exc)
+
+    @pyqtSlot()
+    def open_folder_scan(self):
+        """Open a native dir picker, walk recursively, validate `.lua`/
+        `.manifest` candidates, and enqueue the valid ones into the
+        singleton BulkImportQueue. Auto-starts the drain when
+        BULK_IMPORT_MODE is `process_immediately`.
+        """
+        parent = self.parent()
+        folder = QFileDialog.getExistingDirectory(parent, "Select Folder")
+        if not folder:
+            return
+
+        def _do():
+            from sff.gui.bulk_import import BulkImportQueue
+
+            queue = self._get_bulk_import_queue()
+            files = BulkImportQueue.collect_from_folder(Path(folder))
+            queue.enqueue_files(files)
+            self._maybe_drain_queue(queue)
+            return queue.summary()
+
+        def _on_done(summary):
+            self._emit_bulk_summary("folder_scan", summary)
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def enqueue_dropped_files(self, files_json):
+        """Accept a JSON list of file paths from the JS Drop Zone or
+        Quick Start drop, validate each against the existing single-file
+        parsers, dedupe, and enqueue the valid ones.
+        """
+        try:
+            paths = json.loads(files_json or "[]")
+        except Exception as exc:
+            logger.warning("enqueue_dropped_files: bad JSON: %s", exc)
+            return
+
+        def _do():
+            queue = self._get_bulk_import_queue()
+            queue.enqueue_files(Path(p) for p in paths if p)
+            self._maybe_drain_queue(queue)
+            return queue.summary()
+
+        def _on_done(summary):
+            self._emit_bulk_summary("drop", summary)
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot()
+    def run_bulk_import(self):
+        """Start the queue drain. Used by the `collect_then_confirm` mode
+        where files are queued first and the user clicks a Run button to
+        kick off processing.
+        """
+        def _do():
+            queue = self._get_bulk_import_queue()
+            return queue.drain()
+
+        def _on_done(summary):
+            self._emit_bulk_summary("run", summary)
+            self._reset_bulk_import_queue()
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot()
+    def cancel_bulk_import(self):
+        """Raise the cancel signal on the in-flight queue. The current
+        file finishes its pipeline cleanly; no new files are dequeued.
+        """
+        queue = getattr(self, "_bulk_import_queue", None)
+        if queue is not None:
+            queue.cancel()
+        self._emit_task_result("bulk_import", False, "Bulk import cancelled")
+
+    def _maybe_drain_queue(self, queue):
+        """Honor BULK_IMPORT_MODE: drain immediately when set to
+        `process_immediately` (the default), or wait for an explicit
+        `run_bulk_import` call when set to `collect_then_confirm`.
+        """
+        try:
+            from sff.storage.settings import get_setting
+            from sff.structs import Settings as _Settings
+
+            mode = get_setting(_Settings.BULK_IMPORT_MODE) or "process_immediately"
+        except Exception:
+            mode = "process_immediately"
+        if str(mode) == "process_immediately":
+            queue.drain()
+
+    def _emit_bulk_summary(self, source, summary):
+        if summary is None:
+            return
+        try:
+            payload = {
+                "task": "bulk_import",
+                "success": summary.failed == 0 and summary.skipped == 0,
+                "source": source,
+                "total": summary.total,
+                "succeeded": summary.succeeded,
+                "failed": summary.failed,
+                "skipped": summary.skipped,
+                "results": [
+                    {
+                        "path": str(r.path),
+                        "app_id": r.app_id or "",
+                        "ok": bool(r.ok),
+                        "skipped": bool(r.skipped),
+                        "reason": r.reason or "",
+                        "failing_step": r.failing_step or "",
+                    }
+                    for r in summary.results
+                ],
+            }
+            self.task_finished.emit(json.dumps(payload))
+        except Exception as exc:
+            logger.debug("bulk summary emit failed: %s", exc)
+
+    @pyqtSlot(result=str)
+    def get_recent_lua_files(self):
+        """Returns JSON array of recent Lua files [{name, path}, ...] from RecentFilesManager."""
+        try:
+            from sff.recent_files import get_recent_files_manager
+            mgr = get_recent_files_manager()
+            files = mgr.get_all()
+            return json.dumps([{"name": p.name, "path": str(p)} for p in files])
+        except Exception as e:
+            logger.warning("get_recent_lua_files failed: %s", e)
+            return "[]"
+
+    @pyqtSlot(str, str, str, str)
+    def download_game_ddmod(self, app_id, source, lua_path, manifest_folder=''):
+        """Download a game using DepotDownloaderMod.
+        source: 'hubcap' | 'oureveryday' | 'ryuu' | 'local'
+        lua_path: used when source == 'local'
+        Emits download_progress + task_finished signals."""
+        if not app_id or not app_id.strip().isdigit():
+            self._emit_task_result("download_ddmod", False, f"Invalid App ID: '{app_id}'")
+            return
+        def _do():
+            self.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Starting DDMod download", "progress": 0
+            }))
+            try:
+                from pathlib import Path as _Path
+                from sff.lua.endpoints import get_hubcap, get_oureverday, get_ryuu
+                from sff.lua.manager import parse_lua_contents
+                from sff.depot_downloader import run_download, filter_depots_by_os
+
+                steam_path = self._steam_path
+                dest = _Path(self._active_library) if self._active_library else steam_path
+                if dest is None:
+                    return (False, "No Steam library selected. Please select a download location.")
+
+                # Download the source lua into per-user saved_lua/, not
+                # <steam>/config/. The final copy step below moves the
+                # parsed lua into <steam>/config/stplug-in/. Writing to
+                # <steam>/config/ directly left a stray
+                # <steam>/config/<app_id>.lua that Remove from Library
+                # never cleaned up.
+                lua_dest = Path.cwd() / "saved_lua"
+                try:
+                    lua_dest.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    lua_dest = _Path(".")
+
+                self.download_progress.emit(json.dumps({
+                    "app_id": app_id, "status": "Fetching Lua file...", "progress": 5
+                }))
+
+                if source == "local":
+                    lua_file = _Path(lua_path) if lua_path else None
+                    if not lua_file or not lua_file.exists():
+                        return (False, f"Lua file not found: {lua_path}")
+                elif source == "hubcap":
+                    lua_file = get_hubcap(lua_dest, app_id, depotcache=(steam_path / "depotcache") if steam_path else None)
+                elif source == "oureveryday":
+                    lua_file = get_oureverday(lua_dest, app_id)
+                elif source == "ryuu":
+                    lua_file = get_ryuu(lua_dest, app_id, request_update=False, depotcache=(steam_path / "depotcache") if steam_path else None)
+                else:
+                    return (False, f"Unknown source: {source}")
+
+                if not lua_file or not lua_file.exists():
+                    return (False, f"Failed to obtain Lua file from source '{source}'")
+
+                self.download_progress.emit(json.dumps({
+                    "app_id": app_id, "status": "Parsing Lua...", "progress": 15
+                }))
+
+                # ZIP: extract lua text and seed depotcache with any embedded manifests
+                if lua_file.suffix.lower() == '.zip':
+                    from sff.zip import read_lua_from_zip
+                    _dc = (steam_path / "depotcache") if steam_path else None
+                    lua_text = read_lua_from_zip(lua_file, decode=True, depotcache=_dc)
+                    if not lua_text:
+                        return (False, "Could not find .lua file inside ZIP archive")
+                else:
+                    lua_text = lua_file.read_text(encoding="utf-8", errors="replace")
+                parsed = parse_lua_contents(lua_text, lua_file)
+                if not parsed or not parsed.depots:
+                    return (False, "Failed to parse Lua — no depot info found")
+
+                # ── Steam registration (LumaCore on Windows / SLSSteam on Linux) ──
+                # Without these the library card shows "Buy" because Steam never
+                # learns about the install. Mirror _run_windows_fastest on win32
+                # and process_from_store on linux. LumaCore is Windows-only so
+                # the stplug-in copy never runs on Linux (requirement 2.33).
+                if sys.platform == "win32":
+                    # Calls install_lua_to_steam, ConfigVDFWriter.add_decryption_keys_to_config,
+                    # set_stats_and_achievements, app_list_man.add_ids,
+                    # ACFWriter.write_acf(parsed), ACFWriter.patch_workshop_acf(parsed),
+                    # ensure_library_has_app(steam_path, dest, app_id).
+                    try:
+                        from sff.steam_tools_compat import install_lua_to_steam
+                        install_lua_to_steam(steam_path, app_id, lua_file)
+                    except Exception as _ile:
+                        logger.warning("install_lua_to_steam failed (non-fatal): %s", _ile)
+
+                    try:
+                        from sff.lua.writer import ConfigVDFWriter
+                        ConfigVDFWriter(steam_path).add_decryption_keys_to_config(parsed)
+                    except Exception as _kwe:
+                        logger.warning("add_decryption_keys_to_config failed (non-fatal): %s", _kwe)
+
+                    try:
+                        from sff.registry_access import set_stats_and_achievements
+                        set_stats_and_achievements(app_id)
+                    except Exception as _se:
+                        logger.warning("set_stats_and_achievements failed (non-fatal): %s", _se)
+
+                    try:
+                        if hasattr(self._ui, 'app_list_man') and self._ui.app_list_man:
+                            self._ui.app_list_man.add_ids(parsed)
+                    except Exception as _aie:
+                        logger.warning("app_list_man.add_ids failed (non-fatal): %s", _aie)
+
+                    try:
+                        from sff.lua.writer import ACFWriter
+                        _acf = ACFWriter(dest)
+                        _acf.write_acf(parsed)
+                        if hasattr(_acf, 'patch_workshop_acf'):
+                            _acf.patch_workshop_acf(parsed)
+                    except Exception as _we:
+                        logger.warning("ACFWriter.write_acf / patch_workshop_acf failed (non-fatal): %s", _we)
+
+                    try:
+                        from sff.storage.vdf import ensure_library_has_app
+                        ensure_library_has_app(steam_path, dest, app_id)
+                    except Exception as _le:
+                        logger.warning("ensure_library_has_app failed (non-fatal): %s", _le)
+
+                elif sys.platform == "linux":
+                    # SLSSteam consumes ~/.config/SLSsteam/config.yaml.
+                    # Calls sls_man.add_ids(parsed), ACFWriter.write_acf(parsed),
+                    # ACFWriter.patch_workshop_acf(parsed),
+                    # ensure_library_has_app(steam_path, dest, app_id).
+                    # No stplug-in drop on Linux (LumaCore is Windows-only).
+                    try:
+                        if hasattr(self._ui, 'sls_man') and self._ui.sls_man:
+                            self._ui.sls_man.add_ids(parsed)
+                    except Exception as _sle:
+                        logger.warning("sls_man.add_ids failed (non-fatal): %s", _sle)
+
+                    try:
+                        from sff.lua.writer import ACFWriter
+                        _acf = ACFWriter(dest)
+                        _acf.write_acf(parsed)
+                        if hasattr(_acf, 'patch_workshop_acf'):
+                            _acf.patch_workshop_acf(parsed)
+                    except Exception as _we:
+                        logger.warning("ACFWriter.write_acf / patch_workshop_acf failed (non-fatal): %s", _we)
+
+                    try:
+                        from sff.storage.vdf import ensure_library_has_app
+                        ensure_library_has_app(steam_path, dest, app_id)
+                    except Exception as _le:
+                        logger.warning("ensure_library_has_app failed (non-fatal): %s", _le)
+
+                # Confirm registration before the depot fetch fires.
+                self.download_progress.emit(json.dumps({
+                    "app_id": app_id, "status": "Registered with Steam", "progress": 22
+                }))
+
+                self.download_progress.emit(json.dumps({
+                    "app_id": app_id, "status": "Resolving manifests...", "progress": 25
+                }))
+
+                # Build game_data for run_download
+                depots_dict = {}
+                manifests_dict = {}
+                for d in parsed.depots:
+                    if d.decryption_key:
+                        depots_dict[str(d.depot_id)] = {"key": d.decryption_key}
+
+                _depot_ids_set = set(depots_dict.keys())
+
+                # Step 1: scan ./manifests/ staging for pre-extracted manifest files
+                _staging = _Path.cwd() / "manifests"
+                if _staging.exists():
+                    for _mf in _staging.glob("*.manifest"):
+                        _parts = _mf.stem.split("_", 1)
+                        if len(_parts) == 2 and _parts[0] in _depot_ids_set:
+                            if _parts[0] not in manifests_dict:
+                                manifests_dict[_parts[0]] = _parts[1]
+
+                # Step 2: scan user-provided manifest folder
+                if manifest_folder:
+                    import shutil as _shutil
+                    _mf_path = _Path(manifest_folder)
+                    if _mf_path.exists():
+                        _staging.mkdir(exist_ok=True)
+                        for _mf in _mf_path.glob("*.manifest"):
+                            _parts = _mf.stem.split("_", 1)
+                            if len(_parts) == 2 and _parts[0] in _depot_ids_set:
+                                manifests_dict[_parts[0]] = _parts[1]
+                                _shutil.copy2(_mf, _staging / _mf.name)
+
+                # Step 3: try Steam App Info for manifest IDs + game_name/installdir/buildid (non-fatal)
+                game_name = ""
+                installdir = ""
+                buildid = "0"
+                _provider = None
+                _app_info = None
+                if steam_path and depots_dict:
+                    try:
+                        from sff.steam_client import create_provider_for_current_thread
+                        from sff.manifest.downloader import ManifestDownloader
+                        _provider = create_provider_for_current_thread()
+                        _md = ManifestDownloader(provider=_provider, steam_path=steam_path)
+                        _manifest_map = _md.get_manifest_ids(parsed, auto=True)
+                        for _depot_id, _manifest_id in _manifest_map.items():
+                            if _manifest_id and str(_depot_id) not in manifests_dict:
+                                manifests_dict[str(_depot_id)] = str(_manifest_id)
+                        # Also pull game_name, installdir, buildid from App Info
+                        _eff_id = int(parsed.app_id or app_id)
+                        _app_info = _provider.get_single_app_info(_eff_id)
+                        if _app_info:
+                            game_name = _app_info.get("common", {}).get("name", "")
+                            installdir = _app_info.get("config", {}).get("installdir", "")
+                            try:
+                                buildid = str(
+                                    _app_info.get("depots", {})
+                                    .get("branches", {})
+                                    .get("public", {})
+                                    .get("buildid", "0")
+                                )
+                            except Exception:
+                                buildid = "0"
+                    except Exception as _me:
+                        logger.debug("Manifest auto-resolve (Steam provider) failed: %s", _me)
+
+                # Fallback: parse game name from first short Lua comment line
+                if not game_name:
+                    import re as _re2
+                    for _cl in lua_text.splitlines():
+                        _cl = _cl.strip()
+                        if _cl.startswith("--"):
+                            _cand = _re2.sub(r'^--\s*', '', _cl).strip()
+                            if _cand and ':' not in _cand and "'" not in _cand and 'http' not in _cand and 2 < len(_cand) < 60 and not _cand[0].isdigit():
+                                game_name = _cand
+                                break
+                if not installdir:
+                    installdir = game_name or f"App_{parsed.app_id or app_id}"
+
+                # Pin info: tell the user if the Lua has setManifestid pins
+                if source in ("hubcap", "ryuu"):
+                    _pin_map = getattr(parsed, "manifest_overrides", {}) or {}
+                    if _pin_map:
+                        from sff.storage.settings import get_setting as _gs
+                        from sff.structs import Settings as _S
+                        if not _gs(_S.MANIFEST_PINS_ASKED):
+                            print(
+                                f"[!] {len(_pin_map)} pinned manifest version(s) found in this Lua."
+                                " To use them, enable 'Use Pinned Manifest Versions from Lua' in Settings."
+                            )
+
+                # Step 4: gmrc -> ManifestHub -> GitHub for known manifest IDs
+                if manifests_dict and steam_path:
+                    try:
+                        import shutil as _step4_shutil
+                        from sff.manifest.downloader import ManifestDownloader
+                        _md2 = ManifestDownloader(provider=_provider, steam_path=steam_path, use_hubcap=False)
+                        _staging.mkdir(exist_ok=True)
+                        _dc2 = steam_path / "depotcache"
+                        _dc2.mkdir(parents=True, exist_ok=True)
+                        _eff_app_id = str(parsed.app_id or app_id)
+                        _cdn2 = None
+                        if _provider:
+                            try:
+                                _cdn2 = _md2.get_cdn_client()
+                            except Exception as _ce:
+                                logger.debug("CDN client init failed (non-fatal): %s", _ce)
+                        for _depot_id, _manifest_id in list(manifests_dict.items()):
+                            _dc_mf = _dc2 / f"{_depot_id}_{_manifest_id}.manifest"
+                            _dest_mf = _staging / f"{_depot_id}_{_manifest_id}.manifest"
+                            if _dc_mf.exists():
+                                if not _dest_mf.exists():
+                                    _step4_shutil.copy2(_dc_mf, _dest_mf)
+                                continue
+                            if _dest_mf.exists():
+                                _dc2.mkdir(parents=True, exist_ok=True)
+                                _step4_shutil.copy2(_dest_mf, _dc_mf)
+                                continue
+                            print(f"Fetching manifest for depot {_depot_id} ({_manifest_id})...")
+                            if _cdn2:
+                                _data = _md2.download_single_manifest(_depot_id, _manifest_id, cdn_client=_cdn2, app_id=_eff_app_id)
+                            else:
+                                _data = _md2._try_manifesthub_combined(_depot_id, _manifest_id, _eff_app_id)
+                            if _data:
+                                _written = _md2._write_manifest_to_depotcache(_data, _depot_id, _manifest_id)
+                                if _written and not _dest_mf.exists():
+                                    _step4_shutil.copy2(_written, _dest_mf)
+                            else:
+                                logger.debug("All sources failed for manifest depot %s", _depot_id)
+                    except Exception as _fe:
+                        logger.debug("Manifest fetch failed (non-fatal): %s", _fe)
+
+                game_data = {
+                    "appid": parsed.app_id or app_id,
+                    "game_name": game_name,
+                    "depots": depots_dict,
+                    "manifests": manifests_dict,
+                    "installdir": installdir,
+                    "buildid": buildid,
+                }
+
+                selected_depots = list(depots_dict.keys())
+                if not selected_depots:
+                    return (False, "No depots with decryption keys found in Lua")
+
+                self.download_progress.emit(json.dumps({
+                    "app_id": app_id, "status": "Running DepotDownloaderMod...", "progress": 35
+                }))
+
+                _last_emit = [0.0]
+                _PASS_PREFIXES = (
+                    "---", "[OK]", "[FAIL]",
+                    "Depot ", "Total ", "Error", "Skipping",
+                    "WARNING", "Network error", "[Pre-allocation", "[!",
+                )
+
+                def _print_fn(msg):
+                    import re as _re, time as _t
+                    clean = _re.sub(r'\x1b\[[0-9;]*m', '', msg).strip()
+                    if not clean:
+                        return
+                    now = _t.monotonic()
+                    if not clean.startswith(_PASS_PREFIXES) and now - _last_emit[0] < 0.2:
+                        return
+                    _last_emit[0] = now
+                    print(clean)
+
+                selected_depots = filter_depots_by_os(selected_depots, _app_info, print_fn=_print_fn)
+                for _sk in [k for k in list(depots_dict.keys()) if k not in selected_depots]:
+                    del depots_dict[_sk]
+
+                ok, _size = run_download(game_data, selected_depots, dest, steam_path, print_fn=_print_fn)
+
+                # Write ACF so Steam recognises the install
+                try:
+                    from sff.linux.acf_writer import create_acf
+                    create_acf(
+                        game_data=game_data,
+                        dest_path=dest,
+                        selected_depots=selected_depots,
+                        size_on_disk=_size,
+                        print_fn=_print_fn,
+                    )
+                except Exception as _ae:
+                    logger.warning("ACF write failed (non-fatal): %s", _ae)
+
+                # Add to recent files
+                try:
+                    from sff.recent_files import get_recent_files_manager
+                    get_recent_files_manager().add(lua_file)
+                except Exception:
+                    pass
+
+                return (ok, "Download complete" if ok else "DepotDownloaderMod reported failure")
+
+            except Exception as e:
+                logger.exception("download_game_ddmod failed: %s", e)
+                return (False, str(e))
+
+        def _on_done(result):
+            if isinstance(result, tuple):
+                ok, msg = result
+            else:
+                ok, msg = False, "Download failed"
+            self._emit_task_result("download_ddmod", ok, msg, app_id=app_id)
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(result=str)
+    def get_games_file_info(self):
+        """Return all_games.txt status as JSON {exists, mtime_str, count}."""
+        from sff.utils import root_folder
+        from datetime import datetime
+        all_games_file = root_folder(outside_internal=True) / "all_games.txt"
+        if not all_games_file.exists():
+            return json.dumps({"exists": False, "mtime_str": "", "count": 0})
+        try:
+            mtime = all_games_file.stat().st_mtime
+            mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %I:%M %p")
+            count = sum(1 for _ in all_games_file.open(encoding="utf-8", errors="ignore"))
+            return json.dumps({"exists": True, "mtime_str": mtime_str, "count": count})
+        except Exception as e:
+            logger.debug("get_games_file_info failed: %s", e)
+            return json.dumps({"exists": True, "mtime_str": "", "count": 0})
+
+    @pyqtSlot()
+    def update_games_file(self):
+        """Download full Steam app list and write all_games.txt. Emits task_finished('update_games_file')."""
+        def _do():
+            try:
+                from sff.utils import root_folder
+                from sff.strings import STEAM_WEB_API_KEY as _DEFAULT_KEY
+                from sff.storage.settings import get_setting
+                from sff.structs import Settings
+                import urllib.request as _req
+                import json as _json
+                all_games_file = root_folder(outside_internal=True) / "all_games.txt"
+                api_key = get_setting(Settings.STEAM_WEB_API_KEY)
+                if not isinstance(api_key, str) or not api_key.strip():
+                    api_key = _DEFAULT_KEY
+                params = {"key": api_key, "max_results": "50000", "include_games": "1",
+                          "include_dlc": "0", "include_software": _should_show_software(),
+                          "include_videos": "0", "include_hardware": "0"}
+                games = []
+                base_url = "https://api.steampowered.com/IStoreService/GetAppList/v1/"
+                page = 0
+                while True:
+                    page += 1
+                    print(f"Downloading game list page {page} ({len(games)} games so far)...")
+                    query_str = "&".join(f"{k}={v}" for k, v in params.items())
+                    url = f"{base_url}?{query_str}"
+                    req = _req.Request(url, headers={"User-Agent": "SteaMidra/6.1.0"})
+                    with _req.urlopen(req, timeout=30, context=_get_ssl_ctx()) as resp:
+                        data = _json.loads(resp.read())
+                    apps = data.get("response", {}).get("apps", [])
+                    games.extend(apps)
+                    more = data.get("response", {}).get("have_more_results")
+                    if not more:
+                        break
+                    last_id = data.get("response", {}).get("last_appid")
+                    if last_id:
+                        params["last_appid"] = str(last_id)
+                    else:
+                        break
+                print(f"Writing {len(games)} games to all_games.txt...")
+                games_str = [
+                    x.get("name", "UNKNOWN GAME") + f" [ID={x.get('appid')}]"
+                    for x in games
+                    if x.get("appid") and x.get("name", "").strip()
+                ]
+                all_games_file.parent.mkdir(parents=True, exist_ok=True)
+                with all_games_file.open("w", encoding="utf-8") as f:
+                    f.write("\n".join(games_str))
+                print(f"Game list updated: {len(games_str)} games written.")
+                return len(games_str)
+            except Exception as e:
+                logger.exception("update_games_file failed: %s", e)
+                return (False, str(e))
+
+        def _on_done(result):
+            if isinstance(result, int):
+                self._emit_task_result("update_games_file", True, f"Game list updated: {result} games")
+            elif isinstance(result, tuple) and not result[0]:
+                self._emit_task_result("update_games_file", False, f"Failed: {result[1]}")
+            else:
+                self._emit_task_result("update_games_file", False, "Failed to update game list")
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str, result=str)
+    def search_games_file(self, query):
+        """Search all_games.txt by name. Returns JSON [{name, appid}, ...] max 200 results.
+
+        Falls back to the Hubcap library when the local catalog returns
+        zero hits AND a Hubcap API key is configured. The Hubcap library
+        carries delisted titles (San Andreas, LEGO 2K Drive) that the
+        Steam IStoreService applist no longer surfaces; users who own
+        those titles can still install them, so the fallback makes them
+        addable from the home page filter.
+        """
+        import re as _re
+        from sff.utils import root_folder
+        all_games_file = root_folder(outside_internal=True) / "all_games.txt"
+        if not all_games_file.exists():
+            self.update_games_file()
+            return json.dumps([{"name": "Game list not found — downloading now. Please search again in a moment.", "appid": "0"}])
+        try:
+            # Match on the normalized form so trademark marks (™, ®),
+            # accents, and stray punctuation in the catalog name don't
+            # block a typed query like "lego batman".
+            q_norm = _normalize_for_search(query)
+            results = []
+            with all_games_file.open(encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    match = _re.search(r"\[ID=(\d+)\]$", line)
+                    if not match:
+                        continue
+                    name = line[:match.start()].strip()
+                    appid = match.group(1)
+                    if _matches_normalized(q_norm, _normalize_for_search(name)):
+                        results.append({"name": name, "appid": appid})
+                    if len(results) >= 200:
+                        break
+
+            # Hubcap fallback for delisted games. The Steam applist drops
+            # titles that have been removed from the store (San Andreas,
+            # LEGO 2K Drive, etc.) but the games are still installable for
+            # owners. Hubcap's library tracks them, so when the local file
+            # has nothing and a key is configured, ask Hubcap. The user
+            # query is alias-expanded ("gta" -> "grand theft auto", etc)
+            # before being sent so abbreviated typing still hits Hubcap's
+            # full game names. macOS-only / Linux-only entries are
+            # dropped via Steam's appdetails endpoint.
+            if not results and query and query.strip():
+                try:
+                    client = self._get_store_client()
+                    if client is not None:
+                        seen_ids = set()
+                        candidates = []
+                        for q in _alias_expanded_queries(query):
+                            try:
+                                hubcap_result = client.get_library(
+                                    limit=200, offset=0,
+                                    search=q, sort_by='updated',
+                                )
+                                for hg in (hubcap_result.games or []):
+                                    if not (hg.app_id and hg.name):
+                                        continue
+                                    if hg.app_id in seen_ids:
+                                        continue
+                                    seen_ids.add(hg.app_id)
+                                    candidates.append(hg)
+                            except Exception as e:
+                                logger.debug(
+                                    "Hubcap /library failed for %r: %s", q, e,
+                                )
+                            if len(candidates) >= 200:
+                                break
+                        plat_map = _fetch_steam_platforms(
+                            [hg.app_id for hg in candidates]
+                        )
+                        for hg in candidates:
+                            tags = plat_map.get(hg.app_id, {"_unknown"})
+                            if "_unknown" not in tags and "windows" not in tags:
+                                continue
+                            results.append({
+                                "name": str(hg.name),
+                                "appid": str(hg.app_id),
+                            })
+                            if len(results) >= 200:
+                                break
+                        if results:
+                            logger.info(
+                                "search_games_file: local catalog miss for %r; "
+                                "Hubcap fallback returned %d entries",
+                                query, len(results),
+                            )
+                except Exception as exc:
+                    logger.debug("Hubcap fallback in search_games_file failed: %s", exc)
+
+            return json.dumps(results)
+        except Exception as e:
+            logger.debug("search_games_file failed: %s", e)
+            return "[]"
+
+    @pyqtSlot(result=str)
+    def get_avatar_base64(self):
+        """Read the global GBE avatar from GSE Saves/settings/ and return a base64 data URL.
+        Returns empty string if no avatar is set."""
+        import base64
+        from sff.fix_game.config_generator import _get_gbe_saves_root
+        settings_dir = _get_gbe_saves_root() / "settings"
+        for ext in (".png", ".jpg", ".jpeg"):
+            avatar_file = settings_dir / f"account_avatar{ext}"
+            if avatar_file.exists():
+                try:
+                    data = avatar_file.read_bytes()
+                    b64 = base64.b64encode(data).decode("ascii")
+                    mime = "image/png" if ext == ".png" else "image/jpeg"
+                    return f"data:{mime};base64,{b64}"
+                except Exception:
+                    pass
+        return ""
+
+    @pyqtSlot(str, result=str)
+    def set_global_avatar(self, source_path):
+        """Copy source_path to GSE Saves/settings/account_avatar.{ext}.
+        Removes any existing avatar files with other extensions first.
+        Returns 'ok' on success or an error message."""
+        import shutil
+        from sff.fix_game.config_generator import _get_gbe_saves_root
+        src = Path(source_path)
+        if not src.exists():
+            return f"File not found: {source_path}"
+        ext = src.suffix.lower()
+        if ext not in (".png", ".jpg", ".jpeg"):
+            return f"Unsupported format '{ext}' — use .png, .jpg, or .jpeg"
+        settings_dir = _get_gbe_saves_root() / "settings"
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        for old_ext in (".png", ".jpg", ".jpeg"):
+            old = settings_dir / f"account_avatar{old_ext}"
+            if old.exists() and old_ext != ext:
+                try:
+                    old.unlink()
+                except Exception:
+                    pass
+        dst = settings_dir / f"account_avatar{ext}"
+        try:
+            shutil.copy2(src, dst)
+            return "ok"
+        except Exception as e:
+            return str(e)
+
+    @pyqtSlot(result=str)
+    def get_installed_games(self):
+        """Returns JSON array of installed games from ALL Steam library folders."""
+        try:
+            if not self._steam_path:
+                return "[]"
+            from sff.storage.vdf import get_steam_libs
+            import os
+            libs = list(get_steam_libs(self._steam_path))
+            # Also scan common Windows drive paths
+            if os.name == 'nt':
+                from string import ascii_uppercase
+                for drive_letter in ascii_uppercase:
+                    drive = Path(f"{drive_letter}:/")
+                    if not drive.exists():
+                        continue
+                    for subdir in ("SteamLibrary", "Steam", "Program Files (x86)/Steam",
+                                   "Program Files/Steam", "Games/Steam"):
+                        candidate = drive / subdir
+                        steamapps = candidate / "steamapps"
+                        if steamapps.exists() and candidate not in libs:
+                            libs.append(candidate)
+            games = []
+            seen = set()
+            for lib in libs:
+                steamapps = lib / "steamapps"
+                if not steamapps.exists():
+                    continue
+                for acf in steamapps.glob("appmanifest_*.acf"):
+                    try:
+                        text = acf.read_text(encoding="utf-8", errors="replace")
+                        app_id = ""
+                        name = ""
+                        installdir = ""
+                        for line in text.splitlines():
+                            line = line.strip()
+                            if '"appid"' in line:
+                                app_id = line.split('"')[-2] if '"' in line else ""
+                            elif '"name"' in line and not name:
+                                name = line.split('"')[-2] if '"' in line else ""
+                            elif '"installdir"' in line:
+                                installdir = line.split('"')[-2] if '"' in line else ""
+                        if not app_id or app_id in seen:
+                            continue
+                        # Skip if game folder doesn't exist
+                        if installdir:
+                            game_path = steamapps / "common" / installdir
+                            if not game_path.exists():
+                                continue
+                        seen.add(app_id)
+                        games.append({
+                            "app_id": int(app_id) if app_id.isdigit() else 0,
+                            "name": name or f"App {app_id}",
+                            "installed": True,
+                            "path": str(steamapps / "common" / installdir) if installdir else "",
+                        })
+                    except Exception:
+                        continue
+            games.sort(key=lambda g: g.get("name", "").lower())
+            return json.dumps(games)
+        except Exception:
+            return "[]"
+
+    @pyqtSlot(result=str)
+    def get_fix_game_list(self):
+        """Returns JSON list of games available for fixing."""
+        return self.get_installed_games()
+
+    @pyqtSlot(str, result=str)
+    def extract_vdf_keys(self, vdf_path):
+        """Extract depot keys from config.vdf."""
+        try:
+            from sff.storage.vdf import extract_depot_keys
+            keys = extract_depot_keys(vdf_path or None)
+            return json.dumps(keys or [])
+        except Exception:
+            return "[]"
+
+    @pyqtSlot()
+    def toggle_music(self):
+        """Toggle background music on/off."""
+        parent = self.parent()
+        if parent and hasattr(parent, '_toggle_mute'):
+            parent._toggle_mute()
+
+    @pyqtSlot(result=str)
+    def get_gse_identity(self):
+        """Returns JSON {name, steam_id} from the GSE Saves global config, or empty object."""
+        import configparser
+        import os
+        try:
+            appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+            user_ini = Path(appdata) / "GSE Saves" / "settings" / "configs.user.ini"
+            if not user_ini.exists():
+                return json.dumps({})
+            cfg = configparser.ConfigParser()
+            cfg.read(str(user_ini), encoding="utf-8")
+            return json.dumps({
+                "name": cfg.get("user::general", "account_name", fallback="").strip(),
+                "steam_id": cfg.get("user::general", "account_steamid", fallback="").strip(),
+            })
+        except Exception:
+            return json.dumps({})
+
+    @pyqtSlot(result=str)
+    def get_all_settings(self):
+        """Returns JSON object with all current settings for the Settings page."""
+        from sff.storage.settings import load_all_settings
+        from sff.structs import Settings
+        saved = load_all_settings()
+        result = {}
+        for s in Settings:
+            raw = saved.get(s.key_name)
+            if raw is None:
+                result[s.key_name] = ""
+            elif s.hidden:
+                result[s.key_name] = "[ENCRYPTED]" if raw else ""
+            elif s.value.type == dict:
+                result[s.key_name] = ""
+            else:
+                result[s.key_name] = str(raw)
+        return json.dumps(result)
+
+    @pyqtSlot(result=str)
+    def get_game_list(self):
+        """Returns JSON list of games from all Steam libraries (name + app_id + path).
+        Same scan as get_installed_games but always includes path."""
+        return self.get_installed_games()
+
+    @pyqtSlot(str)
+    def fetch_library_images(self, app_ids_json):
+        """Async: fetch canonical image URLs for library games via Steam API.
+        Emits task_finished with task='library_images' and images={appid: url}.
+        """
+        try:
+            app_ids = [int(x) for x in json.loads(app_ids_json or '[]') if x]
+        except Exception:
+            app_ids = []
+
+        def _do():
+            image_urls, _ = _fetch_steam_image_urls(app_ids)
+            return image_urls
+
+        def _on_done(result):
+            self.task_finished.emit(json.dumps({
+                "task": "library_images",
+                "success": True,
+                "images": {str(k): v for k, v in result.items()},
+            }))
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot()
+    def load_library(self):
+        """Async: scan installed games + fetch Steam API image URLs in one pass.
+        Emits task_finished with task='library_loaded' and games=[{...}].
+        Mirrors search_games so image_url is ready before card rendering.
+        """
+        def _do():
+            games = json.loads(self.get_installed_games())
+            if not games:
+                return []
+            app_ids = [g["app_id"] for g in games if g.get("app_id")]
+            image_urls, _ = _fetch_steam_image_urls(app_ids)
+            for g in games:
+                g["image_url"] = image_urls.get(g["app_id"])
+            return games
+
+        def _on_done(games):
+            self.task_finished.emit(json.dumps({
+                "task": "library_loaded",
+                "success": True,
+                "games": games or [],
+            }))
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str, str, str)
+    def delete_game(self, app_id, game_path, mode):
+        """Remove a game from the library and optionally delete its files.
+        mode='applist' removes the stplug-in Lua only.
+        mode='full' also deletes the ACF manifest and the game folder from disk.
+        """
+        def _do():
+            import shutil
+            app_id_int = int(app_id) if str(app_id).isdigit() else None
+            if app_id_int is None:
+                return (False, "Invalid App ID")
+
+            # Always remove the stplug-in Lua (both modes)
+            lua_removed = False
+            if self._steam_path:
+                try:
+                    from sff.steam_tools_compat import remove_lua_from_steam
+                    remove_lua_from_steam(self._steam_path, app_id_int)
+                    lua_removed = True
+                except Exception as e:
+                    logger.warning("delete_game: stplug-in Lua removal failed: %s", e)
+
+            if mode != "full":
+                return (True, "Removed from library" + (" (Lua unregistered)" if lua_removed else ""))
+
+            # --- Delete game files (mode='full') ---
+            files_deleted = False
+
+            # Delete the ACF manifest
+            if self._steam_path:
+                try:
+                    from sff.storage.vdf import get_steam_libs
+                    for lib in get_steam_libs(self._steam_path):
+                        acf = lib / "steamapps" / f"appmanifest_{app_id_int}.acf"
+                        if acf.exists():
+                            acf.unlink()
+                            files_deleted = True
+                            break
+                except Exception as e:
+                    logger.warning("delete_game: ACF removal failed: %s", e)
+
+            # Delete the game folder
+            if game_path:
+                p = Path(game_path)
+                if p.exists() and p.is_dir():
+                    try:
+                        shutil.rmtree(p, ignore_errors=False)
+                        files_deleted = True
+                    except Exception as e:
+                        logger.warning("delete_game: folder removal failed: %s", e)
+
+            if files_deleted:
+                return (True, "Game removed and deleted from disk")
+            return (True, "Removed from library (game folder not found or already gone)")
+
+        def _on_done(result):
+            if isinstance(result, tuple):
+                ok, msg = result
+                self._emit_task_result("delete_game", ok, msg, app_id=app_id)
+            else:
+                self._emit_task_result("delete_game", False, "Delete failed", app_id=app_id)
+
+        self._run_async(_do, on_done=_on_done)
+
+    # ── Google Drive auth ─────────────────────────────────────────
+
+    @pyqtSlot()
+    def gdrive_authorize(self):
+        """Start the Google Drive OAuth flow in a background thread."""
+        def _do():
+            from sff.google_drive import authorize, is_available
+            if not is_available():
+                return (False, "Google Drive is not available in this build.")
+            log_lines = []
+            ok = authorize(log_func=log_lines.append)
+            return (ok, "\n".join(log_lines))
+
+        def _on_done(result):
+            if isinstance(result, tuple):
+                ok, msg = result
+                if ok:
+                    from sff.google_drive import get_service, get_user_email
+                    svc = get_service()
+                    email = get_user_email(svc) if svc else ""
+                    self._emit_task_result("gdrive_authorize", True, msg, email=email)
+                else:
+                    self._emit_task_result("gdrive_authorize", False, msg)
+            else:
+                self._emit_task_result("gdrive_authorize", False, "Authorization failed")
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(result=str)
+    def gdrive_status(self):
+        """Return GDrive connection status as JSON (synchronous)."""
+        from sff.google_drive import is_available, is_authenticated, get_service, get_user_email
+        if not is_available():
+            return json.dumps({"available": False, "connected": False, "email": ""})
+        if not is_authenticated():
+            return json.dumps({"available": True, "connected": False, "email": ""})
+        svc = get_service()
+        email = get_user_email(svc) if svc else ""
+        return json.dumps({"available": True, "connected": bool(svc), "email": email})
+
+    # ── All Save Locations ────────────────────────────────────────
+
+    @pyqtSlot(result=str)
+    def get_custom_save_paths(self):
+        """Returns user-defined per-game save paths as JSON {"<app_id>": "<path>"}."""
+        try:
+            from sff.storage.settings import get_setting
+            from sff.structs import Settings
+            raw = get_setting(Settings.CLOUD_CUSTOM_SAVE_PATHS) or ""
+            if not raw:
+                return "{}"
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return json.dumps(parsed)
+            except Exception:
+                pass
+            return "{}"
+        except Exception as exc:
+            logger.warning("get_custom_save_paths failed: %s", exc)
+            return "{}"
+
+    @pyqtSlot(str, str, result=str)
+    def set_custom_save_path(self, app_id, path):
+        """Add / update a custom save path for an app id. Empty path removes."""
+        try:
+            from sff.storage.settings import get_setting, set_setting
+            from sff.structs import Settings
+            raw = get_setting(Settings.CLOUD_CUSTOM_SAVE_PATHS) or ""
+            mapping: dict = {}
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        mapping = parsed
+                except Exception:
+                    mapping = {}
+            app_id_str = str(app_id or "").strip()
+            if not app_id_str:
+                return json.dumps({"ok": False, "error": "missing app_id"})
+            new_path = (path or "").strip()
+            if not new_path:
+                mapping.pop(app_id_str, None)
+            else:
+                mapping[app_id_str] = new_path
+            set_setting(Settings.CLOUD_CUSTOM_SAVE_PATHS, json.dumps(mapping))
+            return json.dumps({"ok": True, "paths": mapping})
+        except Exception as exc:
+            logger.warning("set_custom_save_path failed: %s", exc)
+            return json.dumps({"ok": False, "error": str(exc)})
+
+    @pyqtSlot(str)
+    def scan_all_save_locations(self, config_json):
+        """Scan all emu save locations + Steam userdata. Emits task_finished with results list."""
+        def _do():
+            config = json.loads(config_json)
+            steam_path = config.get("steam_path", "").strip()
+            steam32_id = str(config.get("steam32_id", "")).strip()
+            from sff.cloud_saves import scan_all_save_locations as _scan
+            entries = _scan(
+                steam_path=steam_path or None,
+                steam32_id=steam32_id or None,
+            )
+            return entries
+
+        def _on_done(entries):
+            if entries is None:
+                entries = []
+            self._emit_task_result("scan_all_save_locations", True, f"Found {len(entries)} save folder(s)", entries=entries)
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def backup_all_save_locations(self, config_json):
+        """Backup all (or selected) save location entries using the configured provider."""
+        def _do():
+            config = json.loads(config_json)
+            entries = config.get("entries", [])
+            provider = config.get("provider", "local").lower()
+            dest_path = config.get("dest_path", "").strip()
+            rclone_exe = config.get("rclone_exe", "").strip()
+            remote_dest = config.get("remote_dest", "").strip()
+
+            if not entries:
+                return (False, "No entries to back up.", [])
+
+            from sff.cloud_saves import (
+                backup_save_location_local,
+                backup_save_location_rclone,
+                backup_save_location_gdrive,
+            )
+
+            log_lines = []
+            succeeded = 0
+            failed = 0
+            total = len(entries)
+            done = 0
+
+            def _emit_backup_progress(label, s, f):
+                self.download_progress.emit(json.dumps({
+                    "task": "backup_progress",
+                    "done": done, "total": total,
+                    "percent": int(done / total * 100) if total > 0 else 0,
+                    "current_label": label,
+                    "succeeded": s, "failed": f,
+                }))
+
+            _emit_backup_progress("Starting...", 0, 0)
+
+            if provider in ("local", "gdrive_sync"):
+                if not dest_path:
+                    return (False, "Destination folder not set.", [])
+                for entry in entries:
+                    result = backup_save_location_local(entry, dest_path, log_func=log_lines.append)
+                    if result:
+                        succeeded += 1
+                    else:
+                        failed += 1
+                    done += 1
+                    _emit_backup_progress(entry.get("label", ""), succeeded, failed)
+
+            elif provider == "rclone":
+                import threading
+                import subprocess
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                if not rclone_exe:
+                    bundled = WebBridge._get_bundled_tool_path("rclone")
+                    rclone_exe = str(bundled) if bundled else ""
+                if not rclone_exe or not remote_dest:
+                    return (False, "rclone exe or remote destination not set.", [])
+                lock = threading.Lock()
+                _rclone_exe = rclone_exe
+                _remote_dest = remote_dest
+
+                import sys as _sys
+                _no_window = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
+                unique_locations = list({e["location"] for e in entries})
+                for _loc in unique_locations:
+                    subprocess.run(
+                        [_rclone_exe, "mkdir",
+                         _remote_dest.rstrip("/") + f"/SteaMidraAllSaves/{_loc}"],
+                        capture_output=True, stdin=subprocess.DEVNULL, timeout=30, **_no_window,
+                    )
+
+                def _backup_one_rclone(entry):
+                    thread_log = []
+                    ok = backup_save_location_rclone(
+                        entry, _rclone_exe, _remote_dest, log_func=thread_log.append
+                    )
+                    with lock:
+                        log_lines.extend(thread_log)
+                    return ok
+
+                with ThreadPoolExecutor(max_workers=10) as ex:
+                    futures = {ex.submit(_backup_one_rclone, e): e for e in entries}
+                    for fut in as_completed(futures):
+                        e = futures[fut]
+                        try:
+                            ok = fut.result()
+                        except Exception as exc:
+                            ok = False
+                            with lock:
+                                log_lines.append(f"[FAIL] {e.get('label', '?')}: {exc}")
+                        with lock:
+                            if ok:
+                                succeeded += 1
+                            else:
+                                failed += 1
+                        done += 1
+                        _emit_backup_progress(e.get("label", ""), succeeded, failed)
+
+                subprocess.run(
+                    [_rclone_exe, "dedupe", "--dedupe-mode", "newest",
+                     _remote_dest.rstrip("/") + "/SteaMidraAllSaves"],
+                    capture_output=True, stdin=subprocess.DEVNULL, timeout=180, **_no_window,
+                )
+
+            elif provider == "gdrive_api":
+                import threading
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                from sff.google_drive import (
+                    get_service, get_backup_root, is_authenticated, get_or_create_folder,
+                )
+                if not is_authenticated():
+                    return (False, "Google Drive not connected. Use Connect button first.", [])
+                svc = get_service()
+                if not svc:
+                    return (False, "Could not connect to Google Drive.", [])
+                root_id = get_backup_root(svc)
+                if not root_id:
+                    return (False, "Could not create backup root on Google Drive.", [])
+                from pathlib import Path as _Path
+                valid_entries = []
+                for e in entries:
+                    if _Path(e["source_path"]).exists():
+                        valid_entries.append(e)
+                    else:
+                        failed += 1
+                        log_lines.append(
+                            f"[SKIP] Source not found: {e.get('label', '?')} ({e.get('source_path', '?')})"
+                        )
+
+                folder_cache = {}
+                for loc in {e["location"] for e in valid_entries}:
+                    loc_id = get_or_create_folder(svc, loc, root_id)
+                    if loc_id:
+                        folder_cache[(loc, root_id)] = loc_id
+                lock = threading.Lock()
+
+                def _backup_one_gdrive(entry):
+                    thread_log = []
+                    thread_svc = get_service()
+                    if not thread_svc:
+                        with lock:
+                            log_lines.append(
+                                f"[FAIL] {entry.get('label', '?')}: could not connect to Drive"
+                            )
+                        return False
+                    thread_cache = dict(folder_cache)
+                    ok = backup_save_location_gdrive(
+                        entry, thread_svc, root_id,
+                        log_func=thread_log.append,
+                        folder_cache=thread_cache,
+                    )
+                    with lock:
+                        log_lines.extend(thread_log)
+                    return ok
+
+                with ThreadPoolExecutor(max_workers=10) as ex:
+                    futures = {ex.submit(_backup_one_gdrive, e): e for e in valid_entries}
+                    for fut in as_completed(futures):
+                        e = futures[fut]
+                        try:
+                            ok = fut.result()
+                        except Exception as exc:
+                            ok = False
+                            with lock:
+                                log_lines.append(f"[FAIL] {e.get('label', '?')}: {exc}")
+                        with lock:
+                            if ok:
+                                succeeded += 1
+                            else:
+                                failed += 1
+                        done += 1
+                        _emit_backup_progress(e.get("label", ""), succeeded, failed)
+            else:
+                return (False, f"Provider '{provider}' not supported for all-saves backup.", [])
+
+            ok = failed == 0
+            msg = f"Backup complete: {succeeded} succeeded, {failed} failed"
+            return (ok, msg, log_lines, provider, dest_path, rclone_exe, remote_dest)
+
+        def _on_done(result):
+            if isinstance(result, tuple) and len(result) >= 3:
+                ok, msg, log_lines = result[0], result[1], result[2]
+                self._emit_task_result("backup_all_save_locations", ok, msg, log="\n".join(log_lines))
+                if ok and len(result) == 7:
+                    _prov, _dest, _rclone_exe, _remote_dest = result[3], result[4], result[5], result[6]
+                    import json as _json
+                    from sff.storage.settings import set_setting as _set
+                    from sff.structs import Settings as _S
+                    if _prov in ('local', 'gdrive_sync'):
+                        _cfg = {'provider': 'local', 'dest_path': _dest}
+                    elif _prov == 'rclone':
+                        _cfg = {'provider': 'rclone', 'rclone_exe': _rclone_exe, 'remote_dest': _remote_dest}
+                    elif _prov == 'gdrive_api':
+                        _cfg = {'provider': 'gdrive_api'}
+                    else:
+                        _cfg = None
+                    if _cfg:
+                        _set(_S.LAST_BACKUP_PROVIDER_CONFIG, _json.dumps(_cfg))
+            else:
+                self._emit_task_result("backup_all_save_locations", False, "Backup failed")
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def scan_backup_root(self, config_json):
+        """Scan a backup root (local or GDrive) and return location/game tree."""
+        def _do():
+            config = json.loads(config_json)
+            provider = config.get("provider", "local").lower()
+            backup_root = config.get("backup_root", "").strip()
+
+            if provider == "gdrive_api":
+                from sff.google_drive import get_service, list_backup_locations, is_authenticated
+                if not is_authenticated():
+                    return (False, "Google Drive not connected.", {})
+                svc = get_service()
+                if not svc:
+                    return (False, "Could not connect to Google Drive.", {})
+                locations = list_backup_locations(svc)
+                return (True, "", locations)
+            elif provider == "rclone":
+                rclone_exe = config.get("rclone_exe", "").strip()
+                remote_dest = config.get("remote_dest", "").strip()
+                if not rclone_exe:
+                    bundled = WebBridge._get_bundled_tool_path("rclone")
+                    rclone_exe = str(bundled) if bundled else ""
+                if not rclone_exe or not remote_dest:
+                    return (False, "rclone exe or remote destination not set.", {})
+                from sff.cloud_saves import scan_backup_root_rclone
+                locations = scan_backup_root_rclone(rclone_exe, remote_dest)
+                return (True, "", locations)
+            else:
+                if not backup_root:
+                    return (False, "Backup root folder not set.", {})
+                from sff.cloud_saves import scan_backup_root_local
+                locations = scan_backup_root_local(backup_root)
+                return (True, "", locations)
+
+        def _on_done(result):
+            if isinstance(result, tuple):
+                ok, msg, locations = result
+                self._emit_task_result("scan_backup_root", ok, msg, locations=locations)
+            else:
+                self._emit_task_result("scan_backup_root", False, "Scan failed", locations={})
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def restore_save_location(self, game_entry_json):
+        """Restore a single game's saves from backup to its original source_path."""
+        def _do():
+            game_entry = json.loads(game_entry_json)
+            log_lines = []
+            from sff.cloud_saves import restore_save_entry
+            ok = restore_save_entry(game_entry, log_func=log_lines.append)
+            msg = "Restore complete" if ok else "Restore failed — check log"
+            return (ok, msg, log_lines)
+
+        def _on_done(result):
+            if isinstance(result, tuple):
+                ok, msg, log_lines = result
+                self._emit_task_result("restore_save_location", ok, msg, log="\n".join(log_lines))
+            else:
+                self._emit_task_result("restore_save_location", False, "Restore failed")
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(result=str)
+    def dump_achievement_diagnostic(self):
+        """A16: surface the LumaCore achievement diagnostic ring buffer.
+
+        LumaCore writes <sff_data_dir>/lumacore_diag.txt on detach (and on
+        any future menu-triggered dump path). This slot reads the file if
+        present and returns its contents, capped to the last 16 KB so the
+        Web UI / dialog stays responsive. Returns an empty string when
+        the file does not exist yet (LumaCore writes on detach, so a
+        running session sees nothing until Steam restarts).
+        """
+        try:
+            from sff.utils import sff_data_dir
+            path = sff_data_dir() / "lumacore_diag.txt"
+            if not path.exists():
+                return ""
+            data = path.read_bytes()
+            # Trim from the start so the most recent dumps survive.
+            tail = data[-16384:] if len(data) > 16384 else data
+            return tail.decode("utf-8", errors="replace")
+        except Exception as exc:
+            logger.exception("dump_achievement_diagnostic failed: %s", exc)
+            return ""
+
+
+def _fetch_steam_platforms(app_ids):
+    """Look up Windows / macOS / Linux availability for each appid via
+    Steam's `appdetails?filters=platforms` endpoint.
+
+    Returns a dict mapping appid (int) -> set of platform tags. The
+    sentinel set `{"_unknown"}` means Steam returned no data (404,
+    delisted, parse failure); the caller treats that as "platform
+    unknown, keep the row" so we never hide classics Steam doesn't
+    surface anymore. Uses the in-process `_STEAM_PLATFORM_CACHE`
+    to avoid hammering the rate-limited endpoint on repeat searches.
+
+    `filters=platforms` returns the smallest payload that still
+    carries the windows/mac/linux booleans. The `basic` filter
+    drops the platforms block entirely on current Steam responses
+    (verified May 2026), so use the per-section filter instead.
+
+    Steam's appdetails API is rate-limited to ~200 req / 5 min
+    per IP. Loop one appid at a time, bail early after 3
+    consecutive failures so a transient throttle doesn't stall the
+    whole search worker.
+    """
+    if not app_ids:
+        return {}
+    import json as _json
+    import urllib.request as _req
+    import urllib.parse as _urlparse
+
+    out: dict[int, set] = {}
+    pending = []
+    for raw in app_ids:
+        try:
+            aid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if aid <= 0:
+            continue
+        cached = _STEAM_PLATFORM_CACHE.get(aid)
+        if cached is not None:
+            out[aid] = cached
+        else:
+            pending.append(aid)
+
+    consecutive_failures = 0
+    for aid in pending:
+        if consecutive_failures >= 3:
+            # Steam started rate-limiting or the network is dead.
+            # Mark the rest as unknown so we don't churn.
+            _STEAM_PLATFORM_CACHE[aid] = {"_unknown"}
+            out[aid] = {"_unknown"}
+            continue
+        try:
+            qs = _urlparse.urlencode({
+                "appids": str(aid),
+                "filters": "platforms",
+                "cc": "us",
+                "l": "en",
+            })
+            url = f"https://store.steampowered.com/api/appdetails?{qs}"
+            request = _req.Request(url, headers={"User-Agent": "Mozilla/5.0 SteaMidra"})
+            with _req.urlopen(request, timeout=4, context=_get_ssl_ctx()) as resp:
+                payload = _json.loads(resp.read())
+            entry = payload.get(str(aid)) if isinstance(payload, dict) else None
+            if not entry or not entry.get("success"):
+                _STEAM_PLATFORM_CACHE[aid] = {"_unknown"}
+                out[aid] = {"_unknown"}
+                consecutive_failures = 0
+                continue
+            data = entry.get("data") or {}
+            plats_raw = data.get("platforms") or {}
+            tags: set[str] = set()
+            if plats_raw.get("windows"):
+                tags.add("windows")
+            if plats_raw.get("mac"):
+                tags.add("macos")
+            if plats_raw.get("linux"):
+                tags.add("linux")
+            if not tags:
+                tags = {"_unknown"}
+            _STEAM_PLATFORM_CACHE[aid] = tags
+            out[aid] = tags
+            consecutive_failures = 0
+        except Exception as e:
+            logger.debug("Steam appdetails platform lookup failed for %s: %s", aid, e)
+            consecutive_failures += 1
+            _STEAM_PLATFORM_CACHE[aid] = {"_unknown"}
+            out[aid] = {"_unknown"}
+    return out
+
+
+def _fetch_steam_image_urls(app_ids):
+    """Batch-fetch canonical image URLs via Steam IStoreBrowseService/GetItems/v1.
+
+    Returns (images, types) where:
+      images: dict mapping appid (int) -> canonical URL string
+      types:  dict mapping appid (int) -> Steam app type int
+                (1=game, 2=dlc, 3=demo, 13=music, etc.)
+    On any network or parse error returns ({}, {}) so callers fall back gracefully.
+    """
+    if not app_ids:
+        return {}, {}
+    import json as _json
+    import urllib.request as _req
+    import urllib.parse as _urlparse
+    result = {}
+    types = {}
+    try:
+        payload = {
+            "ids": [{"appid": aid} for aid in app_ids],
+            "context": {"language": "english", "country_code": "US"},
+            "data_request": {"include_assets": True},
+        }
+        url = (
+            "https://api.steampowered.com/IStoreBrowseService/GetItems/v1?input_json="
+            + _urlparse.quote(_json.dumps(payload, separators=(",", ":")))
+        )
+        request = _req.Request(url, headers={"User-Agent": "SteaMidra/5.4.0"})
+        with _req.urlopen(request, timeout=5, context=_get_ssl_ctx()) as resp:
+            data = _json.loads(resp.read())
+        for item in data.get("response", {}).get("store_items", []):
+            appid = item.get("appid")
+            header = (item.get("assets") or {}).get("header", "")
+            if appid and header:
+                result[appid] = (
+                    f"https://shared.steamstatic.com/store_item_assets/steam/apps/{appid}/{header}"
+                )
+            if appid:
+                types[appid] = int(item.get("type") or 1)
+    except Exception as e:
+        logger.debug("Steam image batch fetch failed: %s", e)
+    return result, types
+
+
+_STEAM_APPLIST_CACHE = None
+_STEAM_APPLIST_CACHE_TIME = 0.0
+
+# In-process cache of Steam appdetails platform info for Hubcap-only entries.
+# Maps appid (int) -> set of lowercase platform tags ("windows", "macos",
+# "linux") or the sentinel set {"_unknown"} when Steam returned no data.
+# Steam's appdetails API rate-limits aggressively (200 req / 5 min), so we
+# cache responses for the lifetime of the process and never refetch.
+_STEAM_PLATFORM_CACHE: "dict[int, set[str]]" = {}
+
+_NONGAME_NAME_KW = ("soundtrack", "art book", "artbook", " ost", "music pack", "digital artbook")
+
+_NON_GAME_TYPES = frozenset({2, 4, 6, 7, 9, 10, 11, 12, 13, 14})
+
+
+def _normalize_for_search(text):
+    """Strip trademark marks, registered marks, accents, and odd
+    punctuation so a user typing 'lego batman' still matches a Steam
+    title rendered as 'LEGO® Batman™: Legacy of the Dark Knight'.
+    Returns a lowercased ASCII-only blob with whitespace collapsed.
+    Empty / non-string inputs return ''.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    import unicodedata as _ud
+    # Drop the trademark / registered / copyright / sound-recording
+    # marks before NFKD. NFKD turns ™ into the literal letters "TM"
+    # (compatibility decomposition), which then sticks to the previous
+    # word and breaks the match. Do the same for the ligatures Steam
+    # sometimes ships in catalog names.
+    for mark in ("\u2122", "\u00ae", "\u00a9", "\u2117", "\u2120"):
+        text = text.replace(mark, "")
+    decomposed = _ud.normalize("NFKD", text)
+    out_chars = []
+    for ch in decomposed:
+        cat = _ud.category(ch)
+        # Drop combining marks (Mn) and bare symbol categories so
+        # any leftover decorative glyphs the explicit pass missed
+        # don't end up as artifacts.
+        if cat.startswith("M") or cat.startswith("S"):
+            continue
+        # Treat any non-alphanumeric character as a single space so
+        # "lego: batman" and "lego batman" land on the same key.
+        if not ch.isalnum():
+            out_chars.append(" ")
+            continue
+        out_chars.append(ch.lower())
+    collapsed = "".join(out_chars).split()
+    return " ".join(collapsed)
+
+
+# Common franchise / publisher abbreviations users type instead of full names.
+# Expansions are alternatives — any of them OR the original token must hit.
+_ALIAS_EXPANSIONS = {
+    "gta":   ["grand theft auto"],
+    "rdr":   ["red dead redemption"],
+    "cod":   ["call of duty"],
+    "re":    ["resident evil"],
+    "tf2":   ["team fortress 2"],
+    "csgo":  ["counter strike global offensive", "counter-strike global offensive"],
+    "cs2":   ["counter strike 2", "counter-strike 2"],
+    "css":   ["counter strike source", "counter-strike source"],
+    "cs":    ["counter strike", "counter-strike"],
+    "kh":    ["kingdom hearts"],
+    "mh":    ["monster hunter"],
+    "ff":    ["final fantasy"],
+    "ds":    ["dark souls"],
+    "ds1":   ["dark souls"],
+    "ds2":   ["dark souls 2", "dark souls ii"],
+    "ds3":   ["dark souls 3", "dark souls iii"],
+    "er":    ["elden ring"],
+    "mk":    ["mortal kombat"],
+    "ac":    ["assassins creed", "assassin s creed"],
+    "btd":   ["bloons td"],
+    "tw":    ["total war"],
+    "wh":    ["warhammer"],
+    "sf":    ["street fighter"],
+    "tk":    ["tekken"],
+    "p5":    ["persona 5"],
+    "p4":    ["persona 4"],
+    "p3":    ["persona 3"],
+    "lol":   ["league of legends"],
+    "pubg":  ["playerunknown s battlegrounds", "playerunknowns battlegrounds"],
+    "wow":   ["world of warcraft"],
+    "hots":  ["heroes of the storm"],
+    "sc2":   ["starcraft 2", "starcraft ii"],
+    "d2":    ["diablo 2", "diablo ii", "destiny 2"],
+    "d3":    ["diablo 3", "diablo iii"],
+    "d4":    ["diablo 4", "diablo iv"],
+    "wukong": ["black myth wukong"],
+}
+
+
+def _matches_normalized(query_norm, name_norm):
+    """All whitespace-separated tokens of query_norm must appear in
+    name_norm. Empty query matches everything. The token check is
+    substring-based so partials like 'leg bat' still hit 'lego batman'
+    titles. Common abbreviations (GTA, RDR, CoD, RE, ...) are expanded:
+    if the typed token has a known alias, the name matches when EITHER
+    the token OR any alternative is present.
+    """
+    if not query_norm:
+        return True
+    tokens = query_norm.split()
+    # First try the literal multi-word query as an alias key
+    # (so "gta" works as a single phrase too, not just split).
+    full_aliases = _ALIAS_EXPANSIONS.get(query_norm)
+    if full_aliases and any(alt in name_norm for alt in full_aliases):
+        return True
+    for token in tokens:
+        if token in name_norm:
+            continue
+        # Token miss — see if it's an abbreviation we can expand
+        alts = _ALIAS_EXPANSIONS.get(token)
+        if alts and any(alt in name_norm for alt in alts):
+            continue
+        return False
+    return True
+
+
+def _alias_expanded_queries(query):
+    """Yield candidate query strings for remote search backends that
+    do plain substring matching on game names.
+
+    Hubcap's /library and /search endpoints don't know about
+    abbreviations, so a user typing "gta san andreas" never hits a
+    title stored as "Grand Theft Auto: San Andreas". For each known
+    alias token (gta, re, cod, rdr, kh, er, tf2, cs2, ...) we generate
+    one extra query string with that token swapped for each of its
+    expansions. Original query is yielded first; expansions follow.
+    Duplicates are de-duped. Returns a list, not a generator, so the
+    caller can `len()` and reorder freely.
+    """
+    if not query or not isinstance(query, str):
+        return []
+    raw = query.strip()
+    if not raw:
+        return []
+    out = [raw]
+    seen = {raw.lower()}
+    # The alias map is keyed on lowercase tokens. Split on whitespace
+    # only, preserving punctuation, so "GTA: San Andreas" still has
+    # "gta" as the first token after lowercase.
+    tokens = raw.split()
+    if not tokens:
+        return out
+    # Whole-query alias hit ("gta" alone, "wukong" alone, etc).
+    full_alts = _ALIAS_EXPANSIONS.get(raw.lower())
+    if full_alts:
+        for alt in full_alts:
+            if alt.lower() not in seen:
+                seen.add(alt.lower())
+                out.append(alt)
+    # Per-token swap. For each tokenN that has an alias, build a new
+    # query with tokenN replaced by each of its expansions, leaving
+    # the rest of the tokens untouched. Cap the explosion so a query
+    # with two aliased tokens doesn't fan out to N*M candidates.
+    for i, tok in enumerate(tokens):
+        alts = _ALIAS_EXPANSIONS.get(tok.lower())
+        if not alts:
+            continue
+        for alt in alts:
+            new_tokens = list(tokens)
+            new_tokens[i] = alt
+            cand = " ".join(new_tokens)
+            key = cand.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(cand)
+            if len(out) >= 6:
+                return out
+    return out
+
+
+def _load_steam_applist():
+    """Load the full Steam app list. Prefers local all_games.txt (any age); falls back to HTTP only when absent."""
+    global _STEAM_APPLIST_CACHE, _STEAM_APPLIST_CACHE_TIME
+    import re as _re
+    import time
+    import urllib.request as _req
+    import json as _json
+    now = time.time()
+    if _STEAM_APPLIST_CACHE is not None and (now - _STEAM_APPLIST_CACHE_TIME) < 86400:
+        return _STEAM_APPLIST_CACHE
+    # Prefer local all_games.txt — no age restriction; user refreshes via "Update List"
+    try:
+        from sff.utils import root_folder
+        all_games_file = root_folder(outside_internal=True) / "all_games.txt"
+        if all_games_file.exists() and all_games_file.stat().st_size > 0:
+            apps = []
+            _line_re = _re.compile(r'^(.*)\s+\[ID=(\d+)\]$')
+            with all_games_file.open(encoding="utf-8") as f:
+                for line in f:
+                    line = line.rstrip()
+                    m = _line_re.match(line)
+                    if m:
+                        apps.append({"name": m.group(1), "appid": int(m.group(2))})
+            if apps:
+                _STEAM_APPLIST_CACHE = apps
+                _STEAM_APPLIST_CACHE_TIME = now
+                logger.debug("Steam applist loaded from all_games.txt: %d apps", len(apps))
+                return apps
+    except Exception as e:
+        logger.debug("all_games.txt load failed (will try HTTP): %s", e)
+    # HTTP fallback — only reached when all_games.txt is absent or unreadable
+    # ISteamApps/GetAppList/v2 is confirmed dead (404 even with API key).
+    # Use IStoreService/GetAppList/v1 which supports server-side filtering.
+    try:
+        from sff.utils import root_folder
+        from sff.strings import STEAM_WEB_API_KEY as _DEFAULT_KEY
+        from sff.storage.settings import get_setting
+        from sff.structs import Settings
+        _all_games_file = root_folder(outside_internal=True) / "all_games.txt"
+        _api_key = get_setting(Settings.STEAM_WEB_API_KEY)
+        if not isinstance(_api_key, str) or not _api_key.strip():
+            _api_key = _DEFAULT_KEY
+        # include_games=1 always; A17 widens include_software to follow
+        # STORE_SHOW_SOFTWARE so software titles surface alongside games
+        # when the user has the Settings checkbox on (default).
+        _params = {"key": _api_key, "max_results": "50000",
+                   "include_games": "1", "include_dlc": "0",
+                   "include_software": _should_show_software(),
+                   "include_videos": "0", "include_hardware": "0"}
+        _games = []
+        _base = "https://api.steampowered.com/IStoreService/GetAppList/v1/"
+        while True:
+            _qs = "&".join(f"{k}={v}" for k, v in _params.items())
+            _req2 = _req.Request(f"{_base}?{_qs}", headers={"User-Agent": "SteaMidra/6.1.0"})
+            with _req.urlopen(_req2, timeout=30, context=_get_ssl_ctx()) as _resp:
+                _data = _json.loads(_resp.read())
+            _games.extend(_data.get("response", {}).get("apps", []))
+            if not _data.get("response", {}).get("have_more_results"):
+                break
+            _last = _data.get("response", {}).get("last_appid")
+            if _last:
+                _params["last_appid"] = str(_last)
+            else:
+                break
+        if _games:
+            _gs = [
+                x.get("name", "UNKNOWN GAME") + f" [ID={x.get('appid')}]"
+                for x in _games
+                if x.get("appid") and x.get("name", "").strip()
+            ]
+            _all_games_file.parent.mkdir(parents=True, exist_ok=True)
+            with _all_games_file.open("w", encoding="utf-8") as _f:
+                _f.write("\n".join(_gs))
+            logger.debug("Steam applist built via IStoreService/GetAppList/v1: %d games", len(_games))
+            _STEAM_APPLIST_CACHE = _games
+            _STEAM_APPLIST_CACHE_TIME = now
+            return _games
+        logger.warning("Steam applist IStoreService response was empty")
+    except Exception as e:
+        logger.warning("Steam applist HTTP fetch failed: %s", e)
+    return _STEAM_APPLIST_CACHE or []
+
+
+def _search_steam_catalog(query, offset, per_page):
+    """Fallback store search using full Steam public app list when Hubcap is unavailable."""
+    apps = _load_steam_applist()
+    if not apps:
+        return {"games": [], "total": 0, "fallback": True}
+    if query:
+        # Normalize query and each candidate name so trademark marks,
+        # accents, and punctuation don't block hits like
+        # "lego batman" → "LEGO® Batman™: Legacy of the Dark Knight".
+        q_norm = _normalize_for_search(query)
+        if q_norm:
+            apps = [
+                a for a in apps
+                if _matches_normalized(q_norm, _normalize_for_search(a.get("name", "")))
+            ]
+    total = len(apps)
+    page_apps = apps[offset: offset + per_page]
+    app_ids = [a["appid"] for a in page_apps if a.get("appid")]
+    image_urls, type_map = _fetch_steam_image_urls(app_ids)
+    games = []
+    for a in page_apps:
+        appid = a.get("appid", 0)
+        if type_map.get(appid) in _NON_GAME_TYPES:
+            continue
+        name_lc = a.get("name", f"App {appid}").lower()
+        if any(kw in name_lc for kw in _NONGAME_NAME_KW):
+            continue
+        games.append({
+            "app_id": appid,
+            "name": a.get("name", f"App {appid}"),
+            "last_updated": "",
+            "status": "",
+            "size": 0,
+            "image_url": image_urls.get(appid),
+        })
+    return {"games": games, "total": total, "fallback": True}
+
+
+def _format_size(size_bytes):
+    """Format bytes to human-readable string."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(size_bytes) < 1024:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} TB"

@@ -1,0 +1,889 @@
+# Changelog
+
+## 6.2.4
+
+### LumaCore — CD key bypass
+
+- Lua-tracked games no longer hit the legacy CD key prompt for keys Steam itself wants. Older titles like Wargame: Red Dragon used to refuse to launch because Steam asked for a key the user doesn't have. The new license layer answers `false` for `RequiresLegacyCDKey` on apps tracked by Lua, so the prompt never fires. The hook is byte-pattern only against `steamclient64.dll` so it never lands on the wrong target
+- DLC ownership / install / cloud checks deliberately stay out of the new hook. Steam already returns the right answer for Lua-tracked appids through the existing CheckAppOwnership patch
+
+### LumaCore — version checker + deactivate
+
+- Auto LC Setup modal now shows the installed LumaCore version next to the latest GitHub release. SteaMidra hits the GitHub releases API at most once every six hours and caches the answer, so the version line is instant on subsequent opens. A blue banner appears when an update is available
+- New "Deactivate LumaCore" button next to "Install LumaCore". Asks for confirmation, closes Steam plus steamwebhelper / steamservice, then removes `LumaCore.dll`, `dwmapi.dll`, and `bin/lcoverlay.dll`
+
+### Home page
+
+- Multiplayer Fix sits at the top alongside LC Online Fix and Auto LC Setup. The LumaCore notice mentions Multiplayer Fix as the LC-Online-Fix fallback when a game doesn't work
+- The duplicate LC Online Fix, Auto LC Setup, and Multiplayer Fix tiles in Quick Tools are gone. Those three live at the top now
+
+### SteamAutoCrack
+
+- The home page card no longer flatly says it breaks achievements. The label now reflects that SteamAutoCrack runs in either Steamless-only mode (achievement-safe) or Steamless + Goldberg mode, and the existing default-mode setting controls which one runs without re-prompting
+
+### Store / search
+
+- Common franchise abbreviations work in the search box. Typing `gta` finds Grand Theft Auto, `re` finds Resident Evil, `cod` Call of Duty, `rdr` Red Dead, `kh` Kingdom Hearts, `er` Elden Ring, `tf2` Team Fortress 2, `cs2` Counter-Strike 2, and so on. Full names still match the same way they did
+- Hubcap entries that aren't in Steam's catalog now merge into search results when a Hubcap key is configured. Delisted titles like classic Grand Theft Auto: San Andreas show up alongside the regular Steam hits instead of being silently dropped
+- Hubcap merge now alias-expands the user query before sending it to Hubcap. Typing "gta san andreas" used to send "gta san andreas" verbatim, which Hubcap matches as a substring against game names where the classic title is stored as "Grand Theft Auto: San Andreas" with no "GTA" anywhere. The merge step now also queries Hubcap with "grand theft auto san andreas" (and the matching expansion for re, cod, rdr, kh, er, wukong, all the other aliases) and dedupes results by appid, so abbreviated typing finally surfaces the delisted classics on Hubcap-keyed setups
+- Hubcap merge filters out macOS-only and Linux-only entries. Searching "grand theft auto san andreas" no longer shows the Mac port (appid 12250) alongside the Windows classic (12120) and the Definitive Edition (1547000). Hubcap's API doesn't carry platform info, so each Hubcap-only candidate gets a tiny `appdetails?filters=platforms` lookup against Steam, cached for the lifetime of the process. Entries Steam can't resolve (delisted, no data) stay in the list so genuine classics aren't dropped
+- Oureveryday Lua now includes appid-only DLCs (the kind that don't ship their own depot). The downloader pulls `extended.listofdlc` from the game's app info and writes one `addappid(<dlc_id>)` line per entry under the keyed lines. LumaCore picks them up on the next license refresh, so the DLC unlocks without needing the user to add it manually
+
+### Achievements
+
+- Achievements now unlock for `-onlinefix` titles. The fake Spacewar (480) appid was leaking into the achievement IPC path and binding unlocks to the wrong app. The override is now scoped to `IClientUserStats` calls only, so achievements bind to the real game and lobby / friends / controller paths stay untouched
+- Wukong (`2358720`) and Resident Evil Requiem (`3764200`) achievement panels now render. The two spoof handlers were too strict and pass-through'd shapes that should have been spoofed, leaving the panels empty
+- `keyvalue.log`, `ipc.log`, and `license.log` were 0 bytes after a session. KVHooks, IPCBus, and LicenseHooks now each emit at least one entry per session
+- Restored the achievement handler to the last working baseline. The on-disk wipe of `<steam>/appcache/stats/UserGameStats_*` is gone, so legitimate local achievement state is no longer clobbered on Steam launch
+- Callback intercepts on UserStatsReceived and UserAchievementStored are gone; only the existing `AppLicensesChanged.m_bReloadAll → true` flip stays
+
+### Linux
+
+- Home page shows a Linux-specific notice instead of the Windows LumaCore-required banner. The notice explains LumaCore is Windows-only and points at SLSsteam + SLScheevo as the Linux equivalents, with a link to the new setup doc
+- New [docs/LINUX_SETUP.md](docs/LINUX_SETUP.md) walks through the Linux install path end to end: supported distros (CachyOS, Arch, Debian, Ubuntu, Fedora, Steam Deck Desktop Mode), what works and what's hidden, the SLSsteam + .NET 9 setup tool, the "restart Steam from inside SteaMidra so injection happens" gotcha, and a troubleshooting block for the most common failure modes
+- README adds a Linux quick-start section pointing at the same doc
+
+### Bulk lua downloader
+
+- `LumaCoreForWork/allgames/download_zips.py` (the bulk .lua downloader) no longer pegs the CPU. Rewritten on asyncio with HTTP/2 connection pooling, separate semaphores for network vs decompression (decompress capped at half the cpu count), and per-appid parallel source fetching so wall time per appid is `max(source1, source2)` instead of `source1 + source2`. The output directory is scanned once at startup instead of once per worker per appid. Tunable via `DZ_NET` / `DZ_CPU` / `DZ_TIMEOUT` env vars
+
+### LumaCore-required notice
+
+- Added a blue notice banner above the existing Steam-error-54 banner on the home page. It tells users that adding games to their Steam library and downloading them needs LumaCore installed first, and points them at Auto LC Setup in Quick Tools below. This is for the users who don't read the guide
+
+### Steam path detection (Linux)
+
+- Fixed "Steam installation path couldn't be found" on CachyOS, Arch, and other distros that don't ship the legacy `~/.steam/root` symlink. The GUI now probes `~/.steam/steam`, `~/.local/share/Steam`, the Flatpak sandbox at `~/.var/app/com.valvesoftware.Steam/data/Steam`, and the Snap install — same set the CLI already covered
+- Steam product info no longer crashes the GUI when the connection drops mid-fetch. Plain socket timeouts, connection resets, and EOFs are now caught alongside the gevent timeout that was already handled. After three retries SteaMidra falls back to an empty result and surfaces a clean "no info" message instead of taking the worker thread down
+
+### Store / search
+
+- Search now matches games whose names carry trademark, registered, or copyright marks. Typing `lego batman` finally hits `LEGO® Batman™: Legacy of the Dark Knight`, and `resident evil requiem` finds `Resident Evil Requiem` regardless of whatever decorative punctuation Steam ships in the catalog name. Accents (café, jalapeño) collapse to their plain ASCII equivalent on both sides of the comparison
+
+## 6.2.3
+
+### SteaMidra — Revert Fix Game changes actually works
+
+- Web UI Revert button was calling `FixGameService.revert(path)` — a method that doesn't exist anywhere. Crashed with `AttributeError` and silently failed. Fixed: instantiate `FixGameService()` and call `restore_game(path)`, the real method
+- `restore_game` now distinguishes "had nothing to revert" from "reverted N files" instead of always reporting success. Clean folder gives a clear "Nothing to revert in this folder — no Fix Game backups, no steam_settings/, no launch scripts" toast instead of a misleading "Changes reverted"
+- Returns a proper summary: `Reverted: 2 SteamStub backup(s), restored 3 file(s), 1 launch script(s)`
+- `SteamStubUnpacker.restore_directory` now skips SteaMidra's own backup folders during recursion (`.steamidra_exe_backups/`, `.steamlocked.bak/`, `saved_lua/`, `manifests/`) so revert can't process stale backups that were never paired with a live exe. Also returns the actual count of restored files so the caller can report it
+
+### LumaCore
+
+- Full debug coverage on every IPC, network, hook, registry probe (verbose log mode, defaults on)
+- Steam-DRM appid table — when `CheckAppOwnership` patches a known SteamStub title, log suggests using Remove DRM (Steamless)
+- Auto-fabricate minimal AppTicket from active SteamID on launch when registry is empty (helps older v1.5/early-v2 wrappers; v3 still needs Steamless)
+- Wipe stale tickets when the active Steam account changes
+- Hot-reload crash fix when deleting a `.lua` file from `config/stplug-in/` (card may linger as Purchase until Steam restart — accepted trade-off)
+- Family-share lock-status bypass: clear `k_EMsgClientSharedLibraryLockStatus` (9405) in addition to 9406
+- SteamUI hook hardening: string-xref + byte-pattern fallback for `LoadModuleWithPath`, removed double-attach
+- Multi-account fix: clear `OwnedAppIdSet` on Lua re-parse / `addappid`
+- `-onlinefix` debug logs every SpawnProcess hit with reason for skip
+
+### SteaMidra — UI / actions
+
+- Home tab error-54 hint banner pointing users at Remove DRM (Steamless)
+- Achievement-breakage warning dialog on Crack game (gbe_fork) and SteamAutoCrack; toggle in Settings (default on)
+- Inline action-card subtitles: yellow "Breaks Steam achievements" on crack/SteamAutoCrack, green "Achievements safe" on Remove DRM and Fixes & Bypasses
+- Removed orphaned Offline Fix button (GreenLuma-era leftover)
+- LC Online Fix closes Steam first, picks active SteamID3 from `loginusers.vdf`, navigates VDF case-insensitively
+- Restart Steam from elevated SteaMidra: now bounces through `explorer.exe` (fixes WinError 740)
+
+### SteaMidra — Steamless / DRM Remover
+
+- Picker now opens a single `QFileDialog` at the game folder (was: redundant Explorer window + dialog at workspace root)
+- Passes `--exp` so v3.0/v3.1 wrappers (Teardown, Doom Eternal, etc.) actually get unpacked
+- Backs original up to `<exe>.steamlocked.bak` instead of deleting
+- Pre-validates input: refuses non-`.exe` files and missing `MZ` PE header
+- Maps Steamless failure signatures to user-friendly messages and surfaces them in the GUI (popup + toast), not just stdout
+
+### SteaMidra — Fix Game / SteamStub Unpacker
+
+- `SteamStubUnpacker` no longer recurses into `.steamidra_exe_backups/`, `.steamlocked.bak/`, `saved_lua/`, `manifests/`; skips `*.steamstub.bak` / `*.unpacked.exe` artefacts
+- `GoldbergApplier.find_main_exe` honors the same skip-dir set so backups can't be picked as the main exe
+
+### SteaMidra — Tray / window behavior
+
+- Tray icon retries availability check every 3 s for up to 90 s (cold-boot Win11 fix)
+- Tray now parented to `QApplication` so it survives window destroy/recreate; 30 s heartbeat re-shows on Explorer restart
+- New setting: **Close button hides to tray (off = quit)**, default off
+
+### SteaMidra — Other fixes
+
+- DLC Check on the LumaCore path: fixed `get_dlc_list_from_store() takes 1 positional argument but 2 were given`
+- Fixes & Bypasses correctly described (was wrongly attributed to Ryuu); achievement-safe — no Steam API replacement
+- Lure Fix / Update buttons no longer crash SteaMidra (kwarg collision in `_emit_task_result`)
+- Download Games via DDMod now copies the Lua to `config/stplug-in/` and writes decryption keys so LumaCore picks the game up immediately
+- Stopped writing ACF on Windows (LumaCore handles ownership; Linux still writes ACF for SLSteam)
+- Linux: DDMod manifest path covers both `steamapps/depotcache` and `config/depotcache`; Multiplayer Fix subprocess flags platform-branched; `_detect_archiver` resolves `7z`/`7zz`/`unrar` via `shutil.which`; AppList IDs button routes to `injection_menu()`
+- SLSsteam auto-installs on first Linux run when no version file exists
+- `build_installer.bat` no longer exits immediately (PowerShell quoting + `(x86)` parens fix)
+- Auto LC Setup marker moved out of `<steam>/lumacore/` (was colliding with LumaCore's runtime log dir)
+- Pixeldrain bypass downloader for the Fixes & Bypasses flow
+- 12 new languages: Chinese Simplified/Traditional, French, Italian, Japanese, Korean, Turkish, Ukrainian, Vietnamese, Indonesian, Thai, Czech
+
+---
+## 6.2.2
+
+### LumaCore — Hook System Overhaul
+
+- Fixed Steam crash on startup. `OptedInMask` and `BuildSpawnEnvBlock` were attached via string xref, which on the current Steam build resolved to mid-function addresses and corrupted the call stack. Both now use byte patterns exclusively, landing on the correct 16-byte aligned entry points
+- Re-enabled the `-onlinefix` controller and overlay fix. `OptedInMask` redirects appid 480 (Spacewar) to the real game appid so Steam Input opt-in and SDL controller env vars are correct; `BuildSpawnEnvBlock` patches `pOverlayCGameID` so the overlay shows the right game name, screenshots tag correctly, and "View Community Hub" opens the right hub
+- Fixed `AppLicensesChanged` not triggering a full library reload. `SendCallbackToPipe` now forces `m_bReloadAll = true` on every `AppLicensesChanged` callback
+- Every hook and capture now logs its method (byte-pattern or string-xref), the matched string if any, and the resolved address to `main.log` at debug level. Failed hooks log a warning
+- `PatternDb.h` filled out: added wildcarded fallback patterns for `CUtlMemoryGrow`, `LoadDepotDecryptionKey`, `PchMsgNameFromEMsg`, and other previously fallback-less functions. Added `OptedInMask` and `BuildSpawnEnvBlock` patterns. `GetPipeClient` now has two string-xref entries for robustness
+- `RuntimeCapture.cpp` cleanup: removed the disabled env-block-string-rebuild path for `BuildSpawnEnvBlock` (was the source of the earlier crashes); replaced with the working `pOverlayCGameID` patch
+
+### SteaMidra — Linux SLSteam Auto-Update
+
+- **Auto-install on startup** — `check_and_notify_update` now automatically installs SLSteam updates when a newer version is detected on startup, instead of just printing a notification message
+- **`patch_slssteam_config`** — new function that patches `config.yaml` after install/update to enable `PlayNotOwnedGames: yes`, `SafeMode: yes`, `NotifyInit: yes`, `Notifications: yes` (mirrors h3adcr-b's `editconfig()` behavior); uses a `.headcrabd` marker so it only patches once
+- **Platform guards** — all public functions in `slssteam.py` now return immediately on non-Linux platforms (`_IS_LINUX` guard); the startup call in `Main.py` was already guarded by `if sys.platform == "linux":`
+
+---
+
+## 6.2.1
+
+### Bug Fixes
+
+- Fixed system tray icon not appearing after reboot or fresh install — tray now retries automatically every 3 seconds if the system tray is not yet available (Windows shell still loading), and the tray object is properly anchored to the window to prevent garbage collection
+- Fixed "Expecting value: line 1 column 1 (char 0)" crash on Update All Manifests and Open Recent .lua file — caused by empty `recent_files.json` or `api_cache.json` files; both now handle empty files gracefully
+- Removed Offline Mode Fix menu entry — this was a GreenLuma-specific feature that no longer applies
+- Added SLSteam update check on Linux startup — SteaMidra now silently checks for a newer SLSteam release on every launch and notifies if one is available
+
+---
+
+## 6.2
+
+### LumaCore — Bug Fixes and Improvements
+
+- Fixed critical bug where Lua-added app IDs were invisible to Steam after injection — the app ID vector size was not updated after memory growth in two separate code paths
+- Fixed packet router writing modifications directly into Steam's own memory buffers — all patched data now goes into a dedicated local buffer
+- Fixed unbounded `g_JobIdToAppId` map growth — entries older than 30 seconds are pruned on each insert
+- Fixed data race on the online-fix real app ID — converted to `std::atomic<AppId_t>`
+- Fixed race conditions in the send and receive ring buffers — separate mutexes added for each pool
+- Fixed DLL unload race — the init thread handle is now stored globally and waited on during detach
+- Fixed Steam install path detection at startup — uses `GetModuleHandleExA` + `GetModuleFileNameA` instead of `GetCurrentDirectoryA`, which was unreliable inside DllMain
+- Fixed `-onlinefix` flag detection — uses exact word-boundary matching to prevent false matches on flags like `-onlinefixpatch`
+- Fixed buffer overflow risk in the packet router — size check added before all protobuf serialization calls
+- Fixed controller and game overlay compatibility when `-onlinefix` is active
+- Fixed IPC handler lookup — replaced linear O(N) scan with an O(1) unordered map
+- Added `RichPresence` module — games unlocked via Lua now show a "currently playing" status in Steam
+
+### SteaMidra — Improvements
+
+- Auto LC Setup now removes the legacy `diversion.dll` file when updating from an older LumaCore version
+- Added `LumaCoreManager` class for consistent app ID management on Windows
+- Added game name caching for Lua backup file listings
+- Various download manager, UI, and SLSteam improvements
+- Also fixed the bugs with OS unsupported and all that stuff
+
+---
+
+## 6.1.5
+
+### New Feature — LumaCore replaces GreenLuma (Windows)
+
+- LumaCore replaces GreenLuma as the DLL injector. Copy `dwmapi.dll` + `LumaCore.dll` into your Steam folder — no AppList folder, no `DLLInjector.ini`, no restart to add games.
+- **Auto LC Setup** (Home tab) — copies LumaCore DLLs from `sff/lumacore/` to your Steam folder and removes existing GreenLuma files automatically.
+- **LC Online Fix** (Home tab) — toggles `-onlinefix` in Steam's `localconfig.vdf` for a chosen app ID. LumaCore handles the SpaceWar (AppID 480) redirect at launch.
+- LumaCore reads `Steam/config/stplug-in/*.lua` — the same folder SteaMidra writes to. No migration needed.
+- Hot-add: games appear in the Steam library the moment their Lua file is created.
+- GreenLuma Settings page section removed: GL version, AppList folder, AppList profiles, achievement tracking, and ID limit settings are gone.
+
+### New Feature — Windows Installer (`SteaMidra-6.1.5-Setup.exe`)
+
+- Added a modern NSIS MUI2 wizard installer for Windows.
+- Installs to `C:\Program Files\SteaMidra` by default; user can choose any directory.
+- Components page lets users select: .NET 9 Runtime, Visual C++ 2022 Redistributable (x64 + x86), Desktop Shortcut, Start Menu Shortcut.
+- .NET 9 Runtime and VC++ 2022 Redistributable components detect existing installations and skip silently if already present. Downloads happen at install time from official Microsoft URLs.
+- Prompts the user to add the installation directory to Windows Defender exclusions (prevents false-positive flags on the download tool).
+- Registers SteaMidra in Windows Add/Remove Programs (with publisher, version, icon, and uninstall string).
+- Uninstaller gracefully terminates `SteaMidra_GUI.exe`, removes all files, shortcuts, registry entries, and the Defender exclusion.
+- `build_installer.bat` automates the full build: runs PyInstaller then compiles the NSIS script.
+
+### Improvement — Settings Page: Updates Section
+
+- "Check for Updates" is now a prominent button at the very top of the Settings page under a dedicated "Updates" section.
+- Current version is displayed dynamically next to the button.
+- The small link previously hidden in the "About" section has been removed.
+
+---
+
+## 6.1.4
+
+### Bug Fix — Download Library / Drive Picker Missing on Home Tab Steam Downloads
+
+- The Home tab "Steam" source download button was calling `download_game_with_source` directly, bypassing `_startDownload`. This meant the Steam library selection dialog never appeared when multiple libraries were detected, so downloads always went to the first library.
+- Fixed: the button now routes through `_startDownload`, which shows the library picker before handing off to the download function.
+
+### Bug Fix — DDMod Downloaded Non-Windows Depots (Linux / macOS Content)
+
+- DepotDownloaderMod had no OS filter, so it would request depots whose `oslist` is set to `linux` or `macos` only — depots that contain no Windows game files. For multi-platform titles this wasted bandwidth and disk space downloading content that serves no purpose on Windows.
+- Fixed: new `filter_depots_by_os` helper reads the `config.oslist` field from App Info for each depot and drops any depot whose oslist is non-empty and does not include `windows`. Applied in `ui.py` (`process_lua_full`, `process_from_store`) and `web_bridge.py` (`download_game_ddmod`).
+- DDMod itself is now also launched with `-os windows` as an additional safeguard.
+
+### Bug Fix / Performance — DDMod Efficiency Improvements
+
+- Reduced `-max-downloads` from 255 to 32 — 255 simultaneous CDN connections caused throttling and incomplete transfers on many CDN nodes.
+- Replaced the byte-by-byte stdout read loop with `readline()` — the old loop burned significant CPU for every character emitted by DDMod during a download.
+
+### Bug Fix — Depot History Fill-Forward Included Future Depots
+
+- The "Older Versions" fill-forward logic incorrectly included depots in build groups that predate the depot's own debut. For example, a depot that first appeared on 2024-01-15 could show up inside a version group dated 2023-06-01.
+- Fixed: if all dated non-CM manifest entries for a depot are strictly newer than the group date, the depot is excluded from that group.
+
+### Bug Fix — GUI Freeze / Memory Growth During Downloads
+
+- Web UI log forwarding (`_forward_log_to_web`, `_forward_stdout_to_web`) now returns immediately when `_web_ui_active` is `False`, preventing signal emissions and string processing for a panel the user is not looking at.
+- Stdout forwarding to the web UI is now throttled — at most one emission per 50 ms — so rapid DDMod progress lines cannot flood the Qt signal queue.
+- The classic UI `QPlainTextEdit` log now has `setMaximumBlockCount(5000)`, capping unbounded line accumulation during very long downloads.
+
+### Bug Fix — Store Tab Game Search Auto-Creates Missing Game List
+
+- If `all_games.txt` did not exist (e.g. fresh install, file deleted), the Store tab search silently returned no results with no indication of what was wrong.
+- Fixed: `search_games_file` now calls `update_games_file()` in the background and returns a user-visible message while the download runs.
+
+---
+
+## 6.1.3
+
+### Bug Fix — Cloudflare Blocks All Depot Pages (Older Versions)
+
+- Root cause: `curl_cffi` TLS fingerprint mismatches caused Cloudflare to issue 403 responses on every request, and repeated 403s flagged the client IP — causing even the browser to be blocked on the same depot URLs immediately after. This created a 3-session failure loop where no depots were ever scraped (confirmed in logs: RE Village, Skullgirls, and other titles with aggressive CF protection).
+- Fixed with a new 4-layer scraping architecture:
+  - **Layer 1** — `curl_cffi` Chrome impersonation (unchanged, ~80% hit rate on fresh sessions)
+  - **Layer 2** — `httpx` with cached `cf_clearance` cookie (unchanged, fast no-browser path)
+  - **Layer 3A** — `zendriver` (NEW): uses Chrome DevTools Protocol directly — no `navigator.webdriver` flag, no WebDriver protocol — invisible to Cloudflare fingerprinting. Bails after 2 consecutive CF challenges on depot pages (interactive Turnstile requires a GUI click that CDP cannot perform) and hands off to Layer 3B immediately.
+  - **Layer 3B** — `SeleniumBase` UC mode: now clicks the Cloudflare Turnstile "Verify you are human" checkbox automatically via `uc_gui_click_captcha()` (OS-level mouse click). All sessions use a visible browser window — headless mode prevented the click from registering.
+- `curl_cffi` is now disabled for the remainder of a session after 3 consecutive 403s, preventing IP contamination that was poisoning the browser layer.
+- New `_is_cf_challenge(html)` helper replaces the brittle `'td.tabular-nums' not in html` check with accurate CF marker detection.
+- SeleniumBase tuning: reconnect timeout 5s -> 8s, element wait 7s -> 12s, inter-page sleep 0.2-0.5s -> 1.5-3.0s, consecutive CF restart threshold 2 -> 3.
+- Layer 3A outer timeout reduced to 90s; `zendriver` exits early if CF persists on the first 2 depot pages.
+- `_detect_sb_browser` now checks the Windows registry (`HKLM` + `HKCU` `App Paths\chrome.exe`) for system Chrome before falling back to Chrome for Testing.
+
+### Bug Fix — High RAM Usage During Downloads
+
+- `QtWebEngineProcess.exe` could consume several GB of RAM during long downloads. Root cause: `_appendLog` in the web UI appended every download progress line as a full DOM node with no eviction, causing unbounded DOM growth.
+- Fixed: added a 1000-entry ring-buffer eviction to `_appendLog` (matching the existing 200-entry cap on `_appendHomeLog`).
+- Secondary fix: `http_utils.py` debug log now records response byte count instead of the full response body, preventing multi-MB JSON responses from being serialised into the log DOM.
+
+### New Dependency
+
+- `zendriver>=0.15.0` added to `requirements.txt` and `requirements-linux.txt`.
+
+---
+
+## 6.1.2
+
+### Bug Fix — Buzzheavier Download Always Failed
+
+- `_download_buzzheavier` used a two-step flow that hit `/{id}/download` with no token. Buzzheavier now requires a signed time-based token embedded in the page HTML. The old flow received HTML back instead of a file, causing 403 errors or py7zr reporting "not a 7z file".
+- Fixed: rewrote to a four-step flow — fetch page, extract token via regex, trigger download with token, validate magic bytes. Falls back to Server 2 (`&alt=true`) if Server 1 returns no redirect. Covers all callers: HV cracks, crack fixes, and Auto GL Setup.
+
+### Bug Fix — Auto GL Setup Unicode Crash on Windows
+
+- `greenluma_setup.py` logged the extraction step with a `→` arrow (U+2192). On systems using cp1252 encoding this raised a `UnicodeEncodeError` and aborted setup.
+- Fixed: replaced `→` with `->`.
+
+### Bug Fix — Auto GL Setup "Not a 7z File" on Wrong Extension
+
+- `extract_archive` dispatched solely on file extension. If the extension was wrong (e.g. a `.7z` file that was actually RAR or ZIP), it raised immediately with no fallback.
+- Fixed: when the extension-based extractor raises, the function now tries RAR, 7z, and ZIP in sequence before giving up.
+
+### Docs — CrakFiles Guide Added
+
+- New `docs/CRACK_FILES.md` documents the CrakFiles repository, the JSON structure, all field definitions, and how SteaMidra fetches and uses the fix list.
+
+---
+
+## 6.1.1
+
+### Feature — Auto GreenLuma One-Click Download & Setup
+
+- The GreenLuma setup modal now downloads GreenLuma directly from the official link with one click. No need to locate or browse for an archive file.
+- Progress is reported live during download, extraction, and INI patching.
+
+### Bug Fix — DLLInjector GetHBITMAP Failed After Auto Setup
+
+- DLLInjector.ini was not receiving `UseFullPathsFromIni = 1` or a cleared `BootImage` value after auto-setup. Without `UseFullPathsFromIni = 1`, absolute paths written to the INI were ignored; a leftover `BootImage` path caused Windows to call `GetHBITMAP` on a non-existent bitmap file.
+- Fixed: INI patcher now enforces all required keys to match the reference working configuration.
+
+### Bug Fix — "Through Steam" Download Option Triggered DDMod Anonymously
+
+- The "Through Steam (Fastest)" button in the download choice dialog was routing through `process_lua_full` which also runs DepotDownloaderMod at the end using anonymous login. This caused 401 errors on games whose depot manifests require an authenticated session.
+- Fixed: button now routes directly to `download_game_fastest` (Steam-native path only, no DDMod invocation).
+
+---
+
+## 6.1.0
+
+### Bug Fix — System Tray Icon Not Visible
+
+- **Root cause:** `TrayIcon.setup()` called `self._tray.setIcon(app_icon)` without checking `app_icon.isNull()`. A null `QIcon` is truthy in Python, so the tray icon was created with no icon and stayed invisible.
+- Fixed: icon is now only set when `not app_icon.isNull()`. The tray icon appears correctly on first launch.
+
+### Bug Fix — Remove Button Dialog Closed Janky
+
+- Modal dismiss was instant (`display: none` with no exit animation), so the dialog snapped away instead of fading out.
+- Fixed: modal now plays a `fadeOut + slideDown` animation over 150 ms before hiding. The deleted game card also fades and shrinks out before the library grid refreshes, so there is no sudden flash.
+
+### Bug Fix — Horizontal Scrollbar Visible in Library
+
+- The `.content` area had `overflow-y: auto` but no `overflow-x` rule, so any element that briefly overflowed caused a bottom scrollbar.
+- Fixed: added `overflow-x: hidden` to `.content`.
+
+### Bug Fix — Linux Startup Crash (SLSteam Config Missing)
+
+- **Root cause:** `UI.__init__` called `SLSManager(steam_path, provider)` unconditionally on Linux. `SLSManager.__init__` raised `FileNotFoundError` when `~/.config/SLSsteam/config.yaml` did not exist, crashing the app before it opened.
+- Fixed: `SLSManager` is now created inside a `try/except FileNotFoundError`. If the config is absent, `sls_man` is set to `None` and a warning is logged. SteaMidra starts normally without SLSteam. Run "Linux Tools Setup" to install SLSteam.
+
+### Bug Fix — Linux Taskbar Icon Not Visible (KDE / Wayland)
+
+- KDE Plasma requires both `app.setDesktopFileName()` and `window.setWindowIcon()` to display the icon in the taskbar. Only `app.setWindowIcon()` was called.
+- Fixed: `app.setDesktopFileName("steamidra")` is now set on Linux at startup, and `window.setWindowIcon()` is called directly on the `SFFMainWindow` instance after creation.
+
+## 6.0.5
+
+### DDMod Download — Correct Game Folder Name
+
+- DDMod downloads now resolve the install folder name from Steam App Info (`config.installdir`) instead of defaulting to `App_{appid}`.
+- If Steam App Info is unavailable (offline / no connection), the first short game-name comment from the Lua file is used as the folder name.
+- Final fallback remains `App_{appid}` so downloads never silently fail.
+
+### DDMod Download — ACF File Created After Download
+
+- An ACF (`appmanifest_{appid}.acf`) is written to the Steam library's `steamapps/` folder after every successful DDMod download.
+- ACF contains correct `appid`, `name`, `installdir`, `buildid`, `SizeOnDisk`, and all installed depot + manifest IDs.
+- Steam recognises the install without any manual file editing.
+
+### DDMod Download — Manifest Folder Selector
+
+- Both DDMod modals now show a Manifest Folder row when a local Lua file is selected.
+- Point to any folder of pre-extracted `.manifest` files (e.g., from a ZIP) and those manifests are used directly — no re-fetching required.
+
+### DDMod Download — ManifestHub + GitHub Auto-Fetch
+
+- For any depot whose manifest ID is known but the manifest file is missing, SteaMidra now tries ManifestHub and GitHub automatically before passing control to DepotDownloaderMod.
+- Fetched files are written to both the staging folder and `depotcache` immediately.
+
+### DDMod Download — ZIP Lua Support
+
+- Lua files packaged as `.zip` are now fully supported. The `.lua` is extracted from the archive and any `.manifest` files embedded in the ZIP are seeded into `depotcache` automatically.
+
+### Bug Fix — DDMod Log Double Prefix
+
+- Log messages forwarded from the Qt logging system to the web UI log panel no longer show a doubled log-level prefix (e.g., `INFO INFO message`).
+
+### Bug Fix — Cloud Save Provider Not Persisting
+
+- **Root cause fixed** — `cloud_provider`, `cloud_rclone_exe`, and `cloud_rclone_remote` were missing from the `Settings` enum. Every call to save these from the Cloud Saves tab silently did nothing. On restart the provider always reverted to local and rclone fields were empty.
+- Added all three as proper `SettingItem` entries. The Cloud Saves tab now saves and restores the chosen provider and rclone configuration correctly across restarts.
+
+### Bug Fix — rclone Auto-Backup Silently Failing
+
+- **Bundled exe fallback** — the Settings page auto-backup intentionally stores `rclone_exe = ''` (user should not need to enter a path). `_cloud_save_backup` in `main_window.py` returned early when the exe was empty. Now falls back to `third_party/rclone/rclone.exe` (same logic already present in the manual backup path).
+
+### Bug Fix — Google Drive Shows Not Connected on Restart
+
+- Resolved by the provider persistence fix above. `cloud_provider = 'gdrive'` now saves and restores, so `_checkGdriveStatus()` fires automatically on page enter. `get_service()` refreshes the cached OAuth token without user interaction.
+
+### Auto-Scan for New Games
+
+- `_cloud_save_backup` already called `scan_all_save_locations` before every backup run. New game save folders are picked up automatically — no manual rescan required. This path was unreachable before due to the silent save bug above.
+
+### CMD Flash Hardening
+
+- Added `stdin=subprocess.DEVNULL` to every rclone `subprocess.run` call across `cloud_saves.py`, `main_window.py`, and `web_bridge.py`. Closes stdin cleanly and prevents any stdin-triggered console allocation on Windows.
+
+---
+
+## 6.0.4
+
+### Bug Fix — rclone CMD Window
+
+- **CMD flash fixed** — `rclone_backup_save`, `rclone_list_remotes`, and `rclone_test_remote` in `web_bridge.py` now pass `creationflags=CREATE_NO_WINDOW` on Windows. Auto cloud save no longer opens visible CMD windows repeatedly in the background.
+
+### Fixes & Bypasses
+
+- **New feature** — `sff/crack_fix.py` downloads community-maintained fixes and bypasses from the `KoriaPolis/CrakFiles` GitHub JSON. Searches by game name, presents matched fixes with badge labels, downloads from buzzheavier, and extracts directly into the game folder. Available as "Fixes & Bypasses" in the CLI menu and Web UI.
+- Replaces the Ryuu API requirement — no API key needed.
+
+### HyperVisor Bypasses (HVAuto)
+
+- **New feature** — `sff/hv_fix.py` downloads HyperVisor bypass files from the `KoriaPolis/HVAuto` GitHub JSON. Searches by game name, downloads from buzzheavier, and extracts into the game folder. Available as "HyperVisor (HVAuto)" in the CLI menu and Web UI.
+
+---
+
+## 6.0.3
+
+### Bug Fix — Silent Cloud Save Backups
+
+- **CMD window flash fixed** — all `subprocess.run` calls for rclone in `cloud_saves.py`, `main_window.py`, and `web_bridge.py` now pass `creationflags=CREATE_NO_WINDOW` on Windows. The backup process no longer opens visible CMD windows that flash and close repeatedly.
+
+### Store — VR Games Category
+
+- **VR genre chip** — added a VR chip to the Store genre row. Clicking it searches for VR games via the existing genre-chip mechanism.
+
+### Home & Library — Search Bars
+
+- **Home game filter** — a text input above the game selector filters the dropdown list in real-time as you type.
+- **Library search** — a search input in the Library controls bar filters visible game cards by name without reloading.
+
+### Library — Disk Space Display
+
+- **Drive info** — the Library page now shows free and total disk space for the Steam installation drive (e.g. `💾 450.2 GB free of 931.5 GB`).
+- New `get_disk_usage(path)` bridge slot returns `{total, used, free}` bytes.
+
+### Cloud Saves — Backup Progress Bar
+
+- **Live progress bar** — the All Save Locations backup now shows a progress bar with per-game granularity. It displays percentage fill, current game label, done/total count, and live ✓ succeeded / ✗ failed counters. The bar auto-hides 3 seconds after completion.
+
+### Home — Auto GreenLuma Setup (Windows only)
+
+- **Auto GL Setup button** — new compact card in Quick Tools (Windows only). Opens a modal to choose installation method (next to SteaMidra.exe or inside Steam folder), browse for the GL archive (ZIP/RAR/7z), and set the Steam exe path.
+- **`sff/greenluma_setup.py`** — new module: extracts GL archive, finds the DLL, patches `DLLInjector.ini` with correct `Exe` and `Dll` paths, creates `AppList/` folder. Supports ZIP (built-in), RAR (`rarfile` + WinRAR fallback), 7z (`py7zr` + system 7z fallback).
+- **`rarfile>=4.2`** added to `requirements.txt`.
+
+---
+
+## 6.0.2
+
+### Library — Lure Fix
+
+- **Lure Fix button** — each Library game card now has a Lure Fix button. It contacts Steam CM, reads the latest manifest IDs and buildid for the public branch, and patches the game's ACF file in-place. No game files are downloaded or changed. Steam stops showing the update prompt because the ACF now claims the current manifests are installed.
+- **Info callout** — the Library page shows a short description of what Lure Fix does, visible above the game grid.
+- **Bridge slot** `lure_fix_acf(app_id)` — callable from any JS context. Emits `task_finished {task:"lure_fix"}`.
+
+### Settings — Avatar
+
+- **Global GBE avatar** — browse for a PNG/JPG image and apply it to all games at once via GSE Saves/settings/account_avatar. The avatar preview loads on page enter and updates as you browse.
+
+### Library — Game Update Check
+
+- **Update button** — each Library card now has an Update button. Clicking it compares the installed ACF buildid against the current public buildid on Steam CM. If a newer build exists, it downloads updated manifests and patches the ACF InstalledDepots/MountedDepots automatically, then shows a toast with the new build number. If already current, it shows "Already up to date".
+
+### Workshop Downloader
+
+- **Download Item button** — the embedded Workshop browser now has a Download Item button. It reads the current item URL, extracts the workshop item ID, and tries four methods in order: SteamWebAPI direct file_url, GGNetwork API, SteamCMD anonymous, SteamCMD authenticated. Progress shows in a status label below the toolbar.
+- **Bridge slot** `download_workshop_item` — the Library page can also trigger workshop item downloads programmatically via the web bridge.
+
+### Workshop Browser
+
+- Persistent Steam session across launches (cookies + storage stored in webengine_profile/).
+- Chrome User-Agent for full page rendering.
+- Game-specific workshop URL when opening from a Library card.
+
+### Bug Fixes
+
+- Fixed `check_game_update` (Update button) — incorrect internal import paths corrected so the button works at runtime.
+- Update Manifests exclusion list modal now pre-populates checkboxes from saved settings on open.
+- ACF patched after manifest update to prevent the "0 B installed" regression.
+
+---
+
+## 6.0.1
+
+### System Tray
+
+- **Minimize to tray** — closing the window now hides it to the system tray instead of leaving a background process with no visible icon. The SteaMidra icon appears in the notification area (bottom right).
+- **Single instance** — launching the exe while SteaMidra is already running brings the existing window to the front. No duplicate processes.
+- **Exit from tray** — clicking Exit in the tray context menu now terminates the process correctly.
+
+### Cloud Saves — Auto Backup
+
+- **Background auto-backup** — SteaMidra checks your save files on a timer and backs up anything that changed. Configure it in Settings under the new Auto Backup section.
+- **Interval** — set the check interval in minutes (0 disables it). Changes take effect immediately without restarting.
+- **Permanent provider** — pick Local Folder, rclone, or Google Drive. For rclone, enter your remote destination and click Load Remotes to autocomplete from your configured remotes. For Google Drive, it reuses the account you already connected in Cloud Saves. The chosen provider persists across restarts.
+- Backup runs in a background thread so the app stays responsive.
+
+---
+
+## 6.0.0
+
+### Cloud Saves — Google Drive Support
+
+- **Google Drive cloud saves** — back up and restore saves directly to Google Drive. Select Google Drive in the Cloud Saves tab provider grid, click Connect, and sign in once. All backups go to a `SteaMidra Backups/` folder in your Drive.
+
+### Cloud Saves — All Save Locations
+
+- **All Save Locations** — new section at the bottom of the Cloud Saves tab. Scans all known emu save paths in one click: CODEX, EMPRESS, RUNE, OnlineFix, Goldberg, GSE, and Steam userdata. Results show in a table with per-row checkboxes so you can pick exactly which folders to back up.
+- **Backup all** — back up every checked folder to a local destination, rclone remote, or Google Drive in one operation.
+- **Restore from backup** — scan an existing backup root, pick a location and game from the dropdowns, and restore. A safety backup of the current save is created automatically before any overwrite.
+
+### Cloud Saves — rclone Overhaul
+
+- **Dropbox API provider removed** — Dropbox now works through rclone. No app key or OAuth flow needed. Add a Dropbox remote once with `rclone config` and pick it in SteaMidra.
+- **Ludusavi removed** — bundled executable and its 86 MB manifest removed from the package.
+- **Provider shortcut strip** — 17 clickable provider chips in the rclone config panel: Dropbox, OneDrive, MEGA, pCloud, Box, Proton Drive, Backblaze B2, Amazon S3, Wasabi, Yandex Disk, Jottacloud, Koofr, Storj, iCloud Drive, SFTP, FTP, WebDAV. Each chip pre-fills the Remote Destination field with the correct format for that backend.
+- **"Setup in Terminal" button** — opens `rclone config` in a new terminal window directly from the Cloud Saves tab. On Linux it tries `gnome-terminal`, `xterm`, `konsole`, and `xfce4-terminal` in order.
+- **"Load Remotes" button** — reads all configured rclone remotes and populates autocomplete on the destination input.
+- **"Test" button** — verifies a remote is reachable before starting a backup (15 s timeout).
+- **Backup All is now parallel** — all selected games upload simultaneously instead of one at a time. Significantly faster on every provider.
+- **Duplicate auto-fix** — any duplicates created by rclone are resolved automatically after every Backup All on providers that support deduplication.
+
+### Performance
+
+- **Image themes no longer lag** — Dawn, Dusk, Flow, Lake, Midnight City, and Snow themes now run smoothly at full speed.
+- **GPU hardware acceleration enabled** — the entire interface now renders with hardware acceleration.
+
+### Settings — Language Live Switch
+
+- Language changes now apply instantly without restarting the app.
+
+---
+
+## 5.8.0
+
+### Self-Updater — Windows Fix
+
+- **Cmd window no longer closes instantly** — PyInstaller EXEs run inside a Windows Job Object. The updater batch was launched with `DETACHED_PROCESS` only, so Windows killed it the moment SteaMidra exited. Added `CREATE_BREAKAWAY_FROM_JOB` flag so the batch runs independently of the parent job.
+- **Files no longer locked during update** — `sys.exit(0)` from a Qt worker thread raised `SystemExit` in that thread only, leaving the Qt main loop and all file handles alive. Replaced with `os._exit(0)` to kill the full process cleanly before robocopy runs.
+- Both the script-mode path (`_do_auto_update`) and the frozen EXE path (`_do_windows_frozen_update`) are fixed.
+
+### HyperVisor (HV Auto) — Buzzheavier Download Fix
+
+- **Automatic download now works** — buzzheavier.com uses a two-step download flow: a request to `/{id}/download` with HTMX headers returns an `Hx-Redirect` header containing a signed CDN URL; SteaMidra then streams the file from that URL. Previously a plain GET returned an HTML page, causing a fallback to manual download every time.
+- **Correct filename from CDN** — filename is parsed from the `Content-Disposition` header of the CDN response, falling back to `{file_id}.7z` if absent.
+- **Archive password auto-filled** — password-protected HV archives (`.zip`, `.7z`, `.rar`) now automatically use `cs.rin.ru` during extraction.
+
+---
+
+## 5.7.0
+
+### Linux — SLSsteam Fixes
+
+- **Fixed "NoneType is not iterable" crash** — `AdditionalApps: null` in the SLSsteam config now handled correctly. `YAMLParser.read()` also catches all parse/IO errors and returns a safe empty value so callers never receive `None`.
+- **Offline mode confirmation prompt** — toggling a Steam account to offline mode now shows a warning before writing the change, preventing accidental Steam lockout.
+- **Bundled SLSsteam binaries removed** — SteaMidra no longer ships outdated `.so` files. The installer always downloads the latest SLSsteam release from GitHub (`AceSLS/SLSsteam`).
+- **Arch Linux package conflict fix** — installer now removes the `slssteam` or `slssteam-git` pacman package before installing, matching the reference install flow and preventing `.so` conflicts.
+
+---
+
+## 5.6.0
+
+### Ryuu Generator — New Lua Endpoint
+
+- **Ryuu endpoint added** — third option for Lua and manifest downloads alongside OurEveryday and Hubcap. Requires a Ryuu API key; downloads a ZIP containing the Lua file and all manifests in one request.
+- **Optional update request** — before downloading, you can request Ryuu to regenerate data for the game. Works in both CLI (prompt) and the web UI (checkbox in the download modal, only shown when Ryuu is selected).
+- **Ryuu API Key in Settings** — stored securely; enter it once in the Settings tab or the CLI key prompt.
+
+### Store Tab Improvements
+
+- **Ryuu source selector** — download modal now shows three sources: Hubcap, OurEveryday, Ryuu. Selecting Ryuu reveals the optional update-request checkbox.
+
+---
+
+## 5.5.0
+
+### Modern UI — New Browser-Based Interface
+
+- **New modern interface** built with QWebEngine — replaces the classic Qt widget UI as the primary interface. All tabs are accessible from a sidebar with a clean, themed layout.
+- **Home tab** — select a game from a dropdown populated from all your Steam libraries. Refresh button rescans instantly; the list also refreshes automatically after a download and every 10 minutes.
+- **Store tab** — browse and search the Hubcap manifest library. Switch between grid and list view, sort by latest or other criteria, and paginate through results. Download opens the version picker for full depot/manifest history.
+- **Library tab** — view all installed Steam games across your libraries.
+- **Downloads tab** — live progress bars for active downloads and a full download history.
+- **Fix Game tab** — full emulator setup pipeline: apply Goldberg, ColdClient, or ColdLoader; remove SteamStub DRM; launch script generation.
+- **Tools tab** — GBE Token Generator (generates full Goldberg configs with achievements, stats, DLCs, depots, and icons), VDF Key Extractor, and embedded Workshop browser.
+- **Cloud Saves tab** — scan all games with cloud saves, back up the `remote/` folder to any destination, and restore with one click (automatic safety backup created before any overwrite).
+- **Settings tab** — theme picker (11+ themes), Steam path, API keys, AppList profile management, and all other preferences.
+- Tooltips on every control, toast notifications for actions, and a floating log viewer accessible from any tab.
+
+---
+
+## 5.4.0
+
+### Store Tab — Bug Fixes & Improvements
+- **Crash fix** — Download button can no longer be re-enabled by table row clicks or incoming search results while a depot history fetch is already in progress. All three re-enable paths are now guarded by a `_fetching` flag, preventing a second fetch thread from starting concurrently.
+- **All historical manifest IDs now fetched** — Cache freshness check now requires at least one non-Steam-CM source entry (GitHub mirror or SteamDB). Previously a cache containing only the current Steam CM manifest would be served as "fresh" indefinitely, hiding all historical manifests from the version picker.
+- **Force Refresh button** — New button next to Download bypasses both the disk cache and the in-memory session cache entirely. Use it when version history looks incomplete or you want to force a fresh SteamDB scrape.
+- **SteamDB batch scraper timeouts improved** — `uc_open_with_reconnect` increased 4→5 s, `wait_for_element` 3→7 s, fallback sleep 1→3 s, retry sleep 3→5 s. Greatly reduces Cloudflare challenge failures during multi-depot batch scraping.
+- **asyncio loop fix** — `_fetch_steamdb_layer1` (curl_cffi fast path) now uses `asyncio.new_event_loop()` + `run_until_complete()` instead of `asyncio.run()`, fixing silent failures on Windows when called inside a QThread.
+- **Chrome download progress** — Status label now shows "Downloading Chrome for Testing (~300 MB, one-time setup)…" during the one-time Chrome for Testing download instead of appearing to hang silently.
+
+### UI — Floating Log Viewer
+- **"Logs" button in menu bar** — New button to the right of Help opens a floating, non-modal log viewer showing all Python `logging` output from every part of the app (Fix Game, Store, Tools, and everything else). Supports DEBUG / INFO / WARNING / ERROR level filter, Clear, and Copy All. Closing the window hides it; it can be re-opened at any time.
+
+### GBE Fork Update
+- **Updated Windows GBE fork DLLs** — `steam_api.dll`, `steam_api64.dll`, `steamclient.dll`, `steamclient64.dll`, `GameOverlayRenderer.dll`, `GameOverlayRenderer64.dll` now use the experimental builds (~19 MB) which include full overlay support.
+- **Fixed DLL extraction bug** — Goldberg auto-updater now correctly extracts experimental DLLs instead of the smaller regular builds. Full archive path is matched first before filename-only fallback.
+- **Added Linux `steamclient.so`** — `steamclient.so` (x64) and `steamclient32.so` (x32) are now downloaded and deployed for Linux native games that load steamclient directly.
+
+### Achievement & Config Generation Fixes
+- **Achievements now always generated** — Fix Game pipeline now automatically uses the saved/default Steam Web API key if none is explicitly provided. Achievements were silently skipped before.
+- **Per-game `configs.main.ini` now written** — `steam_settings/configs.main.ini` is generated for each game with `allow_unknown_stats=1` so stats work even without a full `stats.json`.
+- **Stats format fixed** — `stats.json` now uses the correct GBE fork field names (`name`, `type`, `default`, `global`) instead of raw Steam API fields.
+- **Achievement `hidden` field fixed** — `achievements.json` `hidden` field is now always a string (`"0"` or `"1"`) as required by GBE fork.
+- **Overlay config updated** — `configs.overlay.ini` now includes 4 new options from the latest GBE fork release: `overlay_always_show_user_info`, `overlay_always_show_fps`, `overlay_always_show_frametime`, `overlay_always_show_playtime`.
+
+### Tools Tab
+- **GBE Token Generator pre-fills API key** — Steam Web API key is now auto-filled from saved settings (or default key) on startup. Generation no longer aborts if the field is empty — uses default key as fallback. Key is saved to settings after successful generation.
+
+### UI Improvements
+- **Fix Game tab decluttered** — checkboxes grouped into logical rows: Goldberg update + Launch.bat in one row; SteamStub + Experimental in one row. Reduces vertical space.
+
+---
+
+## 5.3.0
+
+### Fixes
+- **Steam launch "Access Denied" fix** — SteaMidra now checks if it is already running as administrator. If it is, it launches Steam directly instead of requesting elevation again (which caused an "Access Denied" error on Windows 11).
+- **Auto-updater fixed for Windows EXE builds** — now downloads the release ZIP, extracts it next to the EXE, replaces the `_internal/` folder via a batch script, and relaunches automatically. No more aria2c or manual steps.
+- **Auto-updater fixed for Linux AppImage builds** — downloads the release ZIP, extracts it, then runs `steamidra_install.sh` in your terminal automatically.
+
+### Improvements
+- **Windows EXE is now distributed as a ZIP folder** (`SteaMidra-5.3.0-windows.zip`). Extract once anywhere, run `SteaMidra_GUI.exe` from the extracted folder. This replaces the single-file EXE.
+- **No more temp folder extraction on startup** — files are pre-extracted into `_internal/` at install time. Startup is faster and antivirus false positives are greatly reduced.
+
+---
+
+## 5.2.0
+
+### AppList popup notification (GUI)
+- **GUI now shows a warning dialog** when your AppList reaches 130 or more App IDs, reminding you to create a new AppList profile before adding more games. The popup appears once per session after any action completes. The CLI has always printed a warning at the same threshold — this extends it to the GUI.
+
+### Linux fixes (12 bugs)
+- **`all_games.txt` crash fix** — `choices.py` and `cloud_saves.py` both read/wrote `all_games.txt` using `sys._MEIPASS` or the bare `root_folder()` path, which points to the read-only squashfs inside an AppImage. Fixed to use `root_folder(outside_internal=True)` (writable user data dir `~/.local/share/SteaMidra/`) for both read and write.
+- **Flatpak LD_AUDIT path fixed** — `slssteam.py` `patch_steam_sh()` constructed the Flatpak `LD_AUDIT` path with an erroneous `/data/Steam` segment (resulting in a non-existent path). Fixed: `flatpak_base` is now `~/.var/app/com.valvesoftware.Steam` with no extra segment.
+- **Flatpak default `.so` paths fixed** — `steam_process.py` default path lists for `SLSsteam.so` and `library-inject.so` contained the same `/data/Steam` error. Fixed to match the correct Flatpak layout.
+- **7z exit-code tolerance** — `install_from_github()` now tolerates non-zero 7z exit codes caused by symlink warnings (common with `SLSsteam-Any.7z`). If `setup.sh` is found in the extracted directory despite the non-zero code, extraction continues with a warning instead of aborting.
+- **`extract_dir.mkdir()` added** — the extraction directory is now created explicitly before the 7z call, preventing `FileNotFoundError` on first install.
+- **Config template from extracted archive** — new `_setup_config_from_extracted()` copies `res/config.yaml` from the freshly downloaded archive to `~/.config/SLSsteam/config.yaml` (only if the user config doesn't exist). Previously the bundled copy was used, which could be stale.
+- **`updates.yaml` URL corrected** — was `main/updates.yaml`, now `refs/heads/main/res/updates.yaml` to match the actual repo structure.
+- **Hash parsing fixed** — replaced broken regex approach with YAML `SafeModeHashes` parsing so `check_steamclient_hash()` correctly validates the hash against all known entries.
+- **Flatpak `.so` copy** — new `_copy_so_to_flatpak()` copies installed `.so` files to the Flatpak Steam path after install, so Flatpak Steam can find them.
+- **`get_installed_version()` + `check_update_available()`** — new functions to track and check the installed SLSsteam version against the latest GitHub release.
+- **GitHub-only install** — removed the bundled install option from `handle_linux_setup()`. SLSsteam is now always installed from the latest GitHub release.
+- **Update check menu** — when SLSsteam is already installed, a 3-way menu now appears: check for updates / reinstall from GitHub / skip. The update check shows installed vs latest version and prompts to install if an update is found.
+
+### Documentation + README cleanup
+- Removed all references to CreamAPI Multiplayer Fix from `README.md`, `USER_GUIDE.md`, `QUICK_REFERENCE.md`, and `MULTIPLAYER_FIX.md` (feature was removed in 4.9.1).
+- Removed broken `CREAMAPI_FIX.md` link from `MULTIPLAYER_FIX.md`.
+- Removed "Fast SteamDB manifest history" from `README.md` features list.
+- Clarified download methods in `README.md` and `FEATURE_USAGE_GUIDE.md`: Main tab "Download Game" = latest version via Steam-native download (fast, no .NET); Store tab = older/specific versions via DepotDownloaderMod (.NET 9 required, slower).
+- Fixed false claim in `README.md` that SteaMidra "reminds you" at 130 IDs — it now accurately says a popup dialog appears.
+
+---
+
+## v5.1.0
+
+### Store tab ACF fix: Play button instead of Update
+
+- **ACF `InstalledDepots`** now uses the **latest manifest GIDs** from the Steam API (not the Lua IDs). Steam compares these IDs against CDN on startup; writing the latest GIDs means Steam sees the game as fully up-to-date and shows **Play** instead of **Update**.
+- **ACF `buildid`** is now fetched from the Steam API (`depots.branches.public.buildid`) and written correctly, matching the installed version Steam expects.
+- **ACF `LastUpdated`** is now set to the current Unix timestamp on every write.
+- **Depotcache cleanup**: manifest files are pre-downloaded for DepotDownloaderMod authentication, then **deleted from `depotcache`** immediately after the download completes. The Store tab no longer leaves stale `.manifest` files in your Steam depotcache folder.
+- **Linux**: `buildid` is also fetched from the Steam API in the Linux download path.
+
+---
+
+## v5.0.0
+
+### Store tab — direct game download (Windows + Linux)
+
+- **Download game files directly** from the Store tab version picker via DepotDownloaderMod. Previously the Store tab only set up Lua/manifests and left the actual game download to you; now it downloads the full game automatically.
+- **Full pipeline**: Lua fetch → decryption keys written → manifest pre-download → DepotDownloaderMod download → ACF written → Steam library registered.
+- **Parallel manifest download** support — respects the `USE_PARALLEL_DOWNLOADS` setting.
+- **Real `SizeOnDisk`** calculated from the downloaded files and written into the ACF.
+- **Linux**: same pipeline available via `handle_linux_download` with `acf_writer.create_acf`.
+
+---
+
+## 4.9.1
+
+### online-fix.me Multiplayer Fix — complete rewrite
+- **SeleniumBase UC mode** — Cloudflare bypass + ad blocking built-in. No more manual Chrome setup.
+- **3-layer ad popup prevention** — extracts the uploads URL directly from the game page before clicking (Layer 1); falls back to smart 15s polling that closes only confirmed ad tabs and preserves the uploads tab (Layer 2); final page-source re-scan fallback (Layer 3).
+- **Smart file server navigation** — automatically enters subfolders (`Fix Repair/`, `Generic/`, `Steam/`, `Patch/`) before scanning for archives.
+- **OFME exclusion** — files containing "OFME" in the name (full game packages, typically 800 MB+) are completely excluded from download candidates.
+- **401 error handling** — proactive browser refresh after initial navigation + up to 3 in-loop refresh retries when the file server returns 401, resolving transient nginx authentication failures automatically.
+- **Re-apply fix replaces files** — applying the fix a second time now replaces existing fix files directly. The original `.bak` of the game's own DLL is preserved; no redundant second-level backups are created.
+
+### Removed
+- **CreamAPI Multiplayer Fix** — "Apply CreamAPI Multiplayer Fix" and "Restore CreamAPI Multiplayer Fix" menu items removed. The bundled CreamAPI DLLs remain in `third_party/online_fix/` for potential future use.
+
+---
+
+## 4.9.0
+
+### CreamAPI Multiplayer Fix (new feature)
+- **Apply CreamAPI Multiplayer Fix** — new menu item. Installs bundled CreamAPI v5.3.0.0 (nonlog build) to spoof your game as Spacewar (AppID 480) for online multiplayer. No credentials, no browser, no external downloads required.
+- **Restore CreamAPI Multiplayer Fix** — new menu item to undo the fix and restore original DLLs.
+- **Classic mode** (default): replaces `steam_api.dll` / `steam_api64.dll` in-place; `cream_api.ini` placed next to the DLL.
+- **Proxy mode** (anti-cheat fallback): CreamAPI installed as `winmm.dll`; original Steam API DLLs untouched.
+- **Anti-cheat detection**: automatically scans for EasyAntiCheat and BattlEye folders/files; suggests Proxy mode if found.
+- **Linux platform selection**: on Linux, user chooses Proton/Wine (Windows .dll) or Native Linux (.so). ELF bitness is read from the header to select x64 vs x86 `.so` automatically.
+- **Spacewar auto-check**: reads all Steam library ACF files to detect if Spacewar (AppID 480) is already installed. If not, shows a one-time `steam://install/480` prompt and stores a marker file so the user is never prompted again after the first time.
+- **Existing online-fix.me button unchanged** — both methods coexist in the menu.
+- **Version bump**: 4.8.4 → 4.9.0
+
+---
+
+## 4.8.4
+
+### Linux Compatibility Overhaul
+- **Linux GBE files now fully bundled** — `third_party/gbe_fork_linux/` ships `libsteam_api.so` (x64), `libsteam_api32.so` (x32), and `generate_interfaces_x64/x32`. No internet needed on first run.
+- **Fixed archive path resolution** — x64 vs x32 `libsteam_api.so` are now correctly distinguished by their full archive path, not filename (both have the same name in the release archive).
+- **Linux generate_emu_config bundled** — `third_party/gbe_fork_tools_linux/` ships the Linux ELF binary. Works without Wine or any external tool.
+- **GSE tool updater: Linux support** — `gse_tool_updater.py` now finds and runs the bundled Linux binary, with optional update checking against `Detanup01/gbe_fork_tools` on GitHub.
+- **GSE tool updater: Windows bundled fallback** — if GitHub is unreachable, the Windows `generate_emu_config.exe` bundled in `third_party/gbe_fork_tools/` is now used as an offline fallback.
+- **Fix Game tab: Linux native checkbox** — new "Linux native game" checkbox (visible on Linux only, checked by default). Uncheck for Proton/Wine mode.
+- **Bundled Goldberg used on first launch** — previously, if "Check for updates" was unchecked and the cache was empty, the pipeline would abort. Now it automatically copies from `third_party/` on first run.
+- **XDG_DATA_HOME support** — GSE Saves root on Linux respects `$XDG_DATA_HOME` per the official gbe_fork README.
+- **Steamless via Wine** — `steamstub_unpacker.py` now runs `Steamless.CLI.exe` via Wine on Linux if Wine is available.
+- **Platform-aware launch scripts** — `launch.sh` for native Linux, `launch_wine.sh` + `LUTRIS_SETUP.txt` for Proton/Wine mode.
+- **Cache path XDG-compliant** — cache directory on Linux uses `~/.local/share/SteaMidra/fix_game_cache/`.
+
+---
+
+## 4.8.3
+
+### New features
+- **SteamDB 3-layer scraping** — dramatically faster manifest history loading. Layer 1 uses `curl_cffi` Chrome impersonation (no browser, ~80% hit rate). Layer 2 reuses a cached `cf_clearance` cookie (25-min disk cache, no browser). Layer 3 falls back to SeleniumBase and automatically saves the cookie for the next run. Warm runs typically complete in 10–35s vs 2–4 min previously.
+- **DLC depot completeness** — manifest history now includes depots from DLC apps. The Steam CM fetcher reads `extended.listofdlc` and pulls depot manifests from each DLC app, so games with DLC show their full depot history.
+- **Linux: SLSSteam ID management** — "Manage SLSSteam IDs" menu option now works on Linux. Fully functional Add IDs and View/Delete IDs from the SLSSteam config.
+- **MIDI player rewrite** — playlist support, dynamic `.mid` / `.sf2` file scanning from the `c/` folder, COM-thread safety fix, and `IsFinished()` polling so tracks don't restart on loop.
+- **Settings applied live** — editing or deleting a setting in the GUI now takes effect immediately without restarting.
+
+### Fixes
+- **ACF writing reverted** — `write_acf` restored to `StateFlags=4` with `SizeOnDisk=0`, `BytesToDownload=0`, `BytesDownloaded=0`. Previously used `StateFlags=6` + `buildid=0` which caused Steam to show "Play" instead of "Update" for new installs.
+- **`_patch_acf_error_state` cleaned** — removed problematic `buildid=0` and `InstalledDepots`/`MountedDepots` deletion that caused game state corruption. Now only clears safe flags: `UpdateResult`, `FullValidateAfterNextUpdate`, `ScheduledAutoUpdate`, byte counters, and the Locked `StateFlags` bit.
+- **AppList depot completeness** — `add_ids()` now adds every unique depot/DLC ID from `LuaParsedInfo.depots`, not just the base `app_id`. Previously only the base app ID was added, causing GreenLuma to miss depot authentication and Steam to skip downloading large chunks of games (e.g., RE9 only downloading 1 GB instead of 76 GB).
+- **Code formatting cleanup** — removed excessive double-spacing and blank lines across all Python files while preserving copyright headers.
+- **Linux MIDI library path** — `MidiFiles.MIDI_PLAYER_DLL` now resolves to `.dll` on Windows and `.so` on Linux. Previously always pointed to `.dll`, silently skipping music on Linux even if the `.so` was compiled.
+- **Linux applist menu stub removed** — `applist_menu()` previously printed "Functionality for linux will be implemented soon." and returned immediately. It now routes correctly to `SLSManager` on Linux.
+- **`ManifestContext` TypeError** — `auto` field in the `ManifestContext` dataclass was missing its type annotation, causing `TypeError: __init__() got an unexpected keyword argument 'auto'` when downloading manifests with auto-fetch enabled.
+
+### Dependencies
+- Added `curl_cffi>=0.7` — required for SteamDB Layer 1 Chrome impersonation.
+
+---
+
+## 4.8.2
+
+- MIDI player integration: background playback thread, channel muting, soundfont support.
+- Live settings apply for GUI.
+- AppList profiles: create, switch, save, delete, rename.
+- Cloud Saves: backup and restore Steam userdata saves.
+- VDF Key Extractor: pull depot decryption keys from Steam's config.vdf.
+- GBE Token Generator: generate full Goldberg emulator configs with achievements, DLCs, and stats.
+- Fix Game pipeline: automate emulator application with SteamStub unpacking.
+- Store browser with pagination.
+- System tray icon.
+- Multi-language GUI (English + Portuguese).
+- 11+ themes.
+
+---
+
+
+## v4.6.5
+
+### New features
+
+- **SteamAuto:** One-click auto-crack via SteamAutoCrack for the selected game. In the GUI, select a Steam game or a folder for a game outside Steam, then click SteamAuto to run the full crack process. In the CLI, choose Steam or non-Steam, then pick the game or enter its path and App ID. Place the Steam-auto-crack repo in `third_party/SteamAutoCrack` and optionally build its CLI into `third_party/SteamAutoCrack/cli/` (or use the build script when the repo is present).
+
+---
+
+## v4.6.4
+
+### New features
+
+- **AppList profiles:** Work around GreenLuma's 130–134 ID limit by using multiple profiles. Create empty profiles, switch between them, save the current AppList to a profile, and delete or rename profiles. Each profile can hold up to 134 IDs (configurable in settings). When you reach 130 IDs, a message reminds you to create a new profile before adding more games.
+
+---
+
+## v4.6.3
+
+### New features
+
+- **Embedded Workshop browser:** Open Workshop from the GUI to browse Steam Workshop in an embedded web view. Login to Steam, browse workshop pages, copy links, and download items without leaving SteaMidra. Uses a persistent profile so your session is kept.
+- **Workshop item download:** Paste a workshop URL or item/collection ID to download manifests. Supports single items and full collections.
+- **Check mod updates:** Track workshop items and check for newer versions, then update outdated mods in one go.
+- **Check for updates – automatic install:** When a newer version is available, download and update automatically. SteaMidra fetches the release, extracts it, and replaces files in your install folder.
+
+---
+
+## v4.6.2
+
+### Removed features
+
+- **Steam patch removed:** The Steam patch feature (xinput1_4.dll, hid.dll) has been removed from all variants.
+- **Sync Lua removed:** The option to sync saved Lua files and manifests into Steam's config has been removed.
+- Version bump to 4.6.2.
+
+---
+
+## v4.6.1
+
+### Multiplayer fix (online-fix.me) – Selenium login fix
+
+- **Login now works:** The multiplayer fix no longer uses HTTP-only login, which often failed with "Login failed (form still visible)". It now uses **Selenium with Chrome**: a headless browser opens the game page, fills in your credentials, clicks the login button, and handles cookies and JavaScript like a real browser. Login and download should work reliably.
+- **What you need:** Chrome browser must be installed. Selenium is in the main requirements: `pip install -r requirements.txt`.
+- Search, match, download button, and archive extraction flow are unchanged; only the login step is now browser-based.
+
+---
+
+## v4.5.4
+
+### Check for updates – automatic install
+
+- **Automatic update:** When a newer version is available, you can choose "Download and update automatically?". SteaMidra downloads the release zip, extracts it, and replaces the files in your install folder. When running from **source** (Python), the app restarts with the new version. When running from the **EXE**, SteaMidra does not relaunch the EXE; it tells you to rebuild the EXE so the new updates take effect.
+- Updates use the same folder as your current install, so no manual copying or extracting is needed.
+
+---
+
+## v4.5.3
+
+### Multiplayer fix (online-fix.me) – correct game and better matching
+
+- **"Game: Unknown" fixed:** The game name is now read from the ACF in the **same Steam library** where the game is installed (e.g. if the game is on `D:\SteamLibrary\...`, we read that library’s manifest, not the first one). If the name is still missing, we fetch the official name from the **Steam Store API** so we never search with "Unknown".
+- **Wrong game match fixed:** Search now uses a stricter minimum match (50%) and prefers results whose link text contains the game name (e.g. "R.E.P.O. по сети" for R.E.P.O.). We also search with "game name online-fix" to narrow results. This avoids picking the wrong game (e.g. "Species Unknown" when you selected R.E.P.O.).
+
+---
+
+## v4.5.2
+
+### Update check (Check for updates)
+
+- **Check for updates** now works for everyone: it always checks GitHub for the latest release and shows your version vs latest.
+- If you're up to date: *"You're already on the latest version."*
+- If a newer version exists: you can open the release page in your browser to download (or, for the Windows EXE with a matching update package, update from inside the app).
+- The updater uses proper GitHub API headers and a fallback when the "latest" endpoint is unavailable.
+
+### DLC check reliability
+
+- **DLC check** no longer gets stuck when Steam is slow or times out.
+- Steam API requests (app info, DLC details) now retry up to 3 times with a short delay instead of looping forever.
+- If Steam still fails after retries, SteaMidra automatically falls back to the **Steam Store** (no login): it fetches the DLC list and names from the store website and still shows which DLCs are in your AppList/config and lets you add missing ones.
+- So the DLC check works even when the Steam client connection is flaky.
+
+### Other fixes
+
+- **credentials.json** is now in `.gitignore` so it never gets committed or included in release zips.
+- **UPLOAD_AND_PRIVACY.md** updated with release-zip instructions and what to exclude.
+
+---
+
+## v4.5.1
+
+### Fix for crash on startup (`_listeners` error)
+
+**What was the problem?**
+
+Some people got a crash when starting SteaMidra. The error said something like:  
+`'SteamClient' object has no attribute '_listeners'. Did you mean: 'listeners'?`
+
+That happened because the wrong Python package named "eventemitter" was installed. SteaMidra needs a specific one called **gevent-eventemitter**. There is another package with a similar name that does not work with SteaMidra and caused the crash.
+
+**What we changed**
+
+- We now tell the installer to use the correct **gevent-eventemitter** package so new installs should not hit this crash.
+- If you already had the crash, do this once:
+  1. Open a command line in the SteaMidra folder.
+  2. Run: `pip uninstall eventemitter`
+  3. Run: `pip install "steam[client]"`
+  4. Run: `pip install -r requirements.txt`
+  5. Start SteaMidra again.
+
+After that, SteaMidra should start normally.
