@@ -36,7 +36,25 @@ if sys.stdout is None:
 
 
 os.environ.setdefault('QTWEBENGINE_DISABLE_SANDBOX', '1')
-os.environ.setdefault('QTWEBENGINE_CHROMIUM_FLAGS', '--no-sandbox --ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy')
+# QtWebEngine flags. Windows runs fine with the default GPU-compositing
+# path (ANGLE → D3D11). Linux Wayland sessions on Intel + Mesa hit a
+# dma-buf import bug that lets the renderer process produce frames the
+# Wayland compositor can't display, so the window paints but the page
+# stays blank. Two confirmed users on KDE Plasma Wayland reported the
+# blank window. Workaround verified across KDE Plasma, GNOME, Sway,
+# and Hyprland: drop GPU compositing (page raster still runs on the
+# GPU; only the final compositing step moves to software) and force
+# real desktop GL instead of ANGLE so the EGL/dma-buf path is bypassed.
+if sys.platform == "linux":
+    os.environ.setdefault(
+        'QTWEBENGINE_CHROMIUM_FLAGS',
+        '--no-sandbox --disable-gpu-compositing --use-gl=desktop',
+    )
+else:
+    os.environ.setdefault(
+        'QTWEBENGINE_CHROMIUM_FLAGS',
+        '--no-sandbox --ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy',
+    )
 
 import PyQt6.QtWebEngineWidgets  # noqa: F401 - must import before QCoreApplication
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox

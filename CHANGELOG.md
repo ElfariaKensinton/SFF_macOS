@@ -15,6 +15,7 @@
 
 ### Linux
 
+- Fixed blank / white WebEngine window on Linux Wayland sessions. Two users on KDE Plasma Wayland reported the GUI launching with the chrome rendered but the page area completely blank. Diagnostic logs confirmed the WebEngine renderer was producing frames and the WebChannel handshake was completing — the JS app loaded translations and fetched the game list — but the dma-buf textures the compositor hands to Wayland never made it to the screen. ANGLE-on-Wayland with Intel UHD + Mesa is the bad combination; the renderer logs say `EGL: MESA extensions found but missing EGL_MESA_drm_image, will use dma-buf, some older graphics cards may not be supported` and then silently fails to display. Switched the Linux-only Chromium flags to `--no-sandbox --disable-gpu-compositing --use-gl=desktop` so page rasterization still runs on the GPU but the final compositing step moves to software, bypassing the dma-buf import path entirely. Windows keeps the existing `--ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy` flags since they're not affected
 - .NET 9 now installs automatically on first Linux launch when missing. Previously the user had to run Linux Tools Setup once before any download or Steamless action would work; now SteaMidra spawns `dotnet-install.sh` on a daemon thread 6 seconds after the window paints, so the runtime lands in `~/.dotnet/` while the user is still browsing the home page. Failures log to `debug.log` and don't block the GUI
 
 ### Bulk import — drag and drop
