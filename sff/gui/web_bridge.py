@@ -256,38 +256,87 @@ class WebBridge(QObject):
                 )
                 return result
 
-            # Drop Hubcap entries that Steam's appdetails reports as
-            # macOS-only or Linux-only (e.g. appid 12250 GTA: San Andreas
-            # Mac port). Hubcap's own response doesn't carry platform
-            # info, so we look it up via Steam's `appdetails?filters=basic`
-            # endpoint and cache the result for the lifetime of the
-            # process. Entries Steam can't resolve (delisted, no data)
-            # are kept so genuine classics aren't dropped.
+            # Structural DLC + platform filter for Hubcap-only candidates.
+            # Three drop signals, all derived from Steam's GetItems:
+            #
+            #   1. parent_appid is set  -> Steam tags this as DLC of
+            #      another app. Drops Cyberpunk Phantom Liberty,
+            #      RE6 Predator/Onslaught modes, RE Op Raccoon Echo
+            #      Six Expansion 1, Elden Ring Shadow of the Erdtree,
+            #      etc.
+            #   2. delisted_blank is True  -> GetItems returned no
+            #      name and no type. Steam strips public metadata
+            #      from removed DLC content (RE6 Mercenaries No
+            #      Mercy, RE5 Stories Bundle, RE4 weapon tickets).
+            #      Real classic delisted GAMES still return
+            #      name + type=0 (verified for GTA SA classic, Dark
+            #      Souls PTDE, Resident Evil HD), so this signal is
+            #      reliably DLC content.
+            #   3. platforms set excludes "windows"  -> macOS-only or
+            #      Linux-only port (e.g. appid 12250 GTA SA Mac).
+            #
+            # No name keywords. Steam-confirmed appids that already
+            # appear in the Steam catalog result skip the filter
+            # entirely so we trust Steam's own listing.
             steam_ids = {g.get('app_id') for g in result.get('games', []) or []}
             extra_ids = [aid for aid in hubcap_hits.keys() if aid not in steam_ids]
-            plat_map = _fetch_steam_platforms(extra_ids)
+            meta_map = _fetch_steam_platforms(extra_ids)
             non_windows_filtered = 0
+            dlc_filtered = 0
             kept_hubcap = {}
             for app_id, hg in hubcap_hits.items():
                 if app_id in steam_ids:
-                    # Steam already vouched for this appid; trust it.
                     kept_hubcap[app_id] = hg
                     continue
-                tags = plat_map.get(app_id, {"_unknown"})
-                if "_unknown" in tags or "windows" in tags:
-                    kept_hubcap[app_id] = hg
-                else:
+                meta = meta_map.get(app_id) or {}
+                tags = meta.get("platforms") or {"_unknown"}
+                parent_appid = meta.get("parent_appid")
+                delisted_blank = bool(meta.get("delisted_blank"))
+                store_type = (meta.get("type") or "").lower()
+
+                # Structural DLC signals.
+                if parent_appid:
+                    dlc_filtered += 1
+                    logger.debug(
+                        "search_games: filtered Hubcap appid=%s name=%r parent=%s",
+                        app_id, hg.name, parent_appid,
+                    )
+                    continue
+                if delisted_blank:
+                    dlc_filtered += 1
+                    logger.debug(
+                        "search_games: filtered Hubcap appid=%s name=%r (delisted, no Steam metadata)",
+                        app_id, hg.name,
+                    )
+                    continue
+                # Belt-and-suspenders type drop. parent_appid covers
+                # type=2/4 already. This catches edge cases where
+                # GetItems returns type=5/7/9-15 (advertising, tool,
+                # video, music) without a parent appid.
+                if store_type and store_type not in ("game", "demo", "mod"):
+                    dlc_filtered += 1
+                    logger.debug(
+                        "search_games: filtered Hubcap appid=%s name=%r type=%s",
+                        app_id, hg.name, store_type,
+                    )
+                    continue
+
+                # Platform check.
+                if "_unknown" not in tags and "windows" not in tags:
                     non_windows_filtered += 1
                     logger.debug(
-                        "search_games: filtered Hubcap appid=%s name=%r platforms=%s (no windows)",
+                        "search_games: filtered Hubcap appid=%s name=%r platforms=%s",
                         app_id, hg.name, sorted(tags),
                     )
+                    continue
+
+                kept_hubcap[app_id] = hg
             hubcap_hits = kept_hubcap
 
             logger.info(
-                "search_games: query=%r got %d Steam + %d Hubcap hit(s) across %d variant(s) (%d non-windows filtered)",
+                "search_games: query=%r got %d Steam + %d Hubcap hit(s) across %d variant(s) (%d DLC filtered, %d non-windows filtered)",
                 query, len(result.get('games', [])), len(hubcap_hits),
-                len(queries), non_windows_filtered,
+                len(queries), dlc_filtered, non_windows_filtered,
             )
 
             # Overlay Hubcap status on Steam rows that share an app_id.
@@ -723,6 +772,153 @@ class WebBridge(QObject):
             )
 
         self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def dlc_check_get_list(self, app_id):
+        """Fetch DLC list for the selected game and emit a structured
+        `task_finished` payload the Web UI can render in a modal.
+
+        Replaces the old run_game_action('dlc_check') flow that piped
+        Rich console tables into stdout that the Web UI never displayed.
+        Two paths:
+
+          * Steam-side (Web API via SteamInfoProvider): pulls
+            `extended.listofdlc` and per-DLC type / depot / manifest
+            metadata. Used when the SteamClient is logged in.
+          * Steam Store fallback: hits `appdetails` and reads `dlc`
+            for the appid list, then pulls per-DLC names from the same
+            Store endpoint. Used when the Steam Web client times out.
+
+        Result payload shape:
+          { task: 'dlc_check', success: bool, app_id: str, source: str,
+            dlcs: [{ id, name, in_applist, has_key, has_manifest, type }],
+            owned_count, total_count, message: str }
+        """
+        if not app_id or not str(app_id).strip().isdigit():
+            self._emit_task_result("dlc_check", False, "Invalid app ID",
+                                   app_id=str(app_id), dlcs=[])
+            return
+
+        def _do():
+            base_id = int(app_id)
+            local_ids: set = set()
+            try:
+                if self._ui:
+                    inj = getattr(self._ui, 'app_list_man', None) or getattr(self._ui, 'sls_man', None)
+                    if inj is not None:
+                        local_ids = set(inj.get_local_ids() or [])
+            except Exception as e:
+                logger.debug("dlc_check_get_list: get_local_ids failed: %s", e)
+
+            # Try Steam Web API first via the existing provider; fall back
+            # to the Store API when the API call fails or returns no data.
+            dlc_ids: list = []
+            base_name = ""
+            depot_id_set: set = set()
+            depot_keyed_ids: set = set()
+            try:
+                if self._ui and getattr(self._ui, 'provider', None):
+                    base_info = self._ui.provider.get_single_app_info(base_id)
+                    if base_info:
+                        base_name = str(
+                            base_info.get('common', {}).get('name', '') or ''
+                        )
+                        from sff.utils import enter_path
+                        raw = enter_path(base_info, 'extended', 'listofdlc')
+                        if isinstance(raw, str) and raw.strip():
+                            dlc_ids = [
+                                int(x) for x in raw.split(',') if x.strip().isdigit()
+                            ]
+                        # Collect depot-style DLCs and ones with decryption keys.
+                        depots = base_info.get('depots') or {}
+                        if isinstance(depots, dict):
+                            for k, v in depots.items():
+                                if not isinstance(v, dict):
+                                    continue
+                                dlc_appid = v.get('dlcappid')
+                                if dlc_appid:
+                                    try:
+                                        depot_id_set.add(int(dlc_appid))
+                                    except (TypeError, ValueError):
+                                        pass
+                                # decryption key presence is captured in
+                                # config.vdf, queried below.
+            except Exception as e:
+                logger.debug("dlc_check_get_list: Steam API path failed: %s", e)
+
+            # Fallback to Store API for the DLC id list when Steam API
+            # didn't return anything.
+            if not dlc_ids:
+                try:
+                    from sff.steam_store import get_dlc_list_from_store
+                    result = get_dlc_list_from_store(base_id)
+                    if result:
+                        base_name = result[0] or base_name
+                        dlc_ids = list(result[1] or [])
+                except Exception as e:
+                    logger.debug("dlc_check_get_list: Store API path failed: %s", e)
+
+            if not dlc_ids:
+                self._emit_task_result(
+                    "dlc_check", True,
+                    f"{base_name or 'App ' + str(base_id)} has no DLCs",
+                    app_id=str(base_id),
+                    base_name=base_name,
+                    dlcs=[],
+                    owned_count=0,
+                    total_count=0,
+                )
+                return
+
+            # Pull DLC names. Prefer Steam Store API for delisted DLCs
+            # since the Web API may not expose them to a non-owning user.
+            from sff.steam_store import get_dlc_names_from_store
+            try:
+                names_map = get_dlc_names_from_store(dlc_ids) or {}
+            except Exception as e:
+                logger.debug("dlc_check_get_list: name fetch failed: %s", e)
+                names_map = {}
+
+            # Decryption keys live in <steam>/config/config.vdf.
+            try:
+                from sff.lua.writer import ConfigVDFWriter
+                cfg = ConfigVDFWriter(self._steam_path) if self._steam_path else None
+                key_map = cfg.ids_in_config(dlc_ids) if cfg else {}
+            except Exception as e:
+                logger.debug("dlc_check_get_list: key map failed: %s", e)
+                key_map = {}
+
+            dlcs_payload = []
+            owned = 0
+            for did in dlc_ids:
+                in_applist = did in local_ids
+                if in_applist:
+                    owned += 1
+                is_depot = did in depot_id_set
+                dlcs_payload.append({
+                    "id": str(did),
+                    "name": names_map.get(did, f"DLC {did}"),
+                    "in_applist": in_applist,
+                    "has_key": bool(key_map.get(did, False)),
+                    "type": "depot" if is_depot else "appid",
+                })
+
+            self._emit_task_result(
+                "dlc_check", True,
+                f"{owned}/{len(dlc_ids)} DLCs unlocked for "
+                f"{base_name or 'App ' + str(base_id)}",
+                app_id=str(base_id),
+                base_name=base_name,
+                dlcs=dlcs_payload,
+                owned_count=owned,
+                total_count=len(dlc_ids),
+            )
+
+        def _on_error(msg):
+            self._emit_task_result("dlc_check", False, str(msg),
+                                   app_id=str(app_id), dlcs=[])
+
+        self._run_async(_do, on_error=_on_error)
 
     @pyqtSlot(str, str)
     def run_game_action(self, app_id, action):
@@ -2179,6 +2375,82 @@ class WebBridge(QObject):
 
         self._run_async(_do, on_done=_on_done)
 
+    @pyqtSlot(str)
+    def enqueue_dropped_blobs(self, blobs_json):
+        """Accept a JSON list of dropped file payloads from the JS Drop
+        Zone, write each blob to a per-session temp folder, and enqueue
+        those temp paths through the standard bulk-import pipeline.
+
+        QtWebEngine's Chromium 124+ no longer exposes `file.path` on
+        drag-and-drop, so the JS side cannot read the user's actual
+        filesystem path. Instead it reads file CONTENT via
+        `file.arrayBuffer()`, base64-encodes it, and passes
+        ``[{name, content_b64}]`` here. We materialize each entry to
+        ``<sff_data>/.bulk_import_drop/<safe-name>`` and feed those
+        paths into BulkImportQueue. Validation, dedupe, and the rest
+        of the pipeline are unchanged from the folder-scan path.
+        """
+        try:
+            blobs = json.loads(blobs_json or "[]")
+        except Exception as exc:
+            logger.warning("enqueue_dropped_blobs: bad JSON: %s", exc)
+            return
+        if not isinstance(blobs, list) or not blobs:
+            return
+
+        def _do():
+            import base64 as _b64
+            import re as _re
+            from sff.utils import sff_data_dir
+
+            staging = sff_data_dir() / ".bulk_import_drop"
+            staging.mkdir(parents=True, exist_ok=True)
+            paths: list[Path] = []
+            unsafe_re = _re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+            for blob in blobs:
+                if not isinstance(blob, dict):
+                    continue
+                name = str(blob.get("name", "")).strip()
+                content_b64 = blob.get("content_b64", "")
+                if not name or not content_b64:
+                    continue
+                # Reject anything that doesn't end in .lua / .zip / .manifest;
+                # bulk_import already does this, but we save the I/O round trip.
+                lower = name.lower()
+                if not (lower.endswith(".lua") or lower.endswith(".zip") or lower.endswith(".manifest")):
+                    continue
+                safe = unsafe_re.sub("_", name)
+                target = staging / safe
+                # Avoid overwriting a sibling drop with the same name in the
+                # same session; suffix by appending a counter.
+                counter = 0
+                base_target = target
+                while target.exists():
+                    counter += 1
+                    target = base_target.with_name(f"{base_target.stem}__{counter}{base_target.suffix}")
+                try:
+                    raw = _b64.b64decode(content_b64, validate=False)
+                    target.write_bytes(raw)
+                except Exception as exc:
+                    logger.warning(
+                        "enqueue_dropped_blobs: write failed for %r: %s", name, exc
+                    )
+                    continue
+                paths.append(target)
+
+            if not paths:
+                return None
+            queue = self._get_bulk_import_queue()
+            queue.enqueue_files(iter(paths))
+            self._maybe_drain_queue(queue)
+            return queue.summary()
+
+        def _on_done(summary):
+            self._emit_bulk_summary("drop", summary)
+
+        self._run_async(_do, on_done=_on_done)
+
     @pyqtSlot()
     def run_bulk_import(self):
         """Start the queue drain. Used by the `collect_then_confirm` mode
@@ -2781,7 +3053,20 @@ class WebBridge(QObject):
                             [hg.app_id for hg in candidates]
                         )
                         for hg in candidates:
-                            tags = plat_map.get(hg.app_id, {"_unknown"})
+                            meta = plat_map.get(hg.app_id) or {}
+                            tags = meta.get("platforms") or {"_unknown"}
+                            store_type = (meta.get("type") or "").lower()
+                            parent_appid = meta.get("parent_appid")
+                            delisted_blank = bool(meta.get("delisted_blank"))
+                            # Structural DLC drops: parent appid set,
+                            # blank delisted entry, or non-game type.
+                            if parent_appid:
+                                continue
+                            if delisted_blank:
+                                continue
+                            if store_type and store_type not in ("game", "demo", "mod"):
+                                continue
+                            # Drop non-Windows-only entries.
                             if "_unknown" not in tags and "windows" not in tags:
                                 continue
                             results.append({
@@ -3499,25 +3784,42 @@ class WebBridge(QObject):
 
 
 def _fetch_steam_platforms(app_ids):
-    """Look up Windows / macOS / Linux availability for each appid via
-    Steam's `appdetails?filters=platforms` endpoint.
+    """Look up Steam metadata for each appid via batched
+    `IStoreBrowseService/GetItems/v1` calls.
 
-    Returns a dict mapping appid (int) -> set of platform tags. The
-    sentinel set `{"_unknown"}` means Steam returned no data (404,
-    delisted, parse failure); the caller treats that as "platform
-    unknown, keep the row" so we never hide classics Steam doesn't
-    surface anymore. Uses the in-process `_STEAM_PLATFORM_CACHE`
-    to avoid hammering the rate-limited endpoint on repeat searches.
+    Returns a dict mapping appid (int) -> dict with four keys:
+      'platforms'       : set of lowercase tags ("windows", "macos",
+                          "linux") or `{"_unknown"}` when GetItems
+                          returned no platform data
+      'type'            : Steam's app type integer mapped to a
+                          lowercase string ('game', 'dlc', 'demo',
+                          'mod', 'tool', 'video', 'music',
+                          'advertising'); '' when GetItems returned
+                          no body for the appid
+      'parent_appid'    : int when this appid is a DLC of another app
+                          (Steam exposes this only for DLCs); None
+                          for base games and demos
+      'delisted_blank'  : True when GetItems returned the appid as a
+                          row with no name and no type. Steam strips
+                          all public metadata for fully removed
+                          entries; classic delisted GAMES still
+                          return name + type=0 (verified for GTA SA
+                          classic, Resident Evil HD, Dark Souls PTDE
+                          Edition, etc), so this flag is a strong
+                          "this is removed-from-store DLC content"
+                          signal
 
-    `filters=platforms` returns the smallest payload that still
-    carries the windows/mac/linux booleans. The `basic` filter
-    drops the platforms block entirely on current Steam responses
-    (verified May 2026), so use the per-section filter instead.
+    Callers use `parent_appid` and `delisted_blank` as STRUCTURAL DLC
+    drop signals — no name-keyword matching required. `platforms` is
+    used to drop macOS-only / Linux-only ports.
 
-    Steam's appdetails API is rate-limited to ~200 req / 5 min
-    per IP. Loop one appid at a time, bail early after 3
-    consecutive failures so a transient throttle doesn't stall the
-    whole search worker.
+    Switched from `appdetails` to `GetItems` because appdetails enforces
+    a strict ~200 req / 5 min rate limit that returned HTTP 429 mid-flow
+    on heavy searches. GetItems batches up to ~50 appids per request
+    and has no per-IP rate limit visible.
+
+    Uses the in-process `_STEAM_PLATFORM_CACHE` to avoid refetching
+    on repeat searches.
     """
     if not app_ids:
         return {}
@@ -3525,8 +3827,8 @@ def _fetch_steam_platforms(app_ids):
     import urllib.request as _req
     import urllib.parse as _urlparse
 
-    out: dict[int, set] = {}
-    pending = []
+    out: dict[int, dict] = {}
+    pending: list[int] = []
     for raw in app_ids:
         try:
             aid = int(raw)
@@ -3540,50 +3842,124 @@ def _fetch_steam_platforms(app_ids):
         else:
             pending.append(aid)
 
+    if not pending:
+        return out
+
+    # Batch in chunks. 50 per call is conservative; Steam accepts more
+    # but the URL grows fast. After two consecutive batch failures we
+    # bail and mark everything else unknown so a transient outage
+    # doesn't stall the whole search worker.
+    chunk_size = 50
     consecutive_failures = 0
-    for aid in pending:
-        if consecutive_failures >= 3:
-            # Steam started rate-limiting or the network is dead.
-            # Mark the rest as unknown so we don't churn.
-            _STEAM_PLATFORM_CACHE[aid] = {"_unknown"}
-            out[aid] = {"_unknown"}
+    blank_default = {
+        "platforms": {"_unknown"},
+        "type": "",
+        "parent_appid": None,
+        "delisted_blank": False,
+    }
+    for start in range(0, len(pending), chunk_size):
+        chunk = pending[start:start + chunk_size]
+        if consecutive_failures >= 2:
+            for aid in chunk:
+                cached = dict(blank_default)
+                _STEAM_PLATFORM_CACHE[aid] = cached
+                out[aid] = cached
             continue
         try:
-            qs = _urlparse.urlencode({
-                "appids": str(aid),
-                "filters": "platforms",
-                "cc": "us",
-                "l": "en",
-            })
-            url = f"https://store.steampowered.com/api/appdetails?{qs}"
+            payload = {
+                "ids": [{"appid": aid} for aid in chunk],
+                "context": {"language": "english", "country_code": "US"},
+                "data_request": {
+                    "include_assets": False,
+                    "include_platforms": True,
+                    "include_basic_info": False,
+                    "include_release": False,
+                },
+            }
+            url = (
+                "https://api.steampowered.com/IStoreBrowseService/GetItems/v1?input_json="
+                + _urlparse.quote(_json.dumps(payload, separators=(",", ":")))
+            )
             request = _req.Request(url, headers={"User-Agent": "Mozilla/5.0 SteaMidra"})
-            with _req.urlopen(request, timeout=4, context=_get_ssl_ctx()) as resp:
-                payload = _json.loads(resp.read())
-            entry = payload.get(str(aid)) if isinstance(payload, dict) else None
-            if not entry or not entry.get("success"):
-                _STEAM_PLATFORM_CACHE[aid] = {"_unknown"}
-                out[aid] = {"_unknown"}
-                consecutive_failures = 0
-                continue
-            data = entry.get("data") or {}
-            plats_raw = data.get("platforms") or {}
-            tags: set[str] = set()
-            if plats_raw.get("windows"):
-                tags.add("windows")
-            if plats_raw.get("mac"):
-                tags.add("macos")
-            if plats_raw.get("linux"):
-                tags.add("linux")
-            if not tags:
-                tags = {"_unknown"}
-            _STEAM_PLATFORM_CACHE[aid] = tags
-            out[aid] = tags
+            with _req.urlopen(request, timeout=8, context=_get_ssl_ctx()) as resp:
+                data = _json.loads(resp.read())
+            seen: set[int] = set()
+            for item in (data.get("response") or {}).get("store_items", []) or []:
+                aid = item.get("appid")
+                if not isinstance(aid, int):
+                    continue
+                seen.add(aid)
+                name = item.get("name") or ""
+                type_int = item.get("type")
+                related = item.get("related_items") or {}
+                parent_appid = related.get("parent_appid")
+                if isinstance(parent_appid, int) and parent_appid <= 0:
+                    parent_appid = None
+
+                # Steam strips name + type from fully delisted entries.
+                # Classic GAMES that the store hides keep name + type=0
+                # (verified on GTA SA classic, Dark Souls PTDE, etc), so
+                # an empty body really does mean "this is removed-from-
+                # store DLC content".
+                delisted_blank = (not name) and (type_int is None)
+
+                plats_raw = item.get("platforms")
+                tags: set[str] = set()
+                if isinstance(plats_raw, dict):
+                    if plats_raw.get("windows"):
+                        tags.add("windows")
+                    if plats_raw.get("mac"):
+                        tags.add("macos")
+                    if plats_raw.get("steamos_linux") or plats_raw.get("linux"):
+                        tags.add("linux")
+                if not tags:
+                    tags = {"_unknown"}
+
+                # GetItems uses int type codes. Map to lowercase
+                # strings so callers can match on 'dlc' / 'music' /
+                # 'video' / 'tool' / 'advertising' string forms.
+                type_str = ""
+                if isinstance(type_int, int):
+                    type_str = {
+                        0: "game",
+                        2: "dlc",
+                        3: "demo",
+                        4: "dlc",
+                        5: "advertising",
+                        6: "mod",
+                        7: "tool",
+                        9: "video",
+                        10: "video",
+                        11: "video",
+                        12: "video",
+                        13: "music",
+                        14: "video",
+                        15: "video",
+                    }.get(type_int, str(type_int))
+
+                cached = {
+                    "platforms": tags,
+                    "type": type_str,
+                    "parent_appid": parent_appid,
+                    "delisted_blank": delisted_blank,
+                }
+                _STEAM_PLATFORM_CACHE[aid] = cached
+                out[aid] = cached
+            # Anything we asked about that GetItems silently dropped
+            # gets the unknown sentinel.
+            for aid in chunk:
+                if aid not in seen:
+                    cached = dict(blank_default)
+                    _STEAM_PLATFORM_CACHE[aid] = cached
+                    out[aid] = cached
             consecutive_failures = 0
         except Exception as e:
-            logger.debug("Steam appdetails platform lookup failed for %s: %s", aid, e)
+            logger.debug("Steam GetItems lookup failed for chunk starting at %s: %s", chunk[0], e)
             consecutive_failures += 1
-            _STEAM_PLATFORM_CACHE[aid] = {"_unknown"}
-            out[aid] = {"_unknown"}
+            for aid in chunk:
+                cached = dict(blank_default)
+                _STEAM_PLATFORM_CACHE[aid] = cached
+                out[aid] = cached
     return out
 
 
@@ -3633,12 +4009,14 @@ def _fetch_steam_image_urls(app_ids):
 _STEAM_APPLIST_CACHE = None
 _STEAM_APPLIST_CACHE_TIME = 0.0
 
-# In-process cache of Steam appdetails platform info for Hubcap-only entries.
-# Maps appid (int) -> set of lowercase platform tags ("windows", "macos",
-# "linux") or the sentinel set {"_unknown"} when Steam returned no data.
-# Steam's appdetails API rate-limits aggressively (200 req / 5 min), so we
-# cache responses for the lifetime of the process and never refetch.
-_STEAM_PLATFORM_CACHE: "dict[int, set[str]]" = {}
+# In-process cache of Steam GetItems metadata for Hubcap-only entries.
+# Maps appid (int) -> dict with keys 'platforms' (set of lowercase tags
+# or {"_unknown"}), 'type' (str), 'parent_appid' (int or None), and
+# 'delisted_blank' (bool — True when GetItems returned the appid with
+# no name and no type, the strongest "Steam removed all metadata"
+# signal we have). The DLC filter uses parent_appid + delisted_blank
+# as structural drop signals; no name keywords involved.
+_STEAM_PLATFORM_CACHE: "dict[int, dict]" = {}
 
 _NONGAME_NAME_KW = ("soundtrack", "art book", "artbook", " ost", "music pack", "digital artbook")
 

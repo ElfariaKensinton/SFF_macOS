@@ -1598,6 +1598,25 @@
         </div>
     </div>
 
+    <!-- DLC Check Modal -->
+    <div id="dlc-check-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content" style="max-width:680px;">
+            <div class="modal-header">
+                <div>
+                    <h2 id="dlc-check-title">DLC Check</h2>
+                    <p id="dlc-check-summary" class="modal-subtitle"></p>
+                </div>
+                <button class="modal-close" aria-label="Close">&times;</button>
+            </div>
+            <div id="dlc-check-body" class="modal-body" style="max-height:60vh;overflow-y:auto;">
+            </div>
+            <div class="modal-footer" style="justify-content:flex-end;">
+                <button class="btn modal-cancel">Close</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Container -->
     <div id="toast-container" class="toast-container"></div>
 
@@ -1617,5 +1636,6 @@
     <script src="js/cloudsaves.js"></script>
     <script src="js/settings.js"></script>
     <script src="js/bulk_import.js"></script>
+    <script src="js/dlc_check.js"></script>
 </body>
 </html>

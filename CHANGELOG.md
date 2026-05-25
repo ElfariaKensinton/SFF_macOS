@@ -1,5 +1,26 @@
 # Changelog
 
+## 6.2.5
+
+### Store / search — DLC filter rewrite
+
+- Hubcap merge no longer leaks DLCs / soundtracks / weapon packs / costume packs / mission packs / RE6 modes / RE4 weapon tickets / RE5 stories bundles into search results. The old filter relied on a string-keyword list ("soundtrack", "weapons pack", etc) and would have hidden real games with DLC-ish words in the title; the new filter reads two structural signals from Steam's `IStoreBrowseService/GetItems` and uses zero string matching: `related_items.parent_appid` (set on every DLC, points back at the base game) and the empty-row signature Steam uses for fully removed DLC content (no name, no type). Real games with DLC-sounding names (Half-Life 2: Episode One, Black Myth: Wukong, Skyrim: Special Edition, LEGO Star Wars: The Skywalker Saga, GTA: San Andreas Mac port) keep showing up because they all return name + type=0 from GetItems
+- Hubcap merge alias-expands the user query before sending it to Hubcap. Typing "gta san andreas" used to send "gta san andreas" verbatim, which Hubcap matches as a plain substring against game names where the classic title is stored as "Grand Theft Auto: San Andreas" with no "GTA" anywhere. The merge step now also queries Hubcap with "grand theft auto san andreas" (and the matching expansion for re, cod, rdr, kh, er, wukong, and the rest of the alias map), then dedupes results by appid
+- Hubcap merge filters out macOS-only and Linux-only entries. Searching "grand theft auto san andreas" no longer shows the Mac port (appid 12250) alongside the Windows classic (12120) and the Definitive Edition (1547000)
+- Switched the Steam metadata lookup from `appdetails` (rate-limited at 200 req / 5 min, returning HTTP 429 mid-search) to `IStoreBrowseService/GetItems` (batched up to 50 appids per call, no per-IP rate limit), so the type signal actually arrives instead of falling through
+
+### DLC check
+
+- The DLC check button now actually shows something. The old code piped a Rich console table into stdout that the Web UI never displayed, so clicking the button looked like a no-op. New `dlc_check_get_list` slot returns structured JSON, and a new modal renders the DLC list with status (Unlocked / Missing), app id, name, and depot / appid type. Reads from the Steam Web API when available, falls back to Steam Store `appdetails` when the Web client times out
+
+### Linux
+
+- .NET 9 now installs automatically on first Linux launch when missing. Previously the user had to run Linux Tools Setup once before any download or Steamless action would work; now SteaMidra spawns `dotnet-install.sh` on a daemon thread 6 seconds after the window paints, so the runtime lands in `~/.dotnet/` while the user is still browsing the home page. Failures log to `debug.log` and don't block the GUI
+
+### Bulk import — drag and drop
+
+- Drag-and-drop into the Bulk Import drop zone works again. QtWebEngine 6.10 ships Chromium 124 which removed the non-standard `file.path` property, so dropped Lua / manifest files were arriving at the bridge with just the bare filename. The bridge then resolved that against the working directory (giving an invalid path), the first drop failed with "not there", and a second drop hit the dedupe set with the same invalid path and reported "already there". Drop now reads each file's content via `FileReader.readAsDataURL`, base64-encodes it, and ships `{name, content_b64}` to a new `enqueue_dropped_blobs` slot that materializes the bytes under `<sff_data>/.bulk_import_drop/` and runs the standard pipeline. The result list shows the original filename instead of the temp path
+
 ## 6.2.4
 
 ### LumaCore — CD key bypass
@@ -25,8 +46,6 @@
 
 - Common franchise abbreviations work in the search box. Typing `gta` finds Grand Theft Auto, `re` finds Resident Evil, `cod` Call of Duty, `rdr` Red Dead, `kh` Kingdom Hearts, `er` Elden Ring, `tf2` Team Fortress 2, `cs2` Counter-Strike 2, and so on. Full names still match the same way they did
 - Hubcap entries that aren't in Steam's catalog now merge into search results when a Hubcap key is configured. Delisted titles like classic Grand Theft Auto: San Andreas show up alongside the regular Steam hits instead of being silently dropped
-- Hubcap merge now alias-expands the user query before sending it to Hubcap. Typing "gta san andreas" used to send "gta san andreas" verbatim, which Hubcap matches as a substring against game names where the classic title is stored as "Grand Theft Auto: San Andreas" with no "GTA" anywhere. The merge step now also queries Hubcap with "grand theft auto san andreas" (and the matching expansion for re, cod, rdr, kh, er, wukong, all the other aliases) and dedupes results by appid, so abbreviated typing finally surfaces the delisted classics on Hubcap-keyed setups
-- Hubcap merge filters out macOS-only and Linux-only entries. Searching "grand theft auto san andreas" no longer shows the Mac port (appid 12250) alongside the Windows classic (12120) and the Definitive Edition (1547000). Hubcap's API doesn't carry platform info, so each Hubcap-only candidate gets a tiny `appdetails?filters=platforms` lookup against Steam, cached for the lifetime of the process. Entries Steam can't resolve (delisted, no data) stay in the list so genuine classics aren't dropped
 - Oureveryday Lua now includes appid-only DLCs (the kind that don't ship their own depot). The downloader pulls `extended.listofdlc` from the game's app info and writes one `addappid(<dlc_id>)` line per entry under the keyed lines. LumaCore picks them up on the next license refresh, so the DLC unlocks without needing the user to add it manually
 
 ### Achievements
@@ -47,6 +66,9 @@
 
 - `LumaCoreForWork/allgames/download_zips.py` (the bulk .lua downloader) no longer pegs the CPU. Rewritten on asyncio with HTTP/2 connection pooling, separate semaphores for network vs decompression (decompress capped at half the cpu count), and per-appid parallel source fetching so wall time per appid is `max(source1, source2)` instead of `source1 + source2`. The output directory is scanned once at startup instead of once per worker per appid. Tunable via `DZ_NET` / `DZ_CPU` / `DZ_TIMEOUT` env vars
 
+
+</content>
+</file>
 ### LumaCore-required notice
 
 - Added a blue notice banner above the existing Steam-error-54 banner on the home page. It tells users that adding games to their Steam library and downloading them needs LumaCore installed first, and points them at Auto LC Setup in Quick Tools below. This is for the users who don't read the guide

@@ -135,6 +135,8 @@ window.Bridge = (function() {
             download_game_fastest: function() {},
             download_game_version: function() {},
             run_game_action: function() {},
+            dlc_check_get_list: function() {},
+            enqueue_dropped_blobs: function() {},
             get_platform: function(cb) { if (cb) cb('win32'); },
             connect_store: function() {},
             get_stored_api_key: function(cb) { if (cb) cb(''); },

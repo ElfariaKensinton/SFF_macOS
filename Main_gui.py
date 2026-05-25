@@ -314,6 +314,31 @@ def main():
 
         QTimer.singleShot(0, _run_slssteam_update_check)
 
+        # Auto-install .NET 9 on first Linux launch. DepotDownloaderMod and
+        # Steamless both need it, and the user shouldn't have to dig into
+        # Linux Tools Setup before their first download. Run on a daemon
+        # thread because dotnet-install.sh takes 30-60s and would freeze
+        # the window. The 6s defer keeps it off the critical path.
+        def _maybe_install_dotnet_9_linux():
+            try:
+                from sff.dotnet_utils import get_dotnet_path, ensure_dotnet_9
+                if get_dotnet_path():
+                    return
+                logger.info("Linux: .NET 9 not found, installing in background...")
+                ensure_dotnet_9()
+            except Exception as exc:
+                logger.warning("Background .NET 9 install failed: %s", exc)
+
+        def _kick_dotnet_install():
+            import threading as _t
+            _t.Thread(
+                target=_maybe_install_dotnet_9_linux,
+                name="sff-dotnet9-bootstrap",
+                daemon=True,
+            ).start()
+
+        QTimer.singleShot(6000, _kick_dotnet_install)
+
     # A9: startup self-update popup. Defer 2s so the window paints first.
     # The whole body is wrapped so a GitHub failure or dialog construction
     # error never crashes the GUI (preservation requirement 3.20).

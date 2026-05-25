@@ -93,6 +93,8 @@ window.Library = (function() {
                         btn.textContent = 'Patching...';
                         btn.dataset.lurefixing = appId;
                         Bridge.call('lure_fix_acf', appId);
+                    } else if (action === 'dlc_check') {
+                        DlcCheck.show(appId);
                     } else {
                         Bridge.call('run_game_action', appId, action);
                     }

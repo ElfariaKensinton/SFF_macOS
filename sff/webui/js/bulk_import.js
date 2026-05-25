@@ -62,9 +62,28 @@
     }
 
     function _path(file) {
-        // Drag-and-drop in QtWebEngine usually exposes file.path; falls
-        // back to file.name when running in plain browsers.
-        return file.path || file.webkitRelativePath || file.name || '';
+        // QtWebEngine 6.10+ (Chromium 124+) no longer exposes file.path
+        // on drag-and-drop. Use file.name for display purposes; the
+        // bridge gets the actual file content via _readAsBase64 below.
+        return file.name || '';
+    }
+
+    function _readAsBase64(file) {
+        // Read the dropped file's bytes and return a base64 string. Used
+        // to ship dropped blobs to the Python side, since file.path is
+        // gone in current Chromium and we can't trust the JS-visible
+        // path. FileReader.readAsDataURL is the simplest path; we strip
+        // the leading "data:<mime>;base64," prefix.
+        return new Promise(function (resolve, reject) {
+            var reader = new FileReader();
+            reader.onerror = function () { reject(reader.error || new Error('FileReader error')); };
+            reader.onload = function () {
+                var s = String(reader.result || '');
+                var i = s.indexOf(',');
+                resolve(i >= 0 ? s.slice(i + 1) : s);
+            };
+            try { reader.readAsDataURL(file); } catch (e) { reject(e); }
+        });
     }
 
     function _resetUI() {
@@ -121,6 +140,18 @@
         });
     }
 
+    function _displayPath(rec) {
+        // Strip the temp-staging prefix the bridge writes when blobs
+        // are dropped, so the user sees their original filename instead
+        // of a noisy temp path.
+        var p = String(rec.path || '');
+        var marker = '.bulk_import_drop';
+        var i = p.indexOf(marker);
+        if (i < 0) return p;
+        var tail = p.slice(i + marker.length);
+        return tail.replace(/^[\\\/]+/, '');
+    }
+
     function _renderResult(rec) {
         var panel = _$('results-panel');
         var list = _$('bulk-results-list');
@@ -130,7 +161,7 @@
         var cls = rec.skipped ? 'bulk-result-skipped'
             : (rec.ok ? 'bulk-result-ok' : 'bulk-result-fail');
         li.className = 'bulk-result-item ' + cls;
-        var msg = (rec.path || '');
+        var msg = _displayPath(rec);
         if (rec.app_id) msg += ' [App ' + rec.app_id + ']';
         if (rec.reason) msg += ' — ' + rec.reason;
         if (rec.failing_step) msg += ' (' + rec.failing_step + ')';
@@ -191,29 +222,33 @@
     }
 
     function _dedupeAndCollectPaths(files) {
-        // Returns a Promise<{paths: string[], skipped: [...]}>. Dedupe by
-        // path first, content hash second. Mutates seenPaths/seenHashes.
+        // Returns a Promise<{kept: File[], skipped: [...]}>. Dedupe by
+        // name first, content hash second. Mutates seenPaths/seenHashes.
+        // We dedupe by FILE (not by path) so the caller can read the
+        // bytes of each kept file and ship them to the bridge.
         var skipped = [];
         var promises = [];
         files.forEach(function (file) {
-            var path = _path(file);
-            if (path && seenPaths.has(path)) {
-                skipped.push({ path: path, reason: SKIP_DUPLICATE_PREFIX + path });
+            var name = file.name || '';
+            // Name-only dedupe is rough but matches the bridge's later
+            // hash-based dedupe; a real duplicate hits both layers.
+            if (name && seenPaths.has(name)) {
+                skipped.push({ path: name, reason: SKIP_DUPLICATE_PREFIX + name });
                 return;
             }
             promises.push(_hashFile(file).then(function (hash) {
                 if (hash && seenHashes.has(hash)) {
-                    skipped.push({ path: path, reason: SKIP_DUPLICATE_PREFIX + hash.slice(0, 12) });
+                    skipped.push({ path: name, reason: SKIP_DUPLICATE_PREFIX + hash.slice(0, 12) });
                     return null;
                 }
-                if (path) seenPaths.add(path);
+                if (name) seenPaths.add(name);
                 if (hash) seenHashes.add(hash);
-                return path;
+                return file;
             }));
         });
         return Promise.all(promises).then(function (results) {
-            var paths = results.filter(function (p) { return !!p; });
-            return { paths: paths, skipped: skipped };
+            var kept = results.filter(function (f) { return !!f; });
+            return { kept: kept, skipped: skipped };
         });
     }
 
@@ -234,14 +269,26 @@
                 _renderSkipped(out.skipped);
                 localSkipped = localSkipped.concat(out.skipped);
             }
-            if (!out.paths.length) return;
+            if (!out.kept.length) return;
             // Update the local total estimate so the bar starts moving
             // before the bridge sends its first progress event.
-            aggregateTotal += out.paths.length;
+            aggregateTotal += out.kept.length;
             _renderAggregate(aggregateProcessed, aggregateTotal);
-            if (window.Bridge && Bridge.call) {
-                Bridge.call('enqueue_dropped_files', JSON.stringify(out.paths));
-            }
+            // Read each accepted file's content and ship a JSON list of
+            // {name, content_b64} blobs to the bridge. file.path is
+            // unreliable in current Chromium, so we send bytes instead.
+            var readers = out.kept.map(function (file) {
+                return _readAsBase64(file).then(function (b64) {
+                    return { name: file.name || '', content_b64: b64 };
+                }).catch(function () { return null; });
+            });
+            Promise.all(readers).then(function (blobs) {
+                var clean = blobs.filter(function (b) { return b && b.content_b64; });
+                if (!clean.length) return;
+                if (window.Bridge && Bridge.call) {
+                    Bridge.call('enqueue_dropped_blobs', JSON.stringify(clean));
+                }
+            });
         });
     }
 

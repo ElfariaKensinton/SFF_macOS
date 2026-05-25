@@ -20,6 +20,7 @@ window.App = (function() {
         _initSidebar();
         _initLogPanel();
         _initGlobalListeners();
+        if (window.DlcCheck) DlcCheck.init();
 
         Bridge.onReady(function(py) {
             // Detect platform
@@ -1367,6 +1368,14 @@ window.App = (function() {
         var appId = _getSelectedGameId();
         if (nonGameActions.indexOf(action) === -1 && !appId) {
             Components.showToast('warning', 'Please select a game from the dropdown first.');
+            return;
+        }
+
+        // DLC check has its own structured slot that emits a payload
+        // the modal handler renders. Skip the generic run_game_action
+        // path which fires-and-forgets to a stdout no one reads.
+        if (action === 'dlc_check') {
+            DlcCheck.show(appId);
             return;
         }
 
