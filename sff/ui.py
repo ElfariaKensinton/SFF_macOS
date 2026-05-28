@@ -1246,23 +1246,75 @@ class UI:
                 inner.rmdir()
             exe_name = Path(sys.executable).name
             convert = subprocess.list2cmdline
-            internal_dir = str(app_dir / "_internal")
+            updater_log = app_dir / "tmp_updater.log"
+            current_pid = os.getpid()
+
+            # The 6.2.4 / 6.2.5 updater used robocopy /E /IS /IT, which only
+            # ADDS files. With no /MIR or /PURGE the old _internal\ contents
+            # stayed on disk alongside the new ones; combined with the
+            # 3-second timeout being too short for Windows to release file
+            # locks on _internal\python*.dll and the headless cmd window
+            # swallowing every error code, users ended up running a half-
+            # patched 6.2.4 install after the "update" returned. The new
+            # script:
+            #   1. waits for SteaMidra's PID to actually exit before touching
+            #      anything (polling tasklist with a 30s ceiling so a stuck
+            #      shutdown doesn't deadlock the bat),
+            #   2. uses /MIR so robocopy purges stale files, with /XD .git
+            #      and /XF tmp_updater.* so the running bat's own files
+            #      survive,
+            #   3. captures robocopy's exit code and writes it into
+            #      tmp_updater.log next to the EXE so a failed update is
+            #      visible after the fact even though the cmd window is
+            #      headless,
+            #   4. only relaunches the EXE when robocopy reports success
+            #      (exit code <8). Anything >=8 leaves the install alone
+            #      and writes a one-line marker the next manual launch
+            #      surfaces in the GUI.
             updater_bat = app_dir / "tmp_updater.bat"
             updater_bat.write_text(
                 "@echo off\n"
-                "timeout /t 3 /nobreak >nul\n"
-                f"taskkill /F /PID {os.getpid()} >nul 2>&1\n"
-                "rmdir /s /q " + convert([internal_dir]) + " >nul 2>&1\n"
-                "robocopy " + convert([str(tmp_update), str(app_dir)]) + " /E /IS /IT >nul 2>&1\n"
-                "if %errorlevel% GEQ 8 (\n"
-                "  echo Robocopy error! Update may be incomplete. Check your SteaMidra folder.\n"
-                "  pause\n"
-                "  goto :end\n"
+                "setlocal enabledelayedexpansion\n"
+                "set LOG=" + convert([str(updater_log)]) + "\n"
+                "echo [updater] start %DATE% %TIME% > %LOG%\n"
+                "echo [updater] pid=" + str(current_pid) + " >> %LOG%\n"
+                # Wait up to 30 seconds for the running EXE to exit. Each
+                # iteration sleeps 1 second so the loop tops out at ~30s
+                # even on a slow shutdown. tasklist /FI returns the header
+                # when the PID is gone, so a successful exit produces no
+                # data line and the FIND below fails -> we break.
+                "set /a tries=0\n"
+                ":waitloop\n"
+                "set /a tries+=1\n"
+                "tasklist /FI \"PID eq " + str(current_pid) + "\" 2>nul | find \"" + str(current_pid) + "\" >nul\n"
+                "if errorlevel 1 goto exited\n"
+                "if !tries! GEQ 30 (echo [updater] WARN: pid still alive after 30s, continuing anyway >> %LOG% & goto exited)\n"
+                "timeout /t 1 /nobreak >nul\n"
+                "goto waitloop\n"
+                ":exited\n"
+                "echo [updater] pid clear after !tries! polls >> %LOG%\n"
+                # /MIR mirrors the new build onto app_dir, /XD excludes
+                # everything we don't want clobbered (.git for source
+                # checkouts, the user's lumacore + manifest folders so an
+                # update doesn't wipe their library data). /XF keeps the
+                # bat itself + the log alive while it runs.
+                "robocopy " + convert([str(tmp_update), str(app_dir)])
+                + " /MIR /R:2 /W:1"
+                + " /XD .git lumacore manifest_backup downloaded_files manifests"
+                + " /XF tmp_updater.bat tmp_updater.log update.zip"
+                + " >> %LOG% 2>&1\n"
+                "set RC=%errorlevel%\n"
+                "echo [updater] robocopy exit=%RC% >> %LOG%\n"
+                "if %RC% GEQ 8 (\n"
+                "  echo [updater] FAIL: robocopy reported a fatal error. Install left in place. >> %LOG%\n"
+                "  goto cleanup\n"
                 ")\n"
-                "rmdir /s /q " + convert([str(tmp_update)]) + " >nul 2>&1\n"
-                "del /q " + convert([str(update_zip)]) + " >nul 2>&1\n"
+                "rmdir /s /q " + convert([str(tmp_update)]) + " >> %LOG% 2>&1\n"
+                "del /q " + convert([str(update_zip)]) + " >> %LOG% 2>&1\n"
+                "echo [updater] launching new EXE >> %LOG%\n"
                 "start \"\" " + convert([str(app_dir / exe_name)]) + "\n"
-                ":end\n"
+                ":cleanup\n"
+                "echo [updater] done %DATE% %TIME% >> %LOG%\n"
                 "(goto) 2>nul & del \"%~f0\"\n",
                 encoding="utf-8",
             )

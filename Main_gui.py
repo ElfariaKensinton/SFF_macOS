@@ -51,9 +51,16 @@ if sys.platform == "linux":
         '--no-sandbox --disable-gpu-compositing --use-gl=desktop',
     )
 else:
+    # Windows flag set. `--enable-zero-copy` got dropped because the GPU →
+    # DWM compositor zero-copy handoff produces a 1-frame placeholder
+    # texture during window drag and any layout invalidation, which paints
+    # as a transient checker / white flash on top of the page (worse on
+    # dark themes since the flash contrasts harder). GPU rasterization +
+    # the blocklist override stay on so the store grid and large list
+    # views still raster on the GPU.
     os.environ.setdefault(
         'QTWEBENGINE_CHROMIUM_FLAGS',
-        '--no-sandbox --ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy',
+        '--no-sandbox --ignore-gpu-blocklist --enable-gpu-rasterization',
     )
 
 import PyQt6.QtWebEngineWidgets  # noqa: F401 - must import before QCoreApplication

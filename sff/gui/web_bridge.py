@@ -286,70 +286,33 @@ class WebBridge(QObject):
             # entirely so we trust Steam's own listing.
             steam_ids = {g.get('app_id') for g in result.get('games', []) or []}
             extra_ids = [aid for aid in hubcap_hits.keys() if aid not in steam_ids]
-            # If every extra_id has a cached filter decision already,
-            # skip the GetItems batch round trip entirely. The decision
-            # cache + the existing _STEAM_PLATFORM_CACHE both live for
-            # the lifetime of the process, so a second search for the
-            # same franchise spends zero network and zero parsing.
-            uncached_for_filter = [
-                aid for aid in extra_ids
-                if aid not in _HUBCAP_FILTER_DECISIONS
-            ]
-            if uncached_for_filter:
-                meta_map = _fetch_steam_platforms(uncached_for_filter)
-            else:
-                meta_map = {}
+            meta_map = _fetch_steam_platforms(extra_ids)
             non_windows_filtered = 0
             dlc_filtered = 0
             kept_hubcap = {}
-            # Sample of newly-classified drops (first 5 per category)
-            # so a debug session still has triage info without
-            # spraying one line per filtered DLC across the log.
-            new_drop_samples: dict[str, list[str]] = {}
             for app_id, hg in hubcap_hits.items():
                 if app_id in steam_ids:
                     kept_hubcap[app_id] = hg
                     continue
-
-                # Decision-cache fast path: every classification of a
-                # given appid is deterministic in `_STEAM_PLATFORM_CACHE`
-                # state, so once we've decided the answer never flips.
-                cached_decision = _HUBCAP_FILTER_DECISIONS.get(app_id)
-                if cached_decision == 'kept':
-                    kept_hubcap[app_id] = hg
-                    continue
-                if cached_decision == 'platform':
-                    non_windows_filtered += 1
-                    continue
-                if cached_decision in ('parent', 'delisted', 'type'):
-                    dlc_filtered += 1
-                    continue
-
                 meta = meta_map.get(app_id) or {}
                 tags = meta.get("platforms") or {"_unknown"}
                 parent_appid = meta.get("parent_appid")
                 delisted_blank = bool(meta.get("delisted_blank"))
                 store_type = (meta.get("type") or "").lower()
 
-                def _record_drop(reason: str, sample: str) -> None:
-                    _HUBCAP_FILTER_DECISIONS[app_id] = reason
-                    bucket = new_drop_samples.setdefault(reason, [])
-                    if len(bucket) < 5:
-                        bucket.append(sample)
-
                 # Structural DLC signals.
                 if parent_appid:
                     dlc_filtered += 1
-                    _record_drop(
-                        'parent',
-                        f"appid={app_id} name={hg.name!r} parent={parent_appid}",
+                    logger.debug(
+                        "search_games: filtered Hubcap appid=%s name=%r parent=%s",
+                        app_id, hg.name, parent_appid,
                     )
                     continue
                 if delisted_blank:
                     dlc_filtered += 1
-                    _record_drop(
-                        'delisted',
-                        f"appid={app_id} name={hg.name!r} (delisted, no Steam metadata)",
+                    logger.debug(
+                        "search_games: filtered Hubcap appid=%s name=%r (delisted, no Steam metadata)",
+                        app_id, hg.name,
                     )
                     continue
                 # Belt-and-suspenders type drop. parent_appid covers
@@ -358,35 +321,23 @@ class WebBridge(QObject):
                 # video, music) without a parent appid.
                 if store_type and store_type not in ("game", "demo", "mod"):
                     dlc_filtered += 1
-                    _record_drop(
-                        'type',
-                        f"appid={app_id} name={hg.name!r} type={store_type}",
+                    logger.debug(
+                        "search_games: filtered Hubcap appid=%s name=%r type=%s",
+                        app_id, hg.name, store_type,
                     )
                     continue
 
                 # Platform check.
                 if "_unknown" not in tags and "windows" not in tags:
                     non_windows_filtered += 1
-                    _record_drop(
-                        'platform',
-                        f"appid={app_id} name={hg.name!r} platforms={sorted(tags)}",
+                    logger.debug(
+                        "search_games: filtered Hubcap appid=%s name=%r platforms=%s",
+                        app_id, hg.name, sorted(tags),
                     )
                     continue
 
-                _HUBCAP_FILTER_DECISIONS[app_id] = 'kept'
                 kept_hubcap[app_id] = hg
             hubcap_hits = kept_hubcap
-
-            # Single DEBUG summary per search, with a small sample of
-            # newly-classified drops per reason. Re-searches hit the
-            # decision cache and add nothing to the samples, so a
-            # second "resident evil" pass logs zero per-item lines.
-            if new_drop_samples:
-                for reason, samples in new_drop_samples.items():
-                    logger.debug(
-                        "search_games: filter samples [%s] (%d new): %s",
-                        reason, len(samples), "; ".join(samples),
-                    )
 
             logger.info(
                 "search_games: query=%r got %d Steam + %d Hubcap hit(s) across %d variant(s) (%d DLC filtered, %d non-windows filtered)",
@@ -406,7 +357,11 @@ class WebBridge(QObject):
                 if hg.size:
                     g['size'] = hg.size
 
-            # Append Hubcap-only entries to the result list.
+            # Build the Hubcap-only tail. The merged result behaves
+            # like one virtual list: [steam_total Steam rows] then
+            # [len(extras) Hubcap rows]. Pagination has to slice that
+            # combined list per page; otherwise every page repeats
+            # the full Hubcap tail (the bug we used to ship).
             seen_ids = {g.get('app_id') for g in result.get('games', []) or []}
             extras = []
             for app_id, hg in hubcap_hits.items():
@@ -422,15 +377,40 @@ class WebBridge(QObject):
                     'source': 'hubcap',
                 })
 
-            if not result.get('games'):
-                # Steam had nothing. Use Hubcap as the primary result
-                # set so the UI doesn't show an empty page.
-                result['games'] = extras
-                result['total'] = len(extras)
+            steam_total = int(result.get('total') or 0)
+            steam_rows = result.get('games') or []
+            extras_total = len(extras)
+
+            # Slice the Hubcap tail for this page window.
+            window_start = max(0, offset - steam_total)
+            window_end = max(0, (offset + per_page) - steam_total)
+            extras_slice = extras[window_start:window_end] if extras_total else []
+
+            # Fill missing artwork for the Hubcap rows we actually ship.
+            if extras_slice:
+                slice_ids = [e['app_id'] for e in extras_slice if e.get('app_id')]
+                try:
+                    img_urls, _types = _fetch_steam_image_urls(slice_ids)
+                except Exception as e:
+                    logger.debug("search_games: image fetch for Hubcap tail failed: %s", e)
+                    img_urls = {}
+                for e in extras_slice:
+                    if not e.get('image_url'):
+                        e['image_url'] = img_urls.get(e['app_id']) or ''
+
+            if not steam_rows and not extras_slice and extras_total == 0:
+                # Steam had nothing AND Hubcap had nothing. Nothing to do.
+                return result
+
+            if not steam_rows and extras_total:
+                # Steam had nothing but Hubcap did. Surface Hubcap as the
+                # primary set; pagination is now over the extras list.
+                result['games'] = extras_slice
+                result['total'] = extras_total
                 result['fallback_source'] = 'hubcap'
-            elif extras:
-                result['games'].extend(extras)
-                result['total'] = (result.get('total') or 0) + len(extras)
+            else:
+                result['games'] = steam_rows + extras_slice
+                result['total'] = steam_total + extras_total
 
             return result
 
@@ -4502,17 +4482,6 @@ _STEAM_APPLIST_CACHE_TIME = 0.0
 # signal we have). The DLC filter uses parent_appid + delisted_blank
 # as structural drop signals; no name keywords involved.
 _STEAM_PLATFORM_CACHE: "dict[int, dict]" = {}
-
-# In-process cache of Hubcap filter decisions per appid. The DLC /
-# platform filter walks dozens of items per search and used to log a
-# DEBUG line per drop, which produced 100+ noisy lines on a populated
-# franchise query (e.g. "resident evil"). The decision is a pure
-# function of `_STEAM_PLATFORM_CACHE[aid]`, so once we've classified an
-# appid the answer never changes inside this process. The cache stores
-# 'kept' or one of the drop reasons ('parent', 'delisted', 'type',
-# 'platform') so re-search hits short-circuit without re-walking the
-# metadata or re-emitting log lines.
-_HUBCAP_FILTER_DECISIONS: "dict[int, str]" = {}
 
 _NONGAME_NAME_KW = ("soundtrack", "art book", "artbook", " ost", "music pack", "digital artbook")
 

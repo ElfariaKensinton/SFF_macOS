@@ -198,6 +198,21 @@ class SFFMainWindow(QMainWindow):
 
         # ── New Web UI (visible by default) ──
         self._web_view = QWebEngineView()
+        # Mark the view as opaque so Qt's drag/resize/paint pipeline skips
+        # the parent-erase step under it. Without this, every drag tick on
+        # Windows DWM hands the compositor a frame where the parent gets
+        # erased to the platform default background under the WebEngine
+        # surface for one frame before the renderer's texture lands on top,
+        # producing the brief white / checker flash users see during drag,
+        # download start, and theme switches. The flash is worse on dark
+        # themes because the contrast is higher.
+        try:
+            from PyQt6.QtCore import Qt as _Qt
+            self._web_view.setAttribute(_Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+            self._web_view.setAttribute(_Qt.WidgetAttribute.WA_NoSystemBackground, True)
+            self._web_view.setAutoFillBackground(False)
+        except Exception:
+            pass
         root_layout.addWidget(self._web_view)
         self._web_channel = QWebChannel()
         from sff.gui.web_bridge import WebBridge
@@ -535,6 +550,54 @@ class SFFMainWindow(QMainWindow):
         # First tick after a short delay so the UI settles before the
         # initial sweep fires.
         QTimer.singleShot(15 * 1000, self._run_update_check_tick)
+
+        # 6.2.6: surface a leftover updater log if the previous launch's
+        # in-place update bat hit an error. The bat runs headless, so a
+        # robocopy failure (locked _internal\, antivirus, partial copy)
+        # otherwise dies silently and the user keeps running the old
+        # build without knowing why. Cleanup the log after surfacing so
+        # subsequent launches don't re-warn.
+        QTimer.singleShot(2 * 1000, self._surface_stale_updater_log)
+
+    def _surface_stale_updater_log(self):
+        try:
+            from pathlib import Path
+            import sys
+            if not getattr(sys, "frozen", False):
+                return
+            app_dir = Path(sys.executable).resolve().parent
+            log_path = app_dir / "tmp_updater.log"
+            if not log_path.exists():
+                return
+            text = ""
+            try:
+                text = log_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
+            failed = "FAIL" in text or "WARN" in text
+            try:
+                log_path.unlink()
+            except OSError:
+                pass
+            if not text:
+                return
+            level = "warning" if failed else "info"
+            tail = "\n".join(text.strip().splitlines()[-12:])
+            msg = "Last in-place update reported an issue:\n\n" + tail if failed \
+                  else "Update applied. Last log:\n\n" + tail
+            try:
+                logger.warning("updater log (%s):\n%s", level, tail) if failed \
+                    else logger.info("updater log:\n%s", tail)
+            except Exception:
+                pass
+            if failed:
+                try:
+                    from PyQt6.QtWidgets import QMessageBox
+                    QMessageBox.warning(self, "SteaMidra update — issue", msg)
+                except Exception:
+                    pass
+        except Exception:
+            logger.debug("_surface_stale_updater_log crashed", exc_info=True)
 
     # ── Path / game source helpers ───────────────────────────────
 
