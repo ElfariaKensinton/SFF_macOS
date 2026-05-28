@@ -61,11 +61,7 @@ class LumaCoreManager(AppInjectionManager):
 
     def dlc_check(self, provider, base_id, auto_add_depot_dlcs: bool = False):
         from sff.steam_store import get_dlc_list_from_store, get_dlc_names_from_store
-        from sff.structs import DLCTypes, MainReturnCode
-        from rich.console import Console
-        from rich.table import Column, Table
-
-        console = Console()
+        from sff.structs import MainReturnCode
 
         print(Fore.CYAN + f"\nFetching DLC list for App ID {base_id}..." + Style.RESET_ALL)
         try:
@@ -91,21 +87,24 @@ class LumaCoreManager(AppInjectionManager):
 
         local_ids = self.get_local_ids()
 
-        table = Table(
-            Column("Status", style="cyan"),
-            Column("DLC ID", style="white"),
-            Column("Name", style="white"),
-            title=f"DLC List \u2014 App {base_id}",
-        )
-        missing = []
+        rows: list[tuple[str, str, str]] = []
+        missing: list[int] = []
         for dlc_id in dlc_ids:
             owned = dlc_id in local_ids
-            status = "[green]Unlocked[/green]" if owned else "[red]Missing[/red]"
-            table.add_row(status, str(dlc_id), names.get(dlc_id, f"DLC {dlc_id}"))
+            status = "Unlocked" if owned else "Missing"
+            rows.append((status, str(dlc_id), names.get(dlc_id, f"DLC {dlc_id}")))
             if not owned:
                 missing.append(dlc_id)
 
-        console.print(table)
+        width_status = max(len("Status"), max((len(r[0]) for r in rows), default=6))
+        width_id = max(len("DLC ID"), max((len(r[1]) for r in rows), default=6))
+        width_name = max(len("Name"), max((len(r[2]) for r in rows), default=4))
+
+        print(f"\nDLC List - App {base_id}")
+        print(f"{'Status':<{width_status}}  {'DLC ID':<{width_id}}  {'Name':<{width_name}}")
+        print(f"{'-' * width_status}  {'-' * width_id}  {'-' * width_name}")
+        for status, dlc_id, name in rows:
+            print(f"{status:<{width_status}}  {dlc_id:<{width_id}}  {name:<{width_name}}")
 
         if missing:
             print(

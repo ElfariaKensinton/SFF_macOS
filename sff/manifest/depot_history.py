@@ -721,9 +721,27 @@ async def _fetch_steamdb_zendriver_async(
     remaining = list(depot_ids)
 
     _, chrome_path = _detect_sb_browser(progress_cb=progress_cb)
+    # Off-screen + minimized + no first-run UI keeps the window out of Alt-Tab
+    # and the taskbar on Windows. Cloudflare still treats the session as a real
+    # browser because the rendering pipeline is intact — only the on-screen
+    # presentation is suppressed. headless=True triggers CF's "headless"
+    # detection on some Steam app pages, so we keep headed mode but bury the
+    # window. Users were seeing this leak through Alt-Tab when CF kept the
+    # session alive past the depot scrape; the additional flags below close
+    # that gap.
     zd_kwargs: dict = {
         "headless": False,
-        "browser_args": ["--window-position=-32000,-32000", "--window-size=1280,720"],
+        "browser_args": [
+            "--window-position=-32000,-32000",
+            "--window-size=1,1",
+            "--start-minimized",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-features=Translate,InfiniteSessionRestore",
+            "--disable-popup-blocking",
+            "--disable-background-networking",
+            "--silent-launch",
+        ],
     }
     if chrome_path:
         zd_kwargs["browser_executable_path"] = chrome_path
@@ -814,8 +832,29 @@ async def _fetch_steamdb_zendriver_async(
 
     finally:
         if browser is not None:
+            # Best-effort graceful stop, then a hard process kill so the off-screen
+            # Chrome window doesn't linger in Alt-Tab while CDP closes its sockets.
             try:
-                await browser.stop()
+                await asyncio.wait_for(browser.stop(), timeout=3.0)
+            except Exception:
+                pass
+            try:
+                proc = getattr(browser, "_process", None) or getattr(browser, "process", None)
+                if proc is not None and getattr(proc, "pid", None):
+                    if sys.platform == "win32":
+                        import subprocess
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        )
+                    else:
+                        import os, signal
+                        try:
+                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        except Exception:
+                            os.kill(proc.pid, signal.SIGKILL)
             except Exception:
                 pass
 

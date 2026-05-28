@@ -394,24 +394,65 @@ class GameHandler:
             print(Fore.RED + msg + Style.RESET_ALL)
             return False, msg
 
-        steamless_exe = root_folder() / "third_party/steamless/Steamless.CLI.exe"
-        if not steamless_exe.exists():
-            # Fall back to the layout the Fix Game pipeline ships with.
-            alt = root_folder() / "third_party/Steamless/Steamless.CLI.exe"
-            if alt.exists():
-                steamless_exe = alt
-            else:
-                msg = f"Steamless not found at {steamless_exe}"
-                print(Fore.RED + msg + Style.RESET_ALL)
-                return False, msg
+        # Steamless dispatch:
+        #   * Windows           : Steamless.CLI.exe directly
+        #   * Linux + .NET 9    : `dotnet Steamless.CLI.dll` (preferred)
+        #   * Linux + Wine only : `wine Steamless.CLI.exe`   (fallback)
+        steamless_path = None
+        steamless_dir = None
+        run_env = None
+        run_cmd_prefix: list[str] = []
+
+        if sys.platform != "win32":
+            dll_candidates = [
+                root_folder() / "third_party" / "linux" / "deps" / "Steamless" / "Steamless.CLI.dll",
+                root_folder() / "third_party" / "Steamless" / "Steamless.CLI.dll",
+                root_folder() / "third_party" / "Steamless.CLI.dll",
+            ]
+            for c in dll_candidates:
+                if c.exists():
+                    steamless_path = c
+                    steamless_dir = c.parent
+                    break
+            if steamless_path is not None:
+                from sff.dotnet_utils import get_dotnet_path
+                dotnet_exe = get_dotnet_path()
+                if not dotnet_exe:
+                    msg = "Steamless: .NET 9 not found. Run Linux Tools Setup."
+                    print(Fore.RED + msg + Style.RESET_ALL)
+                    return False, msg
+                run_cmd_prefix = [dotnet_exe]
+                import os as _os_env
+                run_env = _os_env.environ.copy()
+                run_env.setdefault("DOTNET_ROOT", str(Path(dotnet_exe).parent))
+
+        if steamless_path is None:
+            steamless_exe = root_folder() / "third_party/steamless/Steamless.CLI.exe"
+            if not steamless_exe.exists():
+                # Fall back to the layout the Fix Game pipeline ships with.
+                alt = root_folder() / "third_party/Steamless/Steamless.CLI.exe"
+                if alt.exists():
+                    steamless_exe = alt
+                else:
+                    msg = f"Steamless not found at {steamless_exe}"
+                    print(Fore.RED + msg + Style.RESET_ALL)
+                    return False, msg
+            steamless_path = steamless_exe
+            steamless_dir = steamless_exe.parent
+            if sys.platform != "win32":
+                if shutil.which("wine") is None:
+                    msg = "Steamless: Wine not installed. Install Wine or .NET 9 (Linux Tools Setup)."
+                    print(Fore.RED + msg + Style.RESET_ALL)
+                    return False, msg
+                run_cmd_prefix = ["wine"]
 
         # --exp turns on experimental variants for newer SteamStub
         # revisions (Teardown, Doom Eternal, modern UE5 / Unity titles).
         # --realign and --recalcchecksum keep section alignment / file
         # checksum valid on x64 binaries that ship with mismatched layout
         # after the wrapper strip. Same flag set SteamAutoCrack uses.
-        cmd = [
-            str(steamless_exe.absolute()),
+        cmd = run_cmd_prefix + [
+            str(steamless_path.absolute()),
             "--exp",
             "--realign",
             "--recalcchecksum",
@@ -423,8 +464,9 @@ class GameHandler:
                 cmd,
                 encoding="utf-8",
                 capture_output=True,
-                cwd=str(steamless_exe.parent),
+                cwd=str(steamless_dir),
                 timeout=120,
+                env=run_env,
             )
         except subprocess.TimeoutExpired:
             msg = f"Steamless timed out on {game_exe.name}"

@@ -263,10 +263,130 @@ window.Library = (function() {
                     '<button class="btn btn-sm btn-danger" data-action="delete" data-appid="' + game.app_id + '" data-gamepath="' + safePath + '" data-gamename="' + safeName + '" data-tooltip="Remove this game">\u2715</button>';
             }
 
+            _attachUpdateBadge(card, game.app_id);
+
             if (grid) grid.appendChild(card);
         });
 
 
+    }
+
+    // 6.2.5: update-available badge + popover.
+    // Reads cached state through the bridge, paints a green dot when
+    // up-to-date and within the freshness window, an amber dot when an
+    // update is available, and nothing otherwise. Click opens a tiny
+    // popover with installed buildid, CM-published buildid, and Check
+    // now. The interval is read live so toggling the setting flips the
+    // freshness gate without a reload.
+    function _attachUpdateBadge(card, appId) {
+        if (!card || !appId) return;
+        var dot = document.createElement('div');
+        dot.className = 'update-badge update-badge-hidden';
+        dot.dataset.appid = appId;
+        dot.title = 'Update status';
+        card.appendChild(dot);
+        dot.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            _openUpdatePopover(dot, appId);
+        });
+        _refreshUpdateBadge(dot, appId);
+    }
+
+    function _refreshUpdateBadge(dot, appId) {
+        Bridge.callWithCallback('get_game_update_state', String(appId), function(json) {
+            var state = {};
+            try { state = JSON.parse(json || '{}') || {}; } catch(e) {}
+            Bridge.callWithCallback('get_setting', 'update_check_interval_min', function(rawInterval) {
+                var intervalMin = parseInt(rawInterval || '60', 10);
+                if (!intervalMin || intervalMin <= 0) intervalMin = 60;
+                _paintUpdateBadge(dot, state, intervalMin);
+            });
+        });
+    }
+
+    function _paintUpdateBadge(dot, state, intervalMin) {
+        if (!dot) return;
+        dot.classList.remove('update-badge-green', 'update-badge-amber', 'update-badge-hidden');
+        var now = Math.floor(Date.now() / 1000);
+        var fresh = state && state.checked_at && (now - state.checked_at) < (intervalMin * 60);
+        var enabled = state && state.enabled !== false;
+        var hasError = state && (state.error || state.up_to_date === null);
+        if (!enabled || hasError || !state) {
+            dot.classList.add('update-badge-hidden');
+            return;
+        }
+        if (state.up_to_date === true && fresh) {
+            dot.classList.add('update-badge-green');
+            dot.title = 'Up to date (build ' + (state.installed_buildid || '') + ')';
+        } else if (state.up_to_date === false) {
+            dot.classList.add('update-badge-amber');
+            dot.title = 'Update available — installed ' +
+                (state.installed_buildid || '?') + ', Steam ' +
+                (state.cm_buildid || '?');
+        } else {
+            dot.classList.add('update-badge-hidden');
+        }
+    }
+
+    var _openPopover = null;
+    function _openUpdatePopover(anchor, appId) {
+        _closeUpdatePopover();
+        Bridge.callWithCallback('get_game_update_state', String(appId), function(json) {
+            var state = {};
+            try { state = JSON.parse(json || '{}') || {}; } catch(e) {}
+            var pop = document.createElement('div');
+            pop.className = 'update-popover';
+            pop.innerHTML =
+                '<div class="update-popover-row"><span>Installed build:</span><b>' +
+                    (state.installed_buildid || '—') + '</b></div>' +
+                '<div class="update-popover-row"><span>Steam build:</span><b>' +
+                    (state.cm_buildid || '—') + '</b></div>' +
+                '<button class="btn btn-sm btn-primary update-popover-check">Check now</button>';
+            document.body.appendChild(pop);
+            var rect = anchor.getBoundingClientRect();
+            pop.style.position = 'fixed';
+            pop.style.top = (rect.bottom + 6) + 'px';
+            pop.style.left = Math.max(8, rect.right - 220) + 'px';
+            var btn = pop.querySelector('.update-popover-check');
+            btn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                btn.disabled = true;
+                btn.textContent = 'Checking...';
+                Bridge.call('check_game_update', String(appId));
+                // The task_finished listener in init() refreshes badges
+                // through _onUpdateCheckResult; close the popover so the
+                // user sees the toast and the dot recolour.
+                setTimeout(_closeUpdatePopover, 250);
+            });
+            _openPopover = pop;
+            // Close on outside click.
+            setTimeout(function() {
+                document.addEventListener('click', _outsidePopoverClick, { once: true });
+            }, 0);
+        });
+    }
+
+    function _outsidePopoverClick(e) {
+        if (_openPopover && !_openPopover.contains(e.target)) {
+            _closeUpdatePopover();
+        }
+    }
+
+    function _closeUpdatePopover() {
+        if (_openPopover && _openPopover.parentNode) {
+            _openPopover.parentNode.removeChild(_openPopover);
+        }
+        _openPopover = null;
+    }
+
+    function _refreshAllBadges() {
+        var grid = document.getElementById('library-grid');
+        if (!grid) return;
+        var dots = grid.querySelectorAll('.update-badge');
+        dots.forEach(function(dot) {
+            var appId = dot.dataset.appid;
+            if (appId) _refreshUpdateBadge(dot, appId);
+        });
     }
 
     function _onUpdateCheckResult(data) {
@@ -281,6 +401,7 @@ window.Library = (function() {
                 }
             });
         }
+        _refreshAllBadges();
         if (data.up_to_date) {
             Components.showToast('success', 'Already up to date (build ' + (data.installed_buildid || '') + ')');
         } else if (data.updated) {

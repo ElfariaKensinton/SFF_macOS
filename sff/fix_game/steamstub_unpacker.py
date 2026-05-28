@@ -36,8 +36,12 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Steamless exe name — should be in third_party/
+# Steamless binary names. Windows: .NET 9 self-contained .exe shipped
+# under third_party/. Linux: .NET 9 framework-dependent .dll shipped
+# under third_party/linux/deps/Steamless/, executed via the user's
+# system `dotnet` runtime so we don't need Wine.
 STEAMLESS_EXE = "Steamless.CLI.exe"
+STEAMLESS_DLL = "Steamless.CLI.dll"
 
 # files to skip when scanning for executables
 SKIP_PATTERNS = [
@@ -74,10 +78,37 @@ class SteamStubUnpacker:
 
     @staticmethod
     def _find_steamless():
-        """try to find Steamless in third_party/ dirs"""
+        """Find a usable Steamless binary.
+
+        Linux: prefer the framework-dependent Steamless.CLI.dll under
+        third_party/linux/deps/Steamless/ so we can run via the user's
+        `dotnet` runtime (no Wine needed). The Windows .exe is kept as
+        a last-resort Wine fallback for systems missing .NET 9.
+
+        Windows: prefer Steamless.CLI.exe in third_party/ as before.
+        """
+        root = Path(__file__).parent.parent.parent
+
+        if sys.platform != "win32":
+            linux_candidates = [
+                root / "third_party" / "linux" / "deps" / "Steamless" / STEAMLESS_DLL,
+                root / "third_party" / "Steamless" / STEAMLESS_DLL,
+                root / "third_party" / STEAMLESS_DLL,
+            ]
+            for p in linux_candidates:
+                if p.exists():
+                    return str(p)
+            tp_dir = root / "third_party"
+            if tp_dir.exists():
+                for f in tp_dir.rglob(STEAMLESS_DLL):
+                    return str(f)
+            # No DLL found — fall through to .exe so the legacy Wine
+            # path still works. The caller checks dotnet availability
+            # via _is_dll() below before deciding how to invoke.
+
         candidates = [
-            Path(__file__).parent.parent.parent / "third_party" / STEAMLESS_EXE,
-            Path(__file__).parent.parent.parent / "third_party" / "Steamless" / STEAMLESS_EXE,
+            root / "third_party" / STEAMLESS_EXE,
+            root / "third_party" / "Steamless" / STEAMLESS_EXE,
         ]
         # APPDATA path is Windows-only
         if sys.platform == "win32":
@@ -88,7 +119,7 @@ class SteamStubUnpacker:
             if p.exists():
                 return str(p)
         # also check third_party subfolders
-        tp_dir = Path(__file__).parent.parent.parent / "third_party"
+        tp_dir = root / "third_party"
         if tp_dir.exists():
             for f in tp_dir.rglob(STEAMLESS_EXE):
                 return str(f)
@@ -97,6 +128,9 @@ class SteamStubUnpacker:
                 return str(f)
         return None
 
+    def _is_dll(self):
+        return self.steamless_path is not None and self.steamless_path.lower().endswith(".dll")
+
     @staticmethod
     def _wine_available():
         """check if wine is available in PATH (Linux only)"""
@@ -104,11 +138,17 @@ class SteamStubUnpacker:
 
     def is_available(self):
         """check if Steamless is available.
-        On Linux, also requires wine to run the .exe.
+
+        Windows: needs the .exe on disk.
+        Linux DLL path: needs `dotnet` (we install .NET 9 automatically).
+        Linux EXE fallback: needs Wine.
         """
         if self.steamless_path is None or not Path(self.steamless_path).exists():
             return False
         if sys.platform != "win32":
+            if self._is_dll():
+                from sff.dotnet_utils import get_dotnet_path
+                return get_dotnet_path() is not None
             return self._wine_available()
         return True
 
@@ -208,25 +248,43 @@ class SteamStubUnpacker:
         try:
             # Steamless outputs to {name}.unpacked.exe by default
             unpacked_path = exe_path.with_name(exe_path.stem + ".unpacked.exe")
-            # run Steamless (via wine on Linux)
+            # run Steamless. Three call shapes by platform:
+            #   * Windows           : Steamless.CLI.exe directly
+            #   * Linux + .NET 9    : `dotnet Steamless.CLI.dll`  (preferred)
+            #   * Linux + Wine only : `wine Steamless.CLI.exe`    (fallback)
             #
             # Flag set chosen to maximise success rate on modern UE5 / x64
             # titles. atom0s ships --realign and --recalcchecksum as part
             # of the v3.0.0.13+ kit and SteamAutoCrack invokes them too.
             # --exp turns on experimental variants for newer wrapper
             # revisions that haven't been promoted to the main code path.
-            cmd = [self.steamless_path]
+            args = []
             if use_experimental:
-                cmd.append("--exp")
-            cmd.extend(["--realign", "--recalcchecksum", str(exe_path)])
-            if sys.platform != "win32":
-                cmd = ["wine"] + cmd
+                args.append("--exp")
+            args.extend(["--realign", "--recalcchecksum", str(exe_path)])
+
+            if sys.platform != "win32" and self._is_dll():
+                from sff.dotnet_utils import get_dotnet_path
+                dotnet_exe = get_dotnet_path()
+                if not dotnet_exe:
+                    log("Steamless: .NET 9 not found — install via Linux Tools Setup")
+                    return False
+                cmd = [dotnet_exe, self.steamless_path] + args
+                run_env = os.environ.copy()
+                run_env.setdefault("DOTNET_ROOT", str(Path(dotnet_exe).parent))
+            elif sys.platform != "win32":
+                cmd = ["wine", self.steamless_path] + args
+                run_env = None
+            else:
+                cmd = [self.steamless_path] + args
+                run_env = None
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=120,
                 cwd=str(Path(self.steamless_path).parent),
+                env=run_env,
             )
             # Surface Steamless output on failure so users can see which
             # variant tried and why. Without this every failed unpack

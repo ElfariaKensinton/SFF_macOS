@@ -278,6 +278,31 @@ class Settings(Enum):
         False,
         str,
     )
+    # 6.2.5: per-game and global update-available toggle. The
+    # interval is stored as a string so the existing settings UI
+    # text path handles edits the same way SAVE_WATCHER_INTERVAL
+    # does. Defaults are applied at read time (False / 60 / "{}")
+    # so users have to opt in to background CM polling instead of
+    # getting hit with a periodic appdetails / Login Anonymous burst
+    # the moment SteaMidra launches.
+    GLOBAL_UPDATE_CHECK = SettingItem(
+        "global_update_check",
+        "Check for game updates (global default)",
+        False,
+        bool,
+    )
+    UPDATE_CHECK_INTERVAL_MIN = SettingItem(
+        "update_check_interval_min",
+        "Minutes between background update checks (default 60)",
+        False,
+        str,
+    )
+    UPDATE_CHECK_OVERRIDES = SettingItem(
+        "update_check_overrides",
+        "Per-game update check overrides (managed automatically)",
+        False,
+        str,
+    )
 
     @property
     def key_name(self):

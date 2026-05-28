@@ -99,6 +99,7 @@ class WebBridge(QObject):
     depot_history_results = pyqtSignal(str)
     download_progress = pyqtSignal(str)
     task_finished = pyqtSignal(str)
+    task_progress = pyqtSignal(str)
     log_message = pyqtSignal(str)
     lc_progress = pyqtSignal(str)
 
@@ -110,6 +111,11 @@ class WebBridge(QObject):
         self._api_key = None
         self._store_client = None
         self._workers = []  # prevent GC of running workers
+        # 6.2.5: per-app update-available state cache. Populated by
+        # check_game_update() on success. The badge/popover code
+        # reads through get_game_update_state(). Keys are str(app_id).
+        # Network/CM failures leave the prior entry intact.
+        self._update_state_cache: dict[str, dict] = {}
 
     # ── helpers ──────────────────────────────────────────────────
 
@@ -280,33 +286,70 @@ class WebBridge(QObject):
             # entirely so we trust Steam's own listing.
             steam_ids = {g.get('app_id') for g in result.get('games', []) or []}
             extra_ids = [aid for aid in hubcap_hits.keys() if aid not in steam_ids]
-            meta_map = _fetch_steam_platforms(extra_ids)
+            # If every extra_id has a cached filter decision already,
+            # skip the GetItems batch round trip entirely. The decision
+            # cache + the existing _STEAM_PLATFORM_CACHE both live for
+            # the lifetime of the process, so a second search for the
+            # same franchise spends zero network and zero parsing.
+            uncached_for_filter = [
+                aid for aid in extra_ids
+                if aid not in _HUBCAP_FILTER_DECISIONS
+            ]
+            if uncached_for_filter:
+                meta_map = _fetch_steam_platforms(uncached_for_filter)
+            else:
+                meta_map = {}
             non_windows_filtered = 0
             dlc_filtered = 0
             kept_hubcap = {}
+            # Sample of newly-classified drops (first 5 per category)
+            # so a debug session still has triage info without
+            # spraying one line per filtered DLC across the log.
+            new_drop_samples: dict[str, list[str]] = {}
             for app_id, hg in hubcap_hits.items():
                 if app_id in steam_ids:
                     kept_hubcap[app_id] = hg
                     continue
+
+                # Decision-cache fast path: every classification of a
+                # given appid is deterministic in `_STEAM_PLATFORM_CACHE`
+                # state, so once we've decided the answer never flips.
+                cached_decision = _HUBCAP_FILTER_DECISIONS.get(app_id)
+                if cached_decision == 'kept':
+                    kept_hubcap[app_id] = hg
+                    continue
+                if cached_decision == 'platform':
+                    non_windows_filtered += 1
+                    continue
+                if cached_decision in ('parent', 'delisted', 'type'):
+                    dlc_filtered += 1
+                    continue
+
                 meta = meta_map.get(app_id) or {}
                 tags = meta.get("platforms") or {"_unknown"}
                 parent_appid = meta.get("parent_appid")
                 delisted_blank = bool(meta.get("delisted_blank"))
                 store_type = (meta.get("type") or "").lower()
 
+                def _record_drop(reason: str, sample: str) -> None:
+                    _HUBCAP_FILTER_DECISIONS[app_id] = reason
+                    bucket = new_drop_samples.setdefault(reason, [])
+                    if len(bucket) < 5:
+                        bucket.append(sample)
+
                 # Structural DLC signals.
                 if parent_appid:
                     dlc_filtered += 1
-                    logger.debug(
-                        "search_games: filtered Hubcap appid=%s name=%r parent=%s",
-                        app_id, hg.name, parent_appid,
+                    _record_drop(
+                        'parent',
+                        f"appid={app_id} name={hg.name!r} parent={parent_appid}",
                     )
                     continue
                 if delisted_blank:
                     dlc_filtered += 1
-                    logger.debug(
-                        "search_games: filtered Hubcap appid=%s name=%r (delisted, no Steam metadata)",
-                        app_id, hg.name,
+                    _record_drop(
+                        'delisted',
+                        f"appid={app_id} name={hg.name!r} (delisted, no Steam metadata)",
                     )
                     continue
                 # Belt-and-suspenders type drop. parent_appid covers
@@ -315,23 +358,35 @@ class WebBridge(QObject):
                 # video, music) without a parent appid.
                 if store_type and store_type not in ("game", "demo", "mod"):
                     dlc_filtered += 1
-                    logger.debug(
-                        "search_games: filtered Hubcap appid=%s name=%r type=%s",
-                        app_id, hg.name, store_type,
+                    _record_drop(
+                        'type',
+                        f"appid={app_id} name={hg.name!r} type={store_type}",
                     )
                     continue
 
                 # Platform check.
                 if "_unknown" not in tags and "windows" not in tags:
                     non_windows_filtered += 1
-                    logger.debug(
-                        "search_games: filtered Hubcap appid=%s name=%r platforms=%s",
-                        app_id, hg.name, sorted(tags),
+                    _record_drop(
+                        'platform',
+                        f"appid={app_id} name={hg.name!r} platforms={sorted(tags)}",
                     )
                     continue
 
+                _HUBCAP_FILTER_DECISIONS[app_id] = 'kept'
                 kept_hubcap[app_id] = hg
             hubcap_hits = kept_hubcap
+
+            # Single DEBUG summary per search, with a small sample of
+            # newly-classified drops per reason. Re-searches hit the
+            # decision cache and add nothing to the samples, so a
+            # second "resident evil" pass logs zero per-item lines.
+            if new_drop_samples:
+                for reason, samples in new_drop_samples.items():
+                    logger.debug(
+                        "search_games: filter samples [%s] (%d new): %s",
+                        reason, len(samples), "; ".join(samples),
+                    )
 
             logger.info(
                 "search_games: query=%r got %d Steam + %d Hubcap hit(s) across %d variant(s) (%d DLC filtered, %d non-windows filtered)",
@@ -1560,6 +1615,142 @@ class WebBridge(QObject):
         self._run_async(_do, on_done=_on_done)
 
     @pyqtSlot(str)
+    def workshop_auto_import(self, app_id):
+        """Scan local subscribed-mod folders and enqueue every not-yet-downloaded
+        workshop item. Emits task_finished with task='workshop_auto_import'.
+
+        The downloader adapter wraps the existing 4-method `download_workshop_item`
+        cascade so each enqueue runs through SteamWebAPI -> GGNetwork -> SteamCMD
+        -> authenticated SteamCMD just like the manual single-item button.
+        """
+        def _do():
+            try:
+                if not self._steam_path:
+                    return {"success": False, "error": "Steam path not set"}
+                if not str(app_id).strip().isdigit():
+                    return {"success": False, "error": f"Invalid App ID: {app_id!r}"}
+                aid = int(app_id)
+
+                from sff.manifest.workshop_auto_import import (
+                    workshop_auto_import as _impl,
+                )
+                from sff.manifest.workshop_dl import (
+                    download_workshop_item as _dl,
+                )
+                from sff.storage.settings import get_setting
+                from sff.structs import Settings
+                from sff.utils import sff_data_dir
+
+                user = get_setting(Settings.STEAM_USER) or "anonymous"
+                pwd = get_setting(Settings.STEAM_PASS) or ""
+
+                class _Adapter:
+                    """Adapter around download_workshop_item so the auto-import
+                    module can call enqueue(app_id, workshop_id) without knowing
+                    the cascade or output dir layout."""
+                    def enqueue(self, a_id: int, wid: str) -> None:
+                        out_dir = sff_data_dir() / "downloaded_files" / "workshop" / wid
+                        out_dir.mkdir(parents=True, exist_ok=True)
+                        _dl(
+                            wid, str(a_id), out_dir,
+                            steam_username=user, steam_password=pwd,
+                            log=logger.info,
+                        )
+
+                return _impl(self._steam_path, aid, _Adapter(), logger.info)
+            except Exception as e:
+                logger.exception("workshop_auto_import slot failed for app_id=%s", app_id)
+                return {"success": False, "error": str(e)}
+
+        def _on_done(result):
+            result = result or {}
+            success = bool(result.get("success"))
+            added = result.get("added") or []
+            skipped = result.get("skipped") or []
+            found = result.get("found") or []
+            if success:
+                msg = (
+                    f"Imported {len(added)} new, skipped {len(skipped)} already local "
+                    f"({len(found)} found)"
+                )
+            else:
+                msg = result.get("error") or "Auto-import failed"
+            self._emit_task_result(
+                "workshop_auto_import",
+                success,
+                msg,
+                added=added,
+                skipped=skipped,
+                found=found,
+                error=result.get("error") or "",
+            )
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
+    def workshop_bypass_download(self, params_json):
+        """Ownership-bypass workshop download.
+
+        ``params_json`` shape:
+            {"input": "<URL or paste-list or collection URL>",
+             "api_key": "<optional override>"}
+
+        Streams ``task_progress`` events per item and finishes with
+        ``task_finished`` carrying the aggregate counts. The bypass path
+        sends only the Web API key and the UGC CDN GET, never Steam session
+        cookies.
+        """
+        def _do():
+            try:
+                params = json.loads(params_json)
+                raw_input = str(params.get("input") or "").strip()
+                override_key = str(params.get("api_key") or "").strip()
+                from sff.manifest.workshop_dl import run_bypass_batch
+                from sff.storage.settings import get_setting
+                from sff.structs import Settings
+                from sff.strings import STEAM_WEB_API_KEY as _DEFAULT_KEY
+
+                api_key = override_key
+                if not api_key:
+                    saved = get_setting(Settings.STEAM_WEB_API_KEY)
+                    if isinstance(saved, str) and saved.strip():
+                        api_key = saved.strip()
+                if not api_key:
+                    api_key = _DEFAULT_KEY
+
+                out_dir = Path.cwd() / "downloaded_files" / "workshop"
+
+                def _emit_progress(payload):
+                    try:
+                        self.task_progress.emit(json.dumps(payload))
+                    except Exception:
+                        logger.debug("task_progress emit failed", exc_info=True)
+
+                summary = run_bypass_batch(
+                    raw_input,
+                    out_dir,
+                    api_key,
+                    on_progress=_emit_progress,
+                )
+                return summary
+            except Exception as e:
+                logger.exception("workshop_bypass_download failed: %s", e)
+                return {"success": False, "error": str(e)}
+
+        def _on_done(result):
+            result = result or {}
+            self._emit_task_result(
+                "workshop_bypass",
+                bool(result.get("success")),
+                "",
+                added=int(result.get("added") or 0),
+                failed=int(result.get("failed") or 0),
+                error=result.get("error") or "",
+            )
+
+        self._run_async(_do, on_done=_on_done)
+
+    @pyqtSlot(str)
     def check_game_update(self, app_id):
         """Compare installed ACF buildid against Steam CM public buildid.
         If Steam CM is newer: download updated manifests and patch the ACF.
@@ -1677,6 +1868,13 @@ class WebBridge(QObject):
                 msg = f"Updated to build {result.get('cm_buildid', '')}"
             elif result.get("error"):
                 msg = result["error"]
+            # 6.2.5: feed the per-app update-state cache that the badge UI
+            # reads through get_game_update_state(). On a network or Steam
+            # CM failure, leave the prior entry intact and log the error.
+            try:
+                self._record_update_state(str(app_id), result)
+            except Exception as cache_err:
+                logger.debug("update-state cache write failed: %s", cache_err)
             # Strip keys that collide with _emit_task_result's positional params,
             # otherwise we get TypeError: got multiple values for 'success'/'message'/'task'.
             extras = {
@@ -1686,6 +1884,141 @@ class WebBridge(QObject):
             self._emit_task_result("update_check", success, msg, **extras)
 
         self._run_async(_do, on_done=_on_done)
+
+    # ── 6.2.5: per-game and global update-available toggle ───────
+
+    def _record_update_state(self, app_id_str: str, result: dict) -> None:
+        """Write a check_game_update result into the in-memory cache.
+
+        Successful checks (up_to_date or updated) refresh installed and
+        CM build ids plus checked_at. A network / Steam CM failure
+        leaves the previous cache entry intact and logs at debug level.
+        Both code paths emit one INFO log line so debug.log records
+        every check outcome (R18.4, R18.5).
+        """
+        import time as _time
+        prev = self._update_state_cache.get(app_id_str, {})
+        if not result.get("found"):
+            logger.info(
+                "update-state: app_id=%s skipped, ACF not found", app_id_str,
+            )
+            return
+        err = result.get("error")
+        if err and not (result.get("up_to_date") or result.get("updated")):
+            logger.warning(
+                "update-state: app_id=%s left stale, error=%s", app_id_str, err,
+            )
+            return
+        installed = str(result.get("installed_buildid") or prev.get("installed_buildid") or "")
+        cm = str(result.get("cm_buildid") or prev.get("cm_buildid") or "")
+        up_to_date = bool(result.get("up_to_date"))
+        enabled = self._app_update_check_enabled(app_id_str)
+        self._update_state_cache[app_id_str] = {
+            "enabled": enabled,
+            "up_to_date": up_to_date,
+            "installed_buildid": installed,
+            "cm_buildid": cm,
+            "checked_at": int(_time.time()),
+        }
+        logger.info(
+            "update-state: app_id=%s up_to_date=%s installed=%s cm=%s",
+            app_id_str, up_to_date, installed, cm,
+        )
+
+    def _app_update_check_enabled(self, app_id_str: str) -> bool:
+        """Resolve the effective enabled flag for an app.
+
+        Per-app override wins when present. Otherwise the global gate
+        decides. Defaults: GLOBAL_UPDATE_CHECK off (matches the declared
+        SettingItem default in `Settings.GLOBAL_UPDATE_CHECK`), no
+        override. Users opt in from the global Settings panel or per
+        tile in the home page.
+        """
+        try:
+            from sff.storage.settings import get_setting
+            from sff.structs import Settings
+        except Exception:
+            return False
+        global_on = get_setting(Settings.GLOBAL_UPDATE_CHECK)
+        if global_on is None or global_on == "":
+            global_on = False
+        if isinstance(global_on, str):
+            global_on = global_on.lower() in ("true", "1", "yes", "on")
+        raw = get_setting(Settings.UPDATE_CHECK_OVERRIDES) or "{}"
+        try:
+            overrides = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except Exception:
+            overrides = {}
+        if app_id_str in overrides:
+            return bool(overrides[app_id_str])
+        return bool(global_on)
+
+    @pyqtSlot(str, bool)
+    def set_game_update_check(self, app_id, enabled):
+        """Persist the per-app update-check override.
+
+        Stores a JSON map under Settings.UPDATE_CHECK_OVERRIDES so the
+        periodic timer and the badge UI both observe the same gate.
+        """
+        try:
+            from sff.storage.settings import get_setting, set_setting
+            from sff.structs import Settings
+            raw = get_setting(Settings.UPDATE_CHECK_OVERRIDES) or "{}"
+            try:
+                overrides = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            except Exception:
+                overrides = {}
+            if not isinstance(overrides, dict):
+                overrides = {}
+            overrides[str(app_id)] = bool(enabled)
+            set_setting(Settings.UPDATE_CHECK_OVERRIDES, json.dumps(overrides))
+            # Refresh the cached state's enabled flag in-place so the
+            # badge UI reflects the toggle without waiting for the next
+            # check_game_update tick.
+            entry = self._update_state_cache.get(str(app_id))
+            if entry is not None:
+                entry["enabled"] = bool(enabled)
+            logger.info(
+                "set_game_update_check: app_id=%s enabled=%s", app_id, enabled,
+            )
+        except Exception as e:
+            logger.exception("set_game_update_check failed: %s", e)
+
+    @pyqtSlot(str, result=str)
+    def get_game_update_state(self, app_id):
+        """Return the cached update state for an app as a JSON string.
+
+        Fields: enabled, up_to_date, installed_buildid, cm_buildid,
+        checked_at. Missing entries return a default with enabled
+        resolved against the global gate plus per-app override.
+        """
+        try:
+            key = str(app_id)
+            cached = self._update_state_cache.get(key)
+            if cached is None:
+                state = {
+                    "enabled": self._app_update_check_enabled(key),
+                    "up_to_date": None,
+                    "installed_buildid": None,
+                    "cm_buildid": None,
+                    "checked_at": 0,
+                }
+            else:
+                state = dict(cached)
+                state["enabled"] = self._app_update_check_enabled(key)
+            logger.debug(
+                "get_game_update_state: app_id=%s state=%s", key, state,
+            )
+            return json.dumps(state)
+        except Exception as e:
+            logger.exception("get_game_update_state failed: %s", e)
+            return json.dumps({
+                "enabled": True,
+                "up_to_date": None,
+                "installed_buildid": None,
+                "cm_buildid": None,
+                "checked_at": 0,
+            })
 
     @pyqtSlot(str)
     def lure_fix_acf(self, app_id):
@@ -1945,15 +2278,121 @@ class WebBridge(QObject):
         self._run_async(_do, on_done=_on_done)
 
     @pyqtSlot(result=str)
-    def lumacore_check_update(self):
+    def steam_updates_get_state(self):
+        """Return 'blocked', 'unblocked', or 'unknown' based on the
+        BootStrapperInhibitAll line in <steam>/steam.cfg.
+
+        - blocked   : steam.cfg exists AND the line is set to Enable/true/1
+        - unblocked : steam.cfg exists AND the line is set to False/0/no
+        - unknown   : file missing OR no BootStrapperInhibitAll line found
+        """
+        try:
+            steam_path = self._steam_path
+            if not steam_path:
+                return "unknown"
+            cfg_path = steam_path / "steam.cfg"
+            if not cfg_path.is_file():
+                return "unknown"
+            text = cfg_path.read_text(encoding="utf-8", errors="replace")
+            for line in text.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if "=" not in stripped:
+                    continue
+                key, _, val = stripped.partition("=")
+                if key.strip().lower() != "bootstrapperinhibitall":
+                    continue
+                normalised = val.strip().lower()
+                if normalised in ("enable", "enabled", "true", "1", "yes"):
+                    return "blocked"
+                if normalised in ("false", "0", "no", "disable", "disabled"):
+                    return "unblocked"
+                return "unknown"
+            return "unknown"
+        except Exception as exc:
+            logger.warning("steam_updates_get_state failed: %s", exc)
+            return "unknown"
+
+    @pyqtSlot(str, result=str)
+    def steam_updates_set_state(self, action):
+        """Write or update the BootStrapperInhibitAll line in
+        <steam>/steam.cfg based on `action`.
+
+        action = 'block'   sets BootStrapperInhibitAll=Enable
+        action = 'unblock' sets BootStrapperInhibitAll=False
+
+        Preserves any other lines already in steam.cfg. Creates the file
+        when it doesn't exist. Returns the new state ('blocked', 'unblocked')
+        on success, or an error message string on failure.
+        """
+        try:
+            steam_path = self._steam_path
+            if not steam_path:
+                return "Steam path not set"
+            cfg_path = steam_path / "steam.cfg"
+
+            normalised = (action or "").strip().lower()
+            if normalised == "block":
+                new_value = "Enable"
+                final_state = "blocked"
+            elif normalised == "unblock":
+                new_value = "False"
+                final_state = "unblocked"
+            else:
+                return f"unknown action: {action!r}"
+
+            existing_lines = []
+            if cfg_path.is_file():
+                existing_lines = cfg_path.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
+
+            replaced = False
+            new_lines = []
+            for line in existing_lines:
+                stripped = line.strip()
+                if "=" in stripped and not stripped.startswith("#"):
+                    key, _, _ = stripped.partition("=")
+                    if key.strip().lower() == "bootstrapperinhibitall":
+                        new_lines.append(f"BootStrapperInhibitAll={new_value}")
+                        replaced = True
+                        continue
+                new_lines.append(line)
+            if not replaced:
+                new_lines.append(f"BootStrapperInhibitAll={new_value}")
+
+            body = "\n".join(new_lines).rstrip() + "\n"
+            cfg_path.write_text(body, encoding="utf-8")
+            logger.info(
+                "steam_updates_set_state: %s -> %s (%s)",
+                final_state, cfg_path, new_value,
+            )
+            return final_state
+        except Exception as exc:
+            logger.warning("steam_updates_set_state failed: %s", exc)
+            return f"write failed: {exc}"
+
+    @pyqtSlot(str, result=str)
+    def lumacore_check_update(self, _arg=""):
         """Return JSON {installed, latest, update_available, source} for the
         Settings / Home update banner. Honours the 6-hour cooldown so the
         first call after launch hits GitHub and subsequent calls reuse the
         cached answer.
+
+        Accepts an unused string argument because the JS bridge calls this
+        through callWithCallback, which always sends the leading argument
+        before the callback. Slots without a parameter slot were silently
+        dropped, so the modal never repopulated.
+
+        When the argument is the literal string "force", the cooldown is
+        bypassed and a fresh probe hits GitHub. Used by the Check for
+        updates button so users get an answer they can trust.
         """
         try:
             from sff.lumacore_setup import check_for_lumacore_update
-            data = check_for_lumacore_update(self._steam_path)
+            force = (str(_arg).strip().lower() == "force")
+            data = check_for_lumacore_update(self._steam_path, force=force)
             return json.dumps(data)
         except Exception as exc:
             logger.warning("lumacore_check_update failed: %s", exc)
@@ -2172,6 +2611,14 @@ class WebBridge(QObject):
                         global _STEAM_APPLIST_CACHE, _STEAM_APPLIST_CACHE_TIME
                         _STEAM_APPLIST_CACHE = None
                         _STEAM_APPLIST_CACHE_TIME = 0.0
+                        # Defence-in-depth: drop the Store grid cache so
+                        # list_games rebuilds with the fresh toggle on
+                        # the next round trip.
+                        try:
+                            from sff import store_browser as _sb
+                            _sb._cached_grid = None
+                        except Exception:
+                            pass
                         from sff.utils import root_folder
                         _all_games = root_folder(outside_internal=True) / "all_games.txt"
                         if _all_games.exists():
@@ -2833,6 +3280,22 @@ class WebBridge(QObject):
                 if not selected_depots:
                     return (False, "No depots with decryption keys found in Lua")
 
+                # If no manifests resolved for any selected depot, DDMod will
+                # fall back to anonymous CDN fetch and 401. Give the user a
+                # specific error instead of the generic "DepotDownloaderMod
+                # reported failure" line.
+                _depots_without_manifest = [
+                    d for d in selected_depots if str(d) not in manifests_dict
+                ]
+                if len(_depots_without_manifest) == len(selected_depots):
+                    return (
+                        False,
+                        "No manifest IDs available for any depot. "
+                        "Drop a folder of .manifest files into the modal, "
+                        "pick a manifest source (Hubcap/Ryuu/oureveryday), "
+                        "or run Update All Games first.",
+                    )
+
                 self.download_progress.emit(json.dumps({
                     "app_id": app_id, "status": "Running DepotDownloaderMod...", "progress": 35
                 }))
@@ -2881,7 +3344,29 @@ class WebBridge(QObject):
                 except Exception:
                     pass
 
-                return (ok, "Download complete" if ok else "DepotDownloaderMod reported failure")
+                if ok:
+                    return (True, "Download complete")
+                # Build a more specific failure message: did EVERY depot exit
+                # non-zero, or just some? Did the install dir end up empty?
+                _failed_dir = (
+                    dest / "steamapps" / "common" / installdir
+                    if installdir else None
+                )
+                if _failed_dir and not any(_failed_dir.glob("*")):
+                    return (
+                        False,
+                        "DepotDownloaderMod failed for every depot. "
+                        "Common causes: anonymous CDN fetch fell through "
+                        "(missing manifest pin), Steam blocked the depot, "
+                        "or .NET 9 runtime failed to spawn. Check the "
+                        "console output above for the per-depot exit code.",
+                    )
+                return (
+                    False,
+                    "DepotDownloaderMod completed with errors. "
+                    "Some depots downloaded; check the console output for "
+                    "which depots exited non-zero before retrying.",
+                )
 
             except Exception as e:
                 logger.exception("download_game_ddmod failed: %s", e)
@@ -4017,6 +4502,17 @@ _STEAM_APPLIST_CACHE_TIME = 0.0
 # signal we have). The DLC filter uses parent_appid + delisted_blank
 # as structural drop signals; no name keywords involved.
 _STEAM_PLATFORM_CACHE: "dict[int, dict]" = {}
+
+# In-process cache of Hubcap filter decisions per appid. The DLC /
+# platform filter walks dozens of items per search and used to log a
+# DEBUG line per drop, which produced 100+ noisy lines on a populated
+# franchise query (e.g. "resident evil"). The decision is a pure
+# function of `_STEAM_PLATFORM_CACHE[aid]`, so once we've classified an
+# appid the answer never changes inside this process. The cache stores
+# 'kept' or one of the drop reasons ('parent', 'delisted', 'type',
+# 'platform') so re-search hits short-circuit without re-walking the
+# metadata or re-emitting log lines.
+_HUBCAP_FILTER_DECISIONS: "dict[int, str]" = {}
 
 _NONGAME_NAME_KW = ("soundtrack", "art book", "artbook", " ost", "music pack", "digital artbook")
 

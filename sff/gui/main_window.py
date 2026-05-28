@@ -20,8 +20,8 @@ import re
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QThread, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtCore import QEasingCurve, QEvent, QObject, QPropertyAnimation, QThread, QTimer, QUrl, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QPixmap, QTextCursor
 from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QGraphicsOpacityEffect,
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
@@ -51,7 +52,7 @@ from PyQt6.QtWidgets import (
 )
 
 from sff.gui.log_window import GlobalLogWindow, QtLogHandler
-from sff.gui.themes import THEMES
+from sff.gui.themes import THEMES, theme_background
 from sff.i18n import T
 from sff.structs import MainMenu, MainReturnCode
 
@@ -207,6 +208,7 @@ class SFFMainWindow(QMainWindow):
         self._web_view.page().settings().setAttribute(
             QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
         )
+        self._install_web_splash()
         self._web_ui_active = True
         self._web_ui_loaded = False
 
@@ -518,6 +520,21 @@ class SFFMainWindow(QMainWindow):
         self._save_watcher_timer = QTimer(self)
         self._save_watcher_timer.timeout.connect(self._run_background_save_watcher)
         self._start_save_watcher()
+        # 6.2.5: per-app update-available periodic timer. The tick runs
+        # every 5 minutes, walks app_list_man, applies per-app overrides
+        # and the global gate, and dispatches at most one
+        # check_game_update call per app per UPDATE_CHECK_INTERVAL_MIN.
+        # Cross-app dispatches are paced one per 2 seconds via
+        # QTimer.singleShot chaining.
+        self._update_check_timer = QTimer(self)
+        self._update_check_timer.timeout.connect(self._run_update_check_tick)
+        self._update_check_dispatched_at: dict[str, float] = {}
+        self._update_check_pending_queue: list[str] = []
+        self._update_check_dispatching = False
+        self._update_check_timer.start(5 * 60 * 1000)
+        # First tick after a short delay so the UI settles before the
+        # initial sweep fires.
+        QTimer.singleShot(15 * 1000, self._run_update_check_tick)
 
     # ── Path / game source helpers ───────────────────────────────
 
@@ -627,6 +644,103 @@ class SFFMainWindow(QMainWindow):
             logging.getLogger(__name__).error(
                 "Web UI not found at %s", index_path
             )
+
+    # ── Web UI splash overlay ────────────────────────────────────
+    #
+    # QtWebEngine paints a white surface for a few hundred ms between widget
+    # show and the first frame from the renderer. The splash sits on top of
+    # the QWebEngineView until index.html signals loadFinished(True), then
+    # fades out over 150 ms. The label is parented to the view (not the
+    # main window) so it does not register as a separate top-level window
+    # or earn a taskbar entry.
+
+    def _install_web_splash(self):
+        bg_hex = theme_background(self._current_theme)
+
+        # QtWebEngine paints white before the page is up. setBackgroundColor
+        # on the page plus an opaque widget background sheet means the
+        # transition under the splash matches the theme.
+        try:
+            self._web_view.page().setBackgroundColor(QColor(bg_hex))
+        except Exception:
+            pass
+        self._web_view.setStyleSheet(f"background-color: {bg_hex};")
+
+        splash = QLabel(self._web_view)
+        splash.setObjectName("WebSplashOverlay")
+        splash.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        splash.setStyleSheet(
+            f"QLabel#WebSplashOverlay {{ background-color: {bg_hex}; }}"
+        )
+        splash.setAutoFillBackground(True)
+
+        for candidate in ("SFF.png", "SFF.ico"):
+            try:
+                from sff.utils import root_folder as _root_folder
+                logo_path = _root_folder() / candidate
+            except Exception:
+                logo_path = Path(candidate)
+            if logo_path.exists():
+                pix = QPixmap(str(logo_path))
+                if not pix.isNull():
+                    splash.setPixmap(pix.scaled(
+                        256, 256,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    ))
+                    break
+
+        splash.resize(self._web_view.size())
+        splash.raise_()
+        splash.show()
+
+        self._web_splash = splash
+        self._web_splash_anim = None
+        self._web_splash_effect = None
+
+        # Keep the splash sized to the view across resizes.
+        self._web_view.installEventFilter(self)
+
+        self._web_view.loadFinished.connect(self._on_web_view_load_finished)
+
+    def _on_web_view_load_finished(self, ok: bool):
+        if not ok:
+            return
+        splash = getattr(self, "_web_splash", None)
+        if splash is None or not splash.isVisible():
+            return
+
+        effect = QGraphicsOpacityEffect(splash)
+        effect.setOpacity(1.0)
+        splash.setGraphicsEffect(effect)
+
+        anim = QPropertyAnimation(effect, b"opacity", splash)
+        anim.setDuration(150)
+        anim.setStartValue(1.0)
+        anim.setEndValue(0.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        def _on_finished():
+            try:
+                splash.hide()
+                splash.setGraphicsEffect(None)
+            finally:
+                self._web_splash_anim = None
+                self._web_splash_effect = None
+
+        anim.finished.connect(_on_finished)
+        # Hold strong refs; the animation and effect die with the splash if
+        # the user closes the window mid-fade.
+        self._web_splash_effect = effect
+        self._web_splash_anim = anim
+        anim.start()
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "_web_view", None) and event.type() == QEvent.Type.Resize:
+            splash = getattr(self, "_web_splash", None)
+            if splash is not None and splash.isVisible():
+                splash.resize(self._web_view.size())
+        return super().eventFilter(obj, event)
 
     # ── Worker management ────────────────────────────────────────
 
@@ -1238,6 +1352,8 @@ class SFFMainWindow(QMainWindow):
 
     def force_quit(self):
         self._save_watcher_timer.stop()
+        if hasattr(self, "_update_check_timer"):
+            self._update_check_timer.stop()
         if self._tray is not None:
             self._tray.minimize_to_tray = False
         self.close()
@@ -1274,11 +1390,28 @@ class SFFMainWindow(QMainWindow):
                     "SteaMidra is running in the system tray. Click the ^ arrow near the clock to find it.",
                 )
         else:
-            event.accept()
+            # OFF branch: the tray icon is parented to QApplication, so leaving
+            # it alive after event.accept() keeps the process running. Hide it
+            # and drop the reference so QApplication has nothing to hold onto,
+            # then quit + accept so the close finishes within ~1 s.
             if not getattr(self, "_quitting", False):
                 self._quitting = True
-                self.force_quit()
+                self._save_watcher_timer.stop()
+                if hasattr(self, "_update_check_timer"):
+                    self._update_check_timer.stop()
+                tray = self._tray
+                if tray is not None:
+                    self._tray = None
+                    try:
+                        tray.minimize_to_tray = False
+                    except Exception:
+                        pass
+                    try:
+                        tray.hide()
+                    except Exception:
+                        pass
                 QApplication.instance().quit()
+            event.accept()
 
     # ── Background save watcher ──────────────────────────────────
 
@@ -1342,6 +1475,109 @@ class SFFMainWindow(QMainWindow):
             backed_up += 1
         if backed_up:
             logger.debug('Save watcher (local): backed up %d game(s)', backed_up)
+
+    # ── 6.2.5: per-game update-available periodic check ──────────
+
+    def _run_update_check_tick(self):
+        """Walk installed apps and queue update checks under the gates.
+
+        Reads GLOBAL_UPDATE_CHECK plus UPDATE_CHECK_INTERVAL_MIN on
+        every tick so settings changes apply on the next sweep. Per-app
+        overrides come from UPDATE_CHECK_OVERRIDES. Apps already
+        dispatched within the last interval are skipped. The actual
+        bridge calls fire one per 2 seconds across all apps via
+        QTimer.singleShot chaining so the Steam CM provider is not
+        hammered.
+        """
+        import time
+        from sff.storage.settings import get_setting
+        from sff.structs import Settings as _S
+        try:
+            global_on = get_setting(_S.GLOBAL_UPDATE_CHECK)
+            if global_on is None or global_on == "":
+                global_on = False
+            if isinstance(global_on, str):
+                global_on = global_on.lower() in ("true", "1", "yes", "on")
+            if not global_on:
+                logger.debug("update-check tick: GLOBAL_UPDATE_CHECK off, skipping")
+                return
+            try:
+                interval_min = int(get_setting(_S.UPDATE_CHECK_INTERVAL_MIN) or 60)
+            except (TypeError, ValueError):
+                interval_min = 60
+            if interval_min <= 0:
+                return
+            interval_sec = interval_min * 60
+            raw = get_setting(_S.UPDATE_CHECK_OVERRIDES) or "{}"
+            try:
+                import json as _json
+                overrides = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+            except Exception:
+                overrides = {}
+            if not isinstance(overrides, dict):
+                overrides = {}
+            bridge = getattr(self, "_web_bridge", None)
+            if bridge is None or not hasattr(bridge, "check_game_update"):
+                return
+            try:
+                installed = _json.loads(bridge.get_installed_games() or "[]")
+            except Exception:
+                installed = []
+            now = time.time()
+            queued: list[str] = []
+            for game in installed:
+                app_id = str(game.get("app_id") or "").strip()
+                if not app_id or app_id == "0":
+                    continue
+                if app_id in overrides and not bool(overrides[app_id]):
+                    continue
+                last = self._update_check_dispatched_at.get(app_id, 0.0)
+                if now - last < interval_sec:
+                    continue
+                queued.append(app_id)
+            if not queued:
+                return
+            logger.info(
+                "update-check tick: queued %d app(s) (interval=%dmin)",
+                len(queued), interval_min,
+            )
+            self._update_check_pending_queue.extend(queued)
+            if not self._update_check_dispatching:
+                self._update_check_dispatching = True
+                QTimer.singleShot(0, self._drain_update_check_queue)
+        except Exception:
+            logger.debug("update-check tick crashed", exc_info=True)
+
+    def _drain_update_check_queue(self):
+        """Pop one app off the pending queue and dispatch.
+
+        Re-arms a 2-second singleShot until the queue empties. Errors
+        from the bridge call propagate through the existing
+        check_game_update path and never break the chain.
+        """
+        import time
+        try:
+            if not self._update_check_pending_queue:
+                self._update_check_dispatching = False
+                return
+            app_id = self._update_check_pending_queue.pop(0)
+            bridge = getattr(self, "_web_bridge", None)
+            if bridge is not None and hasattr(bridge, "check_game_update"):
+                try:
+                    bridge.check_game_update(str(app_id))
+                    self._update_check_dispatched_at[str(app_id)] = time.time()
+                except Exception:
+                    logger.debug(
+                        "update-check dispatch failed for app_id=%s",
+                        app_id, exc_info=True,
+                    )
+            if self._update_check_pending_queue:
+                QTimer.singleShot(2000, self._drain_update_check_queue)
+            else:
+                self._update_check_dispatching = False
+        except Exception:
+            self._update_check_dispatching = False
+            logger.debug("update-check drain crashed", exc_info=True)
 
     def _cloud_save_backup(self, cfg, steam_path, steam32_id):
         from sff.cloud_saves import (

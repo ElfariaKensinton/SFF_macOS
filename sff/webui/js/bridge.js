@@ -160,6 +160,7 @@ window.Bridge = (function() {
             generate_gbe_token: function() {},
             extract_vdf_keys: function(cb) { if (cb) cb('[]'); },
             open_workshop: function() {},
+            workshop_auto_import: function() {},
             fix_game: function() {},
             revert_game: function() {},
             get_fix_game_list: function(cb) { if (cb) cb('[]'); },

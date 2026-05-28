@@ -1,4 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
+# SteaMidra - Steam game setup and manifest tool (SFF)
+# Copyright (c) 2025-2026 Midrag (https://github.com/Midrags)
+#
+# This file is part of SteaMidra.
+#
+# SteaMidra is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# SteaMidra is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with SteaMidra.  If not, see <https://www.gnu.org/licenses/>.
+#
 # SteaMidra Build Configuration
 #
 # Expected warnings you can ignore:
@@ -9,7 +27,39 @@ import os
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_data_files
+
 block_cipher = None
+
+
+def _validate_rich_packaging(hidden_imports, data_entries):
+    """Abort the build before Analysis runs if rich packaging is incomplete.
+
+    The frozen DLC check loads `rich._unicode_data` lazily; missing it has
+    crashed users in the past. The validator catches the regression at spec
+    load time so a bad spec never produces an artifact.
+    """
+    required_hidden = ("rich._unicode_data", "rich.box", "rich.text")
+    missing_hidden = [name for name in required_hidden if name not in hidden_imports]
+    if missing_hidden:
+        raise SystemExit(
+            "build_sff.spec validation failed: hiddenimports is missing "
+            + ", ".join(missing_hidden)
+        )
+
+    has_rich_data = False
+    for entry in data_entries:
+        if isinstance(entry, tuple) and len(entry) == 2:
+            src, dst = entry
+            if "rich" in str(src) or "rich" in str(dst):
+                has_rich_data = True
+                break
+    if not has_rich_data:
+        raise SystemExit(
+            "build_sff.spec validation failed: collect_data_files('rich', "
+            "include_py_files=False) must contribute to datas"
+        )
+
 
 # Get the directory where this spec file is located (where Main.py, sff.ico, etc. live)
 spec_root = os.path.abspath(SPECPATH)
@@ -70,58 +120,69 @@ if win10toast_data:
     datas.append(win10toast_data)
     print(f"Including win10toast data from: {win10toast_data[0]}")
 
+# Bundle the rich package's data files (including _unicode_data tables) so the
+# DLC check path stays import-clean inside the frozen build.
+datas.extend(collect_data_files("rich", include_py_files=False))
+
+hiddenimports = [
+    'InquirerPy',
+    'prompt_toolkit',
+    'selenium',
+    'selenium.webdriver',
+    'selenium.webdriver.chrome',
+    'selenium.webdriver.chrome.service',
+    'selenium.webdriver.chrome.options',
+    'selenium.webdriver.common.by',
+    'selenium.webdriver.common.keys',
+    'selenium.webdriver.support',
+    'selenium.webdriver.support.ui',
+    'selenium.webdriver.support.expected_conditions',
+    'selenium.common.exceptions',
+    'steam',
+    'steam.client',
+    'gevent',
+    'sff.manifest.collections',
+    'sff.manifest.workshop_tracker',
+    'sff.cloud_saves',
+    'sff.google_drive',
+    'sff._gc',
+    'google.auth',
+    'google.auth.transport.requests',
+    'google.oauth2.credentials',
+    'google_auth_oauthlib',
+    'google_auth_oauthlib.flow',
+    'googleapiclient',
+    'googleapiclient.discovery',
+    'googleapiclient.http',
+    'sff.fix_game.online_fix_applier',
+    'sff.linux.steam_process',
+    'psutil',
+    'colorama',
+    'httpx',
+    'keyring',
+    'cryptography',
+    'win10toast',
+    'seleniumbase',
+    'undetected_chromedriver',
+    'bs4',
+    'bs4.builder',
+    'bs4.builder._html5lib',
+    'bs4.builder._lxml',
+    'bs4.builder._htmlparser',
+    'rich._unicode_data',
+    'rich.box',
+    'rich.text',
+    # pkg_resources.py2_warn / pkg_resources.markers removed: not present in newer setuptools
+]
+
+_validate_rich_packaging(hiddenimports, datas)
+
 a = Analysis(
     ['Main.py'],
     pathex=[spec_root],
     binaries=[],
     datas=datas,
-    hiddenimports=[
-        'InquirerPy',
-        'prompt_toolkit',
-        'selenium',
-        'selenium.webdriver',
-        'selenium.webdriver.chrome',
-        'selenium.webdriver.chrome.service',
-        'selenium.webdriver.chrome.options',
-        'selenium.webdriver.common.by',
-        'selenium.webdriver.common.keys',
-        'selenium.webdriver.support',
-        'selenium.webdriver.support.ui',
-        'selenium.webdriver.support.expected_conditions',
-        'selenium.common.exceptions',
-        'steam',
-        'steam.client',
-        'gevent',
-        'sff.manifest.collections',
-        'sff.manifest.workshop_tracker',
-        'sff.cloud_saves',
-        'sff.google_drive',
-        'sff._gc',
-        'google.auth',
-        'google.auth.transport.requests',
-        'google.oauth2.credentials',
-        'google_auth_oauthlib',
-        'google_auth_oauthlib.flow',
-        'googleapiclient',
-        'googleapiclient.discovery',
-        'googleapiclient.http',
-        'sff.fix_game.online_fix_applier',
-        'sff.linux.steam_process',
-        'psutil',
-        'colorama',
-        'httpx',
-        'keyring',
-        'cryptography',
-        'win10toast',
-        'seleniumbase',
-        'undetected_chromedriver',
-        'bs4',
-        'bs4.builder',
-        'bs4.builder._html5lib',
-        'bs4.builder._lxml',
-        'bs4.builder._htmlparser',
-        # pkg_resources.py2_warn / pkg_resources.markers removed: not present in newer setuptools
-    ],
+    hiddenimports=hiddenimports,
     hookspath=['hooks'],
     hooksconfig={},
     runtime_hooks=[],

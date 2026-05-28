@@ -348,3 +348,56 @@ class StoreApiClient:
         except Exception as e:
             logger.error("Failed to get user stats: %s", e)
             return None
+
+
+# Module-level Store grid cache. The Web bridge wipes this on
+# `store_show_software` toggles so the next list_games call
+# rebuilds against the fresh setting. Stays None until a caller
+# decides to use it; list_games itself does not populate it.
+_cached_grid = None
+
+
+def _coerce_show_software(raw) -> bool:
+    """STORE_SHOW_SOFTWARE ships as a bool but older settings.bin
+    blobs may surface it as a string. Match the close-to-tray pattern
+    so the parse is consistent across the project."""
+    if raw is None or raw == "":
+        return False
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("false", "0", "no", "off")
+
+
+def list_games(entries):
+    """Filter a Store grid result set against `STORE_SHOW_SOFTWARE`.
+
+    The setting is read on every call, so a flip from the Settings
+    dialog takes effect on the next round trip without restart. When
+    the toggle parses as false, every entry whose `type` field equals
+    `"software"` is dropped before the list returns. Entries whose
+    type is unset, missing, or non-string pass through untouched.
+
+    The input is iterable of dicts (Steam IStoreService rows or the
+    Hubcap-merged dicts the Store tab renders). The output preserves
+    input order and is a fresh list, so the caller can mutate freely.
+    """
+    try:
+        from sff.storage.settings import get_setting as _get
+        from sff.structs import Settings
+        show_software = _coerce_show_software(_get(Settings.STORE_SHOW_SOFTWARE))
+    except Exception:
+        # Settings layer unreachable: keep the conservative default
+        # (hide software, matching the SettingItem default of False).
+        show_software = False
+
+    out = []
+    for entry in entries or []:
+        if not show_software:
+            try:
+                etype = entry.get("type") if isinstance(entry, dict) else getattr(entry, "type", None)
+            except Exception:
+                etype = None
+            if isinstance(etype, str) and etype.strip().lower() == "software":
+                continue
+        out.append(entry)
+    return out

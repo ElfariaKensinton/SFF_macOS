@@ -132,6 +132,10 @@ window.App = (function() {
                         var ofStatus = document.getElementById('lc-onlinefix-status');
                         if (ofStatus) ofStatus.textContent = result.success ? (result.message || 'Done.') : (result.message || 'Failed.');
                     }
+                    if (result.task === 'workshop_auto_import') {
+                        var wsBtn = document.getElementById('action-workshop-import');
+                        if (wsBtn) { wsBtn.disabled = false; wsBtn.classList.remove('is-busy'); }
+                    }
                     if (result.task === 'api_key_connected') {
                         Store.onApiKeyAvailable('');
                     }
@@ -1220,6 +1224,22 @@ window.App = (function() {
     }
 
     function _handleHomeAction(action) {
+        // Workshop subscribed-mods auto-import — scans the local steamapps/workshop/content/<appid>
+        // tree and enqueues every numeric subdir that does not already have a complete
+        // download under <sff_data>/downloaded_files/workshop/<wid>/.
+        if (action === 'workshop_import') {
+            var wsAppId = _getSelectedGameId();
+            if (!wsAppId) {
+                Components.showToast('warning', 'Please select a game from the dropdown first.');
+                return;
+            }
+            var btn = document.getElementById('action-workshop-import');
+            if (btn) { btn.disabled = true; btn.classList.add('is-busy'); }
+            Components.showToast('info', 'Scanning subscribed mods for App ' + wsAppId + '...');
+            Bridge.call('workshop_auto_import', wsAppId);
+            return;
+        }
+
         // Show game-picker dialog before running update_manifests
         if (action === 'update_manifests') {
             var listEl = document.getElementById('um-game-list');
@@ -1304,6 +1324,11 @@ window.App = (function() {
                 var pathInp = document.getElementById('lc-steam-path');
                 if (pathInp && steamPath && !pathInp.value) pathInp.value = steamPath;
             });
+            // Always re-probe on open. The initial probe inside _initLcSetupModal
+            // only fires once, so users who installed LumaCore later in the
+            // session would otherwise see a stale "—". Force the refresh here
+            // so the modal always shows the current installed/latest pair.
+            _refreshLcVersionInfo();
             Components.showModal('lc-setup-modal');
             return;
         }
@@ -1314,6 +1339,40 @@ window.App = (function() {
             var appIdInp = document.getElementById('lc-onlinefix-appid');
             if (appIdInp && appId) appIdInp.value = appId;
             Components.showModal('lc-online-fix-modal');
+            return;
+        }
+
+        // Steam updates block/unblock — writes BootStrapperInhibitAll to
+        // <steam>\steam.cfg. The toggle is handled by the bridge so the user
+        // sees a confirmation toast with the current state after the write.
+        if (action === 'steam_updates') {
+            Bridge.callSync('steam_updates_get_state', function(state) {
+                var current = (state || 'unknown').toString();
+                var msg;
+                if (current === 'blocked') {
+                    msg = 'Steam auto-updates are currently BLOCKED via steam.cfg.\n\n' +
+                          'Click OK to UNBLOCK them (sets BootStrapperInhibitAll=False).';
+                } else if (current === 'unblocked') {
+                    msg = 'Steam auto-updates are currently allowed.\n\n' +
+                          'Click OK to BLOCK them (sets BootStrapperInhibitAll=Enable).';
+                } else {
+                    msg = 'No steam.cfg setting detected.\n\n' +
+                          'Click OK to BLOCK Steam auto-updates by writing ' +
+                          'BootStrapperInhibitAll=Enable to <steam>\\steam.cfg.';
+                }
+                if (!window.confirm(msg)) return;
+                var nextAction = (current === 'blocked') ? 'unblock' : 'block';
+                Bridge.callWithCallback('steam_updates_set_state', nextAction, function(res) {
+                    var result = (res || '').toString();
+                    if (result === 'blocked') {
+                        Components.showToast('success', 'Steam updates BLOCKED. Restart Steam for it to take effect.');
+                    } else if (result === 'unblocked') {
+                        Components.showToast('success', 'Steam updates UNBLOCKED. Restart Steam for it to take effect.');
+                    } else {
+                        Components.showToast('error', 'Failed to update steam.cfg: ' + result);
+                    }
+                });
+            });
             return;
         }
 
@@ -1331,7 +1390,8 @@ window.App = (function() {
         var nonGameActions = [
             'download_games', 'download_manifests', 'recent_lua', 'update_manifests',
             'mute_toggle', 'remove_game', 'context_menu', 'applist_menu',
-            'check_updates', 'scan_library', 'analytics', 'auto_lc_setup', 'lc_online_fix'
+            'check_updates', 'scan_library', 'analytics', 'auto_lc_setup', 'lc_online_fix',
+            'steam_updates'
         ];
         // Outside-Steam game action
         if (_outsideMode && nonGameActions.indexOf(action) === -1) {
@@ -1448,7 +1508,7 @@ window.App = (function() {
         var refreshBtn = document.getElementById('lc-version-refresh');
         if (refreshBtn) {
             refreshBtn.addEventListener('click', function() {
-                _refreshLcVersionInfo();
+                _refreshLcVersionInfo(true);
             });
         }
 
@@ -1457,14 +1517,18 @@ window.App = (function() {
         _refreshLcVersionInfo();
     }
 
-    function _refreshLcVersionInfo() {
+    function _refreshLcVersionInfo(force) {
         var installedEl = document.getElementById('lc-version-installed');
         var latestEl    = document.getElementById('lc-version-latest');
         var bannerEl    = document.getElementById('lc-version-update-banner');
         if (installedEl) installedEl.textContent = 'checking...';
         if (latestEl)    latestEl.textContent    = 'checking...';
 
-        Bridge.callWithCallback('lumacore_check_update', '', function(json) {
+        // The slot accepts a string flag. "force" bypasses the 6-hour cache
+        // for explicit user-initiated checks; empty string follows the
+        // cached path for automatic refreshes.
+        var arg = force ? 'force' : '';
+        Bridge.callWithCallback('lumacore_check_update', arg, function(json) {
             var data;
             try { data = JSON.parse(json); } catch (e) { data = null; }
             if (!data) {
@@ -1475,6 +1539,9 @@ window.App = (function() {
             if (installedEl) installedEl.textContent = data.installed || 'not installed';
             if (latestEl)    latestEl.textContent    = data.latest    || 'unknown';
             if (bannerEl)    bannerEl.style.display  = data.update_available ? 'flex' : 'none';
+            if (data.error) {
+                Components.showToast('error', 'Update check failed: ' + data.error);
+            }
         });
     }
 

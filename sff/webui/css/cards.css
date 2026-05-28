@@ -195,3 +195,66 @@
         transform: translateY(0);
     }
 }
+
+/* ── 6.2.5: per-game update-available badge ─────────── */
+
+.game-card {
+    position: relative;
+}
+
+.update-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45);
+    cursor: pointer;
+    z-index: 4;
+    transition: transform 0.15s ease;
+}
+
+.update-badge:hover {
+    transform: scale(1.2);
+}
+
+.update-badge-hidden {
+    display: none;
+}
+
+.update-badge-green {
+    background: #4caf50;
+}
+
+.update-badge-amber {
+    background: #ffb300;
+}
+
+.update-popover {
+    background: var(--card-bg, #1c1f24);
+    border: 1px solid var(--border, #2c313a);
+    border-radius: 8px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+    padding: 12px 14px;
+    width: 220px;
+    z-index: 1000;
+    font-size: 12px;
+    color: var(--text, #e6e8ec);
+}
+
+.update-popover-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+
+.update-popover-row b {
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-weight: 600;
+}
+
+.update-popover-check {
+    margin-top: 8px;
+    width: 100%;
+}

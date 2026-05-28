@@ -242,8 +242,8 @@
                     </button>
                     <button class="action-card" data-action="update_manifests" data-tooltip="Re-download all manifests for games in your AppList to get the latest versions">
                         <svg class="action-icon" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
-                        <span class="action-title">Update All Manifests</span>
-                        <span class="action-desc">Refresh all game manifests</span>
+                        <span class="action-title">Update All Games</span>
+                        <span class="action-desc">Refresh all installed games</span>
                     </button>
                 </div>
             </div>
@@ -255,13 +255,18 @@
                         <svg class="action-icon" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
                         <span class="action-title">Workshop Item</span>
                     </button>
+                    <button class="action-card compact" data-action="workshop_import" id="action-workshop-import" data-tooltip="Scan steamapps/workshop/content/<appid>/ and queue every not-yet-downloaded subscribed mod">
+                        <svg class="action-icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        <span class="action-title">Import Subscribed Mods</span>
+                    </button>
                     <button class="action-card compact platform-win" data-action="hv_fix" data-tooltip="Temporarily disabled — HVAuto's host (buzzheavier) is serving malware ads. Will be re-enabled when fixes move to a safer host.">
                         <svg class="action-icon" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="15" x2="4" y2="15"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="15" x2="22" y2="15"/></svg>
                         <span class="action-title">HyperVisor (HVAuto)</span>
                     </button>
-                    <button class="action-card compact" data-action="achievements" data-tooltip="View and manage achievement data for a game">
+                    <button class="action-card compact" data-action="achievements" data-tooltip="Downloads UserGameStats_*.bin and the achievement schema for use with the Goldberg / GBE emulator. NOT needed when LumaCore is installed — achievements work through Steam natively. Only use this with games that have been cracked with Goldberg.">
                         <svg class="action-icon" viewBox="0 0 24 24"><circle cx="12" cy="8" r="7"/><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"/></svg>
                         <span class="action-title">Achievement Data</span>
+                        <span class="action-desc warn-achievements">For Goldberg only — not needed with LumaCore</span>
                     </button>
                     <button class="action-card compact" data-action="mute_toggle" data-tooltip="Toggle Steam game mute/unmute">
                         <svg class="action-icon" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
@@ -274,6 +279,11 @@
                     <button class="action-card compact platform-win" data-action="context_menu" data-tooltip="Install or remove the SteaMidra context menu in Windows Explorer">
                         <svg class="action-icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
                         <span class="action-title">Context Menu</span>
+                    </button>
+                    <button class="action-card compact platform-win" data-action="steam_updates" id="action-steam-updates" data-tooltip="Block or unblock Steam client auto-updates by writing BootStrapperInhibitAll to steam.cfg in the Steam directory">
+                        <svg class="action-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+                        <span class="action-title">Steam Updates</span>
+                        <span class="action-desc">Block / unblock auto-updates</span>
                     </button>
                     <button class="action-card compact" data-action="check_mod_updates" data-tooltip="Check if your tracked Steam Workshop items have new updates">
                         <svg class="action-icon" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
@@ -1009,7 +1019,7 @@
                 <div class="input-group">
                     <label>Exclude from Manifest Updates:</label>
                     <div class="input-with-btn">
-                        <input type="text" id="setting-manifest-excludes" placeholder="App IDs, comma-separated (e.g. 480,1234)" data-tooltip="These App IDs will be skipped by Update All Manifests and Auto-Update Manifests">
+                        <input type="text" id="setting-manifest-excludes" placeholder="App IDs, comma-separated (e.g. 480,1234)" data-tooltip="These App IDs will be skipped by Update All Games and Auto-Update Manifests">
                         <button id="setting-manifest-excludes-save" class="btn">Save</button>
                     </div>
                 </div>
@@ -1439,7 +1449,7 @@
         <div class="modal-overlay"></div>
         <div class="modal-content">
             <div class="modal-header">
-                <h2>Update All Manifests</h2>
+                <h2>Update All Games</h2>
                 <button class="modal-close">&times;</button>
             </div>
             <div class="modal-body">

@@ -835,53 +835,55 @@ class UI:
         from sff.dotnet_utils import ensure_dotnet_9
         from sff.depot_downloader import run_download, filter_depots_by_os
         from pathvalidate import sanitize_filename
-        # On Linux, SLSteam fetches game content directly when Steam triggers an
-        # update. Running DDMod here is anonymous and fails with 401 on every
-        # owned-game depot, leaving the user with only redists and a confusing
-        # "download finished" message. Skip it and tell them to refresh in Steam.
-        if sys.platform != "win32" and self.sls_man:
-            print(
-                Fore.GREEN
-                + "\nManifests + ACF written. Open Steam, find the game in your library, "
-                + "and click 'Update' — SLSteam will pull the content from Steam directly."
-                + Style.RESET_ALL
+        # Run DDMod on every platform when .NET 9 is present. Linux
+        # earlier branched on SLSteam to skip DDMod entirely, but that
+        # left the user with manifests + ACF and no actual game content.
+        # SLSteam pulls content during Steam's own update only when the
+        # game is already in the library and the depot keys are
+        # present, which works in some flows but fails silently when
+        # Steam refuses to mark the appid as installed. DDMod is the
+        # reliable path on both platforms.
+        print(Fore.YELLOW + "\nDownloading game files via DepotDownloaderMod:" + Style.RESET_ALL)
+        if ensure_dotnet_9():
+            _manifest_re = _re.compile(
+                r"setManifestid\s*\(\s*(\d+)\s*,\s*[\"']([0-9a-fA-F]+)[\"']\s*\)"
             )
+            _manifests = {
+                m.group(1): m.group(2)
+                for m in _manifest_re.finditer(parsed_lua.contents or "")
+            }
+            _game_name_str = get_game_name(parsed_lua.app_id)
+            _installdir = sanitize_filename(_game_name_str).replace("'", "").strip() or str(parsed_lua.app_id)
+            _game_data = {
+                "appid": str(parsed_lua.app_id),
+                "depots": {
+                    str(dp.depot_id): {"key": dp.decryption_key}
+                    for dp in parsed_lua.depots
+                    if dp.decryption_key
+                },
+                "manifests": _manifests,
+                "installdir": _installdir,
+            }
+            _selected = [str(dp.depot_id) for dp in parsed_lua.depots if dp.decryption_key]
+            try:
+                _app_info = provider.get_single_app_info(int(parsed_lua.app_id))
+            except Exception:
+                _app_info = None
+            _selected = filter_depots_by_os(_selected, _app_info, print_fn=print)
+            run_download(_game_data, _selected, lib_path, self.steam_path, print_fn=print)
         else:
-            print(Fore.YELLOW + "\nDownloading game files via DepotDownloaderMod:" + Style.RESET_ALL)
-            if ensure_dotnet_9():
-                _manifest_re = _re.compile(
-                    r"setManifestid\s*\(\s*(\d+)\s*,\s*[\"']([0-9a-fA-F]+)[\"']\s*\)"
+            if sys.platform != "win32":
+                print(
+                    Fore.YELLOW
+                    + ".NET 9 not found. Manifests + ACF written. Run Linux Tools Setup to install .NET 9, then re-run this download."
+                    + Style.RESET_ALL
                 )
-                _manifests = {
-                    m.group(1): m.group(2)
-                    for m in _manifest_re.finditer(parsed_lua.contents or "")
-                }
-                _game_name_str = get_game_name(parsed_lua.app_id)
-                _installdir = sanitize_filename(_game_name_str).replace("'", "").strip() or str(parsed_lua.app_id)
-                _game_data = {
-                    "appid": str(parsed_lua.app_id),
-                    "depots": {
-                        str(dp.depot_id): {"key": dp.decryption_key}
-                        for dp in parsed_lua.depots
-                        if dp.decryption_key
-                    },
-                    "manifests": _manifests,
-                    "installdir": _installdir,
-                }
-                _selected = [str(dp.depot_id) for dp in parsed_lua.depots if dp.decryption_key]
-                try:
-                    _app_info = provider.get_single_app_info(int(parsed_lua.app_id))
-                except Exception:
-                    _app_info = None
-                _selected = filter_depots_by_os(_selected, _app_info, print_fn=print)
-                run_download(_game_data, _selected, lib_path, self.steam_path, print_fn=print)
             else:
-                if sys.platform != "win32":
-                    print(
-                        Fore.YELLOW
-                        + ".NET 9 not found. Game registered in SLSsteam — run Linux Tools Setup, then open Steam and click 'Update'."
-                        + Style.RESET_ALL
-                    )
+                print(
+                    Fore.YELLOW
+                    + ".NET 9 not found. Manifests + ACF written. Install .NET 9 and re-run this download."
+                    + Style.RESET_ALL
+                )
         # Mark download as completed in tracking tab
         if self.download_manager and _tracking_item:
             self.download_manager.complete_external(_tracking_item, success=True)
@@ -997,19 +999,6 @@ class UI:
         else:
             downloader.download_manifests(parsed_lua, auto_manifest=False, manifest_override=manifest_override)
         print(Fore.YELLOW + "\nChecking .NET 9 runtime:" + Style.RESET_ALL)
-        # On Linux SLSteam handles content fetch — skip DDMod regardless of .NET status.
-        if sys.platform != "win32" and self.sls_man:
-            print(
-                Fore.GREEN
-                + "Manifests pre-seeded. Open Steam and click 'Update' on the game — "
-                + "SLSteam will pull the content directly from Steam."
-                + Style.RESET_ALL
-            )
-            acf.write_acf(parsed_lua)
-            ensure_library_has_app(self.steam_path, lib_path, str(parsed_lua.app_id))
-            if self.download_manager and _tracking_item:
-                self.download_manager.complete_external(_tracking_item, success=True)
-            return MainReturnCode.LOOP_NO_PROMPT
         if not ensure_dotnet_9():
             print(Fore.RED + ".NET 9 is required for DepotDownloaderMod. Aborting download." + Style.RESET_ALL)
             return MainReturnCode.LOOP_NO_PROMPT

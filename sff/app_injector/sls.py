@@ -22,8 +22,6 @@ import logging
 from pathlib import Path
 
 from colorama import Fore, Style
-from rich.console import Console
-from rich.table import Column, Table
 
 from sff.app_injector.base import AppInjectionManager
 from sff.lua.writer import ConfigVDFWriter
@@ -124,19 +122,13 @@ class SLSManager(AppInjectionManager):
             if not in_list:
                 not_in_config.append(app_id)
             rows_store.append((str(app_id), names.get(app_id, f"DLC {app_id}"), in_list))
-        try:
-            console = Console()
-            table = Table(
-                "ID",
-                "Name",
-                Column(header="In config?", justify="center"),
-            )
-            for _id, _name, _in in rows_store:
-                table.add_row(_id, _name, "[green]O[/green]" if _in else "[red]X[/red]")
-            console.print(table)
-        except Exception:
-            for _id, _name, _in in rows_store:
-                print(f"  {_id} | {_name} | Config: {'O' if _in else 'X'}")
+        width_id = max(len("ID"), max((len(r[0]) for r in rows_store), default=2))
+        width_name = max(len("Name"), max((len(r[1]) for r in rows_store), default=4))
+        print(f"\n{'ID':<{width_id}}  {'Name':<{width_name}}  In config?")
+        print(f"{'-' * width_id}  {'-' * width_name}  ----------")
+        for _id, _name, _in in rows_store:
+            mark = "O" if _in else "X"
+            print(f"{_id:<{width_id}}  {_name:<{width_name}}  {mark}")
         if not_in_config:
             print("Some DLCs are not in the SLSSteam config.")
             if prompt_confirm("Do you want to add these to the config?"):
@@ -224,11 +216,6 @@ class SLSManager(AppInjectionManager):
                     manifest.get_dlc_manifest_status(depot_dlcs) if depot_dlcs else {}
                 )
                 non_depot_dlc_count = 0
-                bool_map = {
-                    True: "[green]O[/green]",
-                    False: "[red]X[/red]",
-                    None: "N/A",
-                }
                 bool_plain = {
                     True: "O", False: "X", None: "N/A"
                 }
@@ -245,20 +232,22 @@ class SLSManager(AppInjectionManager):
                         str(dlc.id), dlc.name, dlc.type.value,
                         dlc.in_applist, key_map.get(dlc.id), manifest_map.get(dlc.id),
                     ))
-                try:
-                    console = Console()
-                    table = Table(
-                        "ID", "Name", "Type",
-                        Column(header="In AppList?", justify="center"),
-                        Column(header="Has Key?", justify="center"),
-                        Column(header="Has Manifest?", justify="center"),
+                width_id = max(len("ID"), max((len(r[0]) for r in rows_dlc), default=2))
+                width_name = max(len("Name"), max((len(r[1]) for r in rows_dlc), default=4))
+                width_type = max(len("Type"), max((len(r[2]) for r in rows_dlc), default=4))
+                print(
+                    f"\n{'ID':<{width_id}}  {'Name':<{width_name}}  {'Type':<{width_type}}  "
+                    "In AppList?  Has Key?  Has Manifest?"
+                )
+                print(
+                    f"{'-' * width_id}  {'-' * width_name}  {'-' * width_type}  "
+                    "-----------  --------  -------------"
+                )
+                for _id, _nm, _tp, _al, _hk, _hm in rows_dlc:
+                    print(
+                        f"{_id:<{width_id}}  {_nm:<{width_name}}  {_tp:<{width_type}}  "
+                        f"{bool_plain[_al]:<11}  {bool_plain[_hk]:<8}  {bool_plain[_hm]:<13}"
                     )
-                    for _id, _nm, _tp, _al, _hk, _hm in rows_dlc:
-                        table.add_row(_id, _nm, _tp, bool_map[_al], bool_map[_hk], bool_map[_hm])
-                    console.print(table)
-                except Exception:
-                    for _id, _nm, _tp, _al, _hk, _hm in rows_dlc:
-                        print(f"  {_id} | {_nm} | {_tp} | AppList:{bool_plain[_al]} Key:{bool_plain[_hk]} Manifest:{bool_plain[_hm]}")
                 print(
                     Fore.YELLOW + "NOTE: Pre-installed DLCs don't need "
                     "decryption key & manifest\n"

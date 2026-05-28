@@ -248,3 +248,26 @@ THEMES = {
     "dracula": ("Dracula", DRACULA_STYLE),
     "pastel": ("Pastel", PASTEL_STYLE),
 }
+
+# Background hex per theme, kept in sync with the bg= colours fed to
+# _gen_dark_variant() above and the QMainWindow rule in LIGHT_STYLE /
+# DARK_STYLE. Used by the web UI splash overlay so QtWebEngine paints the
+# theme background instead of white before index.html finishes loading.
+THEME_BACKGROUNDS = {
+    "light":     "#fafafa",
+    "dark":      "#2d2d2d",
+    "cherry":    "#1a0a0e",
+    "sunset":    "#1a1008",
+    "forest":    "#0a1a0e",
+    "grape":     "#140a1a",
+    "cyberpunk": "#0a0a1a",
+    "pink":      "#1a0a18",
+    "nord":      "#2e3440",
+    "dracula":   "#282a36",
+    "pastel":    "#faf0e6",
+}
+
+
+def theme_background(key: str) -> str:
+    """Hex bg colour for a theme key. Falls back to dark on unknown keys."""
+    return THEME_BACKGROUNDS.get(key, THEME_BACKGROUNDS["dark"])
