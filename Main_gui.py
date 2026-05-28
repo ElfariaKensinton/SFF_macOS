@@ -37,19 +37,30 @@ if sys.stdout is None:
 
 os.environ.setdefault('QTWEBENGINE_DISABLE_SANDBOX', '1')
 # QtWebEngine flags. Windows runs fine with the default GPU-compositing
-# path (ANGLE → D3D11). Linux Wayland sessions on Intel + Mesa hit a
-# dma-buf import bug that lets the renderer process produce frames the
-# Wayland compositor can't display, so the window paints but the page
-# stays blank. Two confirmed users on KDE Plasma Wayland reported the
-# blank window. Workaround verified across KDE Plasma, GNOME, Sway,
-# and Hyprland: drop GPU compositing (page raster still runs on the
-# GPU; only the final compositing step moves to software) and force
-# real desktop GL instead of ANGLE so the EGL/dma-buf path is bypassed.
+# path (ANGLE → D3D11). Linux needs `--disable-gpu-compositing` to skip
+# the final dma-buf handoff, which works around the Intel UHD + Mesa
+# Wayland blank-window bug confirmed on KDE Plasma, GNOME, Sway, and
+# Hyprland. Page rasterization still runs on the GPU; only the final
+# compositing step moves to software.
+#
+# 6.2.5 also forced `--use-gl=desktop` on top of the compositor flag.
+# That broke launch for users on pure Wayland sessions (most CachyOS,
+# Bazzite, Nobara, recent Fedora KDE / GNOME installs) because
+# `--use-gl=desktop` forces GLX, which needs an X server context that
+# Wayland-only sessions don't expose. Chromium's renderer died during
+# GPU init, the parent saw a failed GPU process, and the AppImage
+# silently exited. The flag is gone in 6.2.6; Chromium auto-selects
+# EGL on Wayland and GLX on X11 by itself.
+#
+# `STEAMIDRA_LINUX_FORCE_SOFTWARE=1` is an escape hatch for users who
+# still hit a GPU init failure (out-of-tree Mesa, Nouveau on a busted
+# card, broken vendor driver). It drops to full software rendering.
 if sys.platform == "linux":
-    os.environ.setdefault(
-        'QTWEBENGINE_CHROMIUM_FLAGS',
-        '--no-sandbox --disable-gpu-compositing --use-gl=desktop',
-    )
+    if os.environ.get("STEAMIDRA_LINUX_FORCE_SOFTWARE", "").strip() in ("1", "true", "True"):
+        _default_linux_flags = "--no-sandbox --disable-gpu"
+    else:
+        _default_linux_flags = "--no-sandbox --disable-gpu-compositing"
+    os.environ.setdefault('QTWEBENGINE_CHROMIUM_FLAGS', _default_linux_flags)
 else:
     # Windows flag set. `--enable-zero-copy` got dropped because the GPU →
     # DWM compositor zero-copy handoff produces a 1-frame placeholder
