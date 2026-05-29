@@ -154,20 +154,28 @@ window.App = (function() {
             });
 
             Bridge.on('log_message', function(msg) {
-                // Python side now batches log lines and joins them
-                // with newlines so one emit can carry up to 200 lines.
-                // Split here so each line still becomes its own DOM
-                // node with the right level styling, but we only do
-                // one DOM append batch per emit (10 per second under
-                // load) instead of per producer line (thousands per
-                // second under load).
+                // Python side batches log lines and joins them with
+                // newlines so one emit can carry up to 200 lines.
+                // Split here so each line still becomes its own DOM node
+                // with the right level styling, but only one DOM append
+                // batch per emit (10/sec under load) instead of per
+                // producer line (thousands/sec under load).
                 if (typeof msg !== 'string' || msg.length === 0) return;
                 var lines = msg.split('\n');
+                // Only update the home log panel when the home page is
+                // active. The home log was getting hit on every line
+                // even when the user was on Library / Downloads, which
+                // doubled DOM work and forced two scrollTop reflows
+                // per line. That is what locked up DDMod downloads in
+                // the modern UI on Linux/XFCE and stuttered Windows.
+                var updateHomeLog = (_currentPage === 'home');
                 for (var i = 0; i < lines.length; i++) {
                     var line = lines[i];
                     if (line.length === 0) continue;
                     _appendLog(line);
-                    _appendHomeLog(line);
+                    if (updateHomeLog) {
+                        _appendHomeLog(line);
+                    }
                 }
             });
         });
@@ -259,6 +267,31 @@ window.App = (function() {
         }
     }
 
+    // Pending scroll requests for the two log containers. Multiple
+    // appendLog calls in the same tick coalesce to ONE scroll-to-bottom
+    // via rAF, so a 200-line burst from DDMod no longer forces 200
+    // synchronous reflows of a 1000-row scroll container.
+    var _scrollLogPanelRAF = false;
+    var _scrollHomeLogRAF = false;
+
+    function _scheduleScrollLogPanel(content) {
+        if (_scrollLogPanelRAF) return;
+        _scrollLogPanelRAF = true;
+        requestAnimationFrame(function() {
+            _scrollLogPanelRAF = false;
+            content.scrollTop = content.scrollHeight;
+        });
+    }
+
+    function _scheduleScrollHomeLog(content) {
+        if (_scrollHomeLogRAF) return;
+        _scrollHomeLogRAF = true;
+        requestAnimationFrame(function() {
+            _scrollHomeLogRAF = false;
+            content.scrollTop = content.scrollHeight;
+        });
+    }
+
     function _appendLog(msg) {
         var content = document.getElementById('log-panel-content');
         if (!content) return;
@@ -284,11 +317,11 @@ window.App = (function() {
         }
 
         content.appendChild(line);
-        // Keep last 1000 lines to avoid unbounded DOM growth (prevents high RAM during downloads)
+        // Cap at 1000 lines so the DOM doesn't blow up.
         while (content.children.length > 1000) {
             content.removeChild(content.firstChild);
         }
-        content.scrollTop = content.scrollHeight;
+        _scheduleScrollLogPanel(content);
     }
 
     function _appendHomeLog(msg) {
@@ -309,11 +342,11 @@ window.App = (function() {
         line.innerHTML = '<span class="log-ts">' + ts + '</span> ' + _escapeLogHtml(msg);
 
         content.appendChild(line);
-        // Keep last 200 lines to avoid memory growth
+        // Cap at 200 lines on the home mini-log.
         while (content.children.length > 200) {
             content.removeChild(content.firstChild);
         }
-        content.scrollTop = content.scrollHeight;
+        _scheduleScrollHomeLog(content);
     }
 
     function _escapeLogHtml(str) {

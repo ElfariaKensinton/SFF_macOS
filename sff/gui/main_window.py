@@ -153,11 +153,26 @@ class SFFMainWindow(QMainWindow):
         self._web_log_buffer: list[str] = []
         self._web_log_buffer_max = 200
         self._web_log_dropped = 0
+        # Same idea on the Qt-side log surfaces (the dockable
+        # GlobalLogWindow and the legacy menubar QTextEdit). Each
+        # print() from the worker thread used to fire the signal
+        # synchronously and run insertHtml + 2 moveCursor calls per
+        # line on the GUI thread. The Steam-option download path
+        # prints hundreds of lines per depot and that locked up the
+        # whole window for the duration. Now we buffer and drain
+        # every 100ms so a print burst becomes one batched insert.
+        self._qt_log_buffer: list[str] = []
+        self._qt_log_buffer_max = 400
+        self._qt_log_dropped = 0
         from PyQt6.QtCore import QTimer as _QTimer
         self._web_log_flush_timer = _QTimer(self)
         self._web_log_flush_timer.setInterval(100)
         self._web_log_flush_timer.timeout.connect(self._flush_web_log_buffer)
         self._web_log_flush_timer.start()
+        self._qt_log_flush_timer = _QTimer(self)
+        self._qt_log_flush_timer.setInterval(100)
+        self._qt_log_flush_timer.timeout.connect(self._flush_qt_log_buffer)
+        self._qt_log_flush_timer.start()
         self._game_list = []
         self._stream_emitter = StreamEmitter()
         self._log_window = GlobalLogWindow(self)
@@ -170,7 +185,7 @@ class SFFMainWindow(QMainWindow):
         self._log_handler.record_emitted.connect(self._forward_log_to_web)
         __import__('logging').getLogger().addHandler(self._log_handler)
         self._stream_emitter.text_written.connect(self._forward_stdout_to_web)
-        self._stream_emitter.text_written.connect(self._log_window.append_text)
+        self._stream_emitter.text_written.connect(self._buffer_qt_log)
         self._worker = None
         self._worker_thread = None
         self.setWindowTitle("SteaMidra")
@@ -518,7 +533,9 @@ class SFFMainWindow(QMainWindow):
         )
         logs_action = menubar.addAction("Logs")
         logs_action.triggered.connect(self._show_log_window)
-        self._stream_emitter.text_written.connect(self._append_log)
+        # The legacy menubar QTextEdit is hidden by default but the
+        # connection used to fire per-line and burn cycles even when
+        # invisible. Route it through the same Qt-side log buffer.
         # Only persist the Qt fallback theme if there was no saved theme or the saved
         # theme is a known Qt theme. Web-only themes (photo themes, extra color themes)
         # are not in THEMES but must not be overwritten here.
@@ -566,6 +583,32 @@ class SFFMainWindow(QMainWindow):
             if not getattr(sys, "frozen", False):
                 return
             app_dir = Path(sys.executable).resolve().parent
+
+            # Sweep leftovers from a previous in-place update. The bat
+            # cleans these up on success AND failure now, but a user who
+            # rebooted mid-update, or who hit Ctrl-C on the headless cmd
+            # window, can still leave them on disk. Reported case: a
+            # 6.2.5 installer ran, the bat copied the new files, the
+            # user rebooted before the bat reached its cleanup step,
+            # and the next launch saw `tmp_update\` (a full copy of the
+            # build the user had just upgraded to) plus `update.zip`
+            # sitting next to the EXE. The leftovers don't break
+            # anything but they're confusing and waste a few hundred MB.
+            for stale_name in ("tmp_update", "update.zip", "update.rar"):
+                stale_path = app_dir / stale_name
+                if not stale_path.exists():
+                    continue
+                try:
+                    if stale_path.is_dir():
+                        import shutil as _shutil
+                        _shutil.rmtree(stale_path, ignore_errors=True)
+                    else:
+                        stale_path.unlink()
+                    logger.info("updater leftover swept: %s", stale_path.name)
+                except OSError as exc:
+                    logger.debug("could not sweep updater leftover %s: %s",
+                                 stale_path, exc)
+
             log_path = app_dir / "tmp_updater.log"
             if not log_path.exists():
                 return
@@ -1179,6 +1222,64 @@ class SFFMainWindow(QMainWindow):
             self._web_log_dropped += 1
             return
         self._web_log_buffer.append(f'[INFO] {text}')
+
+    def _buffer_qt_log(self, text: str):
+        """Buffer a print() line for the Qt-side log surfaces.
+
+        The legacy menubar QTextEdit and the dockable GlobalLogWindow
+        used to be wired straight to the StreamEmitter signal, which
+        meant every print() ran insertHtml + moveCursor on the GUI
+        thread synchronously. The Steam-option download path prints
+        hundreds of lines per depot and that turned the whole window
+        unresponsive for the length of the download (c's 10-minute
+        freeze). Buffer here, drain on the 100ms timer.
+        """
+        text = _ANSI_RE.sub("", text).strip()
+        if not text:
+            return
+        if len(self._qt_log_buffer) >= self._qt_log_buffer_max:
+            self._qt_log_dropped += 1
+            return
+        self._qt_log_buffer.append(text)
+
+    def _flush_qt_log_buffer(self):
+        """Drain buffered print() lines onto the Qt-side log surfaces.
+
+        Two consumers: the dockable GlobalLogWindow and the legacy
+        menubar QTextEdit. We join the buffered lines and run ONE
+        insertHtml / insertPlainText per surface per tick, so a 200-
+        line burst becomes 1 GUI-thread reflow instead of 200.
+        """
+        if not self._qt_log_buffer and not self._qt_log_dropped:
+            return
+        if self._qt_log_dropped > 0 and self._qt_log_buffer:
+            dropped = self._qt_log_dropped
+            self._qt_log_dropped = 0
+            try:
+                self._qt_log_buffer.append(
+                    f'(Qt log batch dropped {dropped} line(s); throttled)'
+                )
+            except Exception:
+                pass
+        try:
+            payload = '\n'.join(self._qt_log_buffer)
+        except Exception:
+            payload = ''
+        self._qt_log_buffer.clear()
+        if not payload:
+            return
+        log_window = getattr(self, '_log_window', None)
+        if log_window is not None:
+            try:
+                log_window.append_text(payload)
+            except Exception:
+                pass
+        log_text = getattr(self, 'log_text', None)
+        if log_text is not None:
+            try:
+                self._append_log(payload + "\n")
+            except Exception:
+                pass
 
     def _flush_web_log_buffer(self):
         """Drain the buffered log lines onto the QtWebChannel.

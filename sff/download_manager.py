@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with SteaMidra.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Download manager — queue, retry, and persistent history (500 cap)."""
+"""Download manager. Queue, retry, persistent history capped at 500 so the file doesn't grow forever."""
 
 import os
 import json
@@ -80,7 +80,7 @@ class HistoryEntry:
 
 
 class DownloadHistory:
-    """JSON-backed history, auto-trims at 500 entries."""
+    """JSON history on disk. Auto-trims at 500 so the file stays small."""
 
     MAX_ENTRIES = 500
 
@@ -131,7 +131,7 @@ class DownloadHistory:
 
 
 class DownloadManager:
-    """Queue-based download manager with retry and persistent history."""
+    """Queue + worker thread + retry. The history dump survives across launches."""
 
     def __init__(self):
         self._queue: list[DownloadItem] = []
@@ -326,9 +326,10 @@ class DownloadManager:
     # --- external tracking (for flows that manage their own download) ---
 
     def track_external(self, app_id, game_name):
-        # Register a download that is managed outside the worker queue
-        # (e.g. process_lua_full).  Caller updates .progress / .status
-        # and must call complete_external() when done.
+        # Some flows (process_lua_full and friends) drive their own
+        # download outside the worker queue. Register it here so the
+        # status bar can still show it. Caller updates .progress /
+        # .status itself and MUST call complete_external() when done.
         item = DownloadItem(
             app_id=app_id,
             game_name=game_name,

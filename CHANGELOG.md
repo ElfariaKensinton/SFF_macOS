@@ -1,5 +1,32 @@
 # Changelog
 
+## 6.2.7
+
+### In-place updater (Windows frozen build)
+
+- The updater no longer leaves `tmp_update\` and `update.zip` lying around next to the EXE after an update. Cleanup runs at the end of the bat now, success OR fail, so yall don't end up with what looks like another SteaMidra inside SteaMidra after a bad run. If something does get left behind because of a reboot or a Ctrl-C, the GUI sweeps it on next launch. The actual install itself never gets touched, only the staging junk.
+- Updater also keeps your stuff alive now. `settings.bin`, `recent_files.json`, `analytics.json`, `workshop_tracker.json`, `all_games.txt`, plus the `saved_lua\`, `backups\`, and `webengine_profile\` folders all stay untouched during an update. Old build artifacts under `_internal\` still get purged so PyInstaller doesn't pick the wrong files.
+
+### Store / download
+
+- DDMod downloads no longer freeze the modern UI on Linux or stutter the live log on Windows. DDMod prints thousands of validation and progress lines per second, and the modern UI couldn't keep up. Now those high-frequency lines get summarised once every 2 seconds while errors and warnings still come through normally.
+- Steam-option downloads (the one that just grabs the lua and manifests, not DDMod) no longer freeze the whole window. The print() output from the manifest downloader was hitting the GUI thread synchronously per line. Now it's buffered and drained on a 100ms timer so a burst of hundreds of lines doesn't lock things up. c was getting 10-minute freezes on this, gone now.
+- Live log no longer spams "access denied" / "accesso negato" every second when Steam holds the depotcache locked. Common when SteaMidra runs as admin and Steam doesn't, or vice versa. The condition is normal so it just goes to the debug log now instead of flooding the panel.
+
+### Home page
+
+- Remove from library now tells you what to do if the game still shows in Steam after deleting. The lua gets deleted properly, but if LumaCore isn't loaded the running Steam keeps the appid in memory until restart. The new message says to restart Steam or run Auto LC Setup if you haven't yet.
+
+### Linux
+
+- Modern UI no longer renders grey on Ubuntu XFCE and other X11 + lightweight WM setups. The earlier 6.2.7 flag set was tuned only for Wayland and was fighting xfwm4 on X11. Now it picks the right flag set per session: Wayland keeps the in-process-gpu flags, X11 drops them and uses the same plain GPU path Windows uses. Skyflizz and AlukardBF were both hitting this.
+- Modern UI rendered black on Wayland on a chunk of distros (NixOS, recent Fedora, Bazzite, etc). The QtWebEngine GPU process was producing frames Mesa Wayland couldn't import. Fixed with `--in-process-gpu --disable-gpu-compositing` so the dma-buf handoff is gone.
+- `STEAMIDRA_LINUX_FORCE_SOFTWARE=1` actually works now. The old version still spawned a GPU process; the new one collapses everything into one process with SwiftShader software raster. Slowest path that exists but it renders on configs where every GPU path fails.
+
+### Store / search
+
+- Metro Exodus Enhanced Edition (1449560) shows up in the Store search now. Same fix covers Mafia Definitive Edition, Crysis Remastered, Saints Row 2 Re-elected, the GTA V Enhanced Edition family, and any other Steam re-release. Steam tags these as type 14 with a parent_appid pointing at the base game, same shape as DLC, so the DLC filter was eating them by mistake. Re-releases keep going through now, DLC still gets dropped the same way.
+
 ## 6.2.6
 
 ### In-place updater (Windows frozen build)

@@ -154,15 +154,11 @@ def main(ui, args: argparse.Namespace):
 
     
 
-    # Handle --export-ids flag
-
     if args.export_ids:
 
         return ui.export_injection_ids(Path(args.export_ids))
 
     
-
-    # Handle --batch flag
 
     if args.batch:
 
@@ -170,7 +166,7 @@ def main(ui, args: argparse.Namespace):
 
     
 
-    # Handle --auto-update flag
+    # --auto-update from cron / scheduled task — skip the menu
 
     if args.auto_update:
 
@@ -428,8 +424,6 @@ if __name__ == "__main__":
 
     
 
-    # Handle --version flag
-
     if args.version:
 
         print(f"SteaMidra version {VERSION}")
@@ -442,11 +436,9 @@ if __name__ == "__main__":
 
     
 
-    # Setup quiet mode if requested
+    # --quiet kills stdout but keeps stderr alive so errors still surface
 
     if args.quiet:
-
-        # Redirect stdout to null, but keep stderr for errors
 
         sys.stdout = open(os.devnull, 'w')
 

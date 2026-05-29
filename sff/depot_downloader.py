@@ -17,6 +17,7 @@
 # along with SteaMidra.  If not, see <https://www.gnu.org/licenses/>.
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -81,22 +82,80 @@ def _read_process_output(proc: subprocess.Popen, print_fn) -> None:
     if not proc.stdout:
         return
     pre_alloc_count = 0
-    last_summary_t = 0.0
+    validate_count = 0
+    progress_count = 0
+    last_pre_alloc_t = 0.0
+    last_progress_t = 0.0
+    last_validate_t = 0.0
+    last_progress_pct: float = -1.0
     _SUMMARY_INTERVAL = 2.0
+    # Per-line progress prefix patterns the DDMod CLI emits at very high
+    # frequency. These each arrive thousands of times per depot on a fast
+    # download, and forwarding every one through the QtWebChannel log
+    # pipeline is what locks up the modern UI on Linux/XFCE and stutters
+    # the live-log panel on Windows. The download is a few seconds long,
+    # so a percent-summary every 2 seconds keeps the user informed
+    # without ever queueing more than ~30 log lines per depot.
     for raw_line in iter(proc.stdout.readline, b''):
         line = raw_line.decode("utf-8", errors="replace").strip()
         if not line:
             continue
+        now = time.monotonic()
+
+        # File pre-allocation (one line per file, can be tens of thousands)
         if line.startswith("Pre-allocating"):
             pre_alloc_count += 1
-            now = time.monotonic()
-            if now - last_summary_t >= _SUMMARY_INTERVAL:
+            if now - last_pre_alloc_t >= _SUMMARY_INTERVAL:
                 print_fn(f"[Pre-allocating files... {pre_alloc_count} so far]")
-                last_summary_t = now
+                last_pre_alloc_t = now
             continue
+
+        # Chunk validation (DDMod prints "Validated X out of Y chunks (Z%)"
+        # or "Validating chunk N / M" on every chunk; high-frequency)
+        lower = line.lower()
+        if "validating chunk" in lower or lower.startswith("validated "):
+            validate_count += 1
+            if now - last_validate_t >= _SUMMARY_INTERVAL:
+                print_fn(f"[Validating chunks... {validate_count} so far]")
+                last_validate_t = now
+            continue
+
+        # Per-percent progress lines. DDMod writes a spinner-style line
+        # every chunk, format like "  12.34% Downloaded ...". Round to
+        # whole percent and only emit when we cross a percent boundary
+        # OR the summary interval elapses, whichever comes first.
+        m = _DDMOD_PROGRESS_RE.match(line)
+        if m:
+            progress_count += 1
+            try:
+                pct = float(m.group(1))
+            except ValueError:
+                pct = -1.0
+            crossed_pct = (pct >= 0 and (last_progress_pct < 0
+                                         or int(pct) != int(last_progress_pct)))
+            elapsed = now - last_progress_t >= _SUMMARY_INTERVAL
+            if crossed_pct or elapsed:
+                # Forward the original line so the user sees the depot
+                # MB/s + bytes-fetched columns DDMod prints, but only
+                # at a sustainable cadence.
+                print_fn(line)
+                last_progress_pct = pct
+                last_progress_t = now
+            continue
+
         print_fn(line)
+
     if pre_alloc_count > 0:
         print_fn(f"[Pre-allocation complete: {pre_alloc_count} file(s)]")
+    if validate_count > 0:
+        print_fn(f"[Validation complete: {validate_count} chunk(s)]")
+
+
+# DDMod's progress lines always start with optional whitespace, then a
+# decimal percent followed by '%'. Tightened to require the percent to
+# anchor at the start so we don't match unrelated lines that happen to
+# contain a percent (e.g. depot summaries).
+_DDMOD_PROGRESS_RE = re.compile(r"^\s*(\d{1,3}(?:\.\d+)?)%\s")
 
 
 def _calculate_dir_size(path: Path) -> int:

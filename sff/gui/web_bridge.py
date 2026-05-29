@@ -302,6 +302,14 @@ class WebBridge(QObject):
 
                 # Structural DLC signals.
                 if parent_appid:
+                    # Re-releases (Enhanced / Definitive / GOTY /
+                    # Director's Cut) hang off the base appid the same
+                    # way DLC does, but ship as standalone games.
+                    # Steam tags them with `type: 14` (rerelease).
+                    # Keep those; drop everything else with a parent.
+                    if store_type == "rerelease":
+                        kept_hubcap[app_id] = hg
+                        continue
                     dlc_filtered += 1
                     logger.debug(
                         "search_games: filtered Hubcap appid=%s name=%r parent=%s",
@@ -318,8 +326,9 @@ class WebBridge(QObject):
                 # Belt-and-suspenders type drop. parent_appid covers
                 # type=2/4 already. This catches edge cases where
                 # GetItems returns type=5/7/9-15 (advertising, tool,
-                # video, music) without a parent appid.
-                if store_type and store_type not in ("game", "demo", "mod"):
+                # video, music) without a parent appid. Re-releases
+                # (`type: 14` with parent set) are handled above.
+                if store_type and store_type not in ("game", "demo", "mod", "rerelease"):
                     dlc_filtered += 1
                     logger.debug(
                         "search_games: filtered Hubcap appid=%s name=%r type=%s",
@@ -3523,13 +3532,14 @@ class WebBridge(QObject):
                             store_type = (meta.get("type") or "").lower()
                             parent_appid = meta.get("parent_appid")
                             delisted_blank = bool(meta.get("delisted_blank"))
-                            # Structural DLC drops: parent appid set,
-                            # blank delisted entry, or non-game type.
-                            if parent_appid:
+                            # Structural DLC drops: parent appid set
+                            # (and not a re-release), blank delisted
+                            # entry, or non-game type.
+                            if parent_appid and store_type != "rerelease":
                                 continue
                             if delisted_blank:
                                 continue
-                            if store_type and store_type not in ("game", "demo", "mod"):
+                            if store_type and store_type not in ("game", "demo", "mod", "rerelease"):
                                 continue
                             # Drop non-Windows-only entries.
                             if "_unknown" not in tags and "windows" not in tags:
@@ -3791,7 +3801,13 @@ class WebBridge(QObject):
             if app_id_int is None:
                 return (False, "Invalid App ID")
 
-            # Always remove the stplug-in Lua (both modes)
+            # Lua deletion is the primary remove step in both modes. When
+            # LumaCore is loaded, its DirWatch fires on the .lua delete
+            # and emits CAppOverview_Change so Steam's library updates
+            # live, no restart needed. If LumaCore isn't loaded yet the
+            # user has to restart Steam for the game to disappear from
+            # the library, which is what bit Svph (delete returned OK
+            # but the game stayed in Steam's UI).
             lua_removed = False
             if self._steam_path:
                 try:
@@ -3802,12 +3818,13 @@ class WebBridge(QObject):
                     logger.warning("delete_game: stplug-in Lua removal failed: %s", e)
 
             if mode != "full":
-                return (True, "Removed from library" + (" (Lua unregistered)" if lua_removed else ""))
+                if lua_removed:
+                    return (True, "Removed from library. If the game still shows in Steam, restart Steam (or run Auto LC Setup if you haven't yet).")
+                return (True, "Removed from library")
 
-            # --- Delete game files (mode='full') ---
+            # mode='full' also wipes the ACF manifest + the game folder.
             files_deleted = False
 
-            # Delete the ACF manifest
             if self._steam_path:
                 try:
                     from sff.storage.vdf import get_steam_libs
@@ -3820,7 +3837,6 @@ class WebBridge(QObject):
                 except Exception as e:
                     logger.warning("delete_game: ACF removal failed: %s", e)
 
-            # Delete the game folder
             if game_path:
                 p = Path(game_path)
                 if p.exists() and p.is_dir():
@@ -3831,8 +3847,8 @@ class WebBridge(QObject):
                         logger.warning("delete_game: folder removal failed: %s", e)
 
             if files_deleted:
-                return (True, "Game removed and deleted from disk")
-            return (True, "Removed from library (game folder not found or already gone)")
+                return (True, "Game removed and deleted from disk. Restart Steam if it still shows in the library.")
+            return (True, "Removed from library (game folder not found or already gone). Restart Steam if it still shows in the library.")
 
         def _on_done(result):
             if isinstance(result, tuple):
@@ -4382,7 +4398,13 @@ def _fetch_steam_platforms(app_ids):
 
                 # GetItems uses int type codes. Map to lowercase
                 # strings so callers can match on 'dlc' / 'music' /
-                # 'video' / 'tool' / 'advertising' string forms.
+                # 'video' / 'tool' / 'advertising' / 'rerelease' string
+                # forms. `type: 14` with a `parent_appid` set is Steam's
+                # re-release marker for Enhanced Edition / Definitive
+                # Edition / GOTY / Director's Cut entries that share an
+                # appid arrangement with DLC but ship as full games
+                # (Metro Exodus EE 1449560, etc). Tag those as
+                # "rerelease" so the search filter can keep them.
                 type_str = ""
                 if isinstance(type_int, int):
                     type_str = {
@@ -4398,7 +4420,7 @@ def _fetch_steam_platforms(app_ids):
                         11: "video",
                         12: "video",
                         13: "music",
-                        14: "video",
+                        14: "rerelease",
                         15: "video",
                     }.get(type_int, str(type_int))
 
@@ -4485,7 +4507,7 @@ _STEAM_PLATFORM_CACHE: "dict[int, dict]" = {}
 
 _NONGAME_NAME_KW = ("soundtrack", "art book", "artbook", " ost", "music pack", "digital artbook")
 
-_NON_GAME_TYPES = frozenset({2, 4, 6, 7, 9, 10, 11, 12, 13, 14})
+_NON_GAME_TYPES = frozenset({2, 4, 6, 7, 9, 10, 11, 12, 13})
 
 
 def _normalize_for_search(text):

@@ -16,11 +16,12 @@
 # You should have received a copy of the GNU General Public License
 # along with SteaMidra.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Run SteamAutoCrack CLI for the selected game path and app id.
+"""Run SteamAutoCrack CLI for a game folder + appid.
 
-Includes a safety wrapper that backs up game executables before invoking the
-CLI and automatically restores them if SteamAutoCrack removes an exe without
-producing a patched replacement (a known upstream bug in the unpacker logic).
+Wraps the CLI with an executable-backup safety net. SteamAutoCrack has a
+known bug where the unpacker sometimes deletes the original .exe without
+producing a patched replacement, leaving the install broken. We snapshot
+every .exe before launch and put them back if any vanish.
 """
 
 import json
@@ -69,10 +70,9 @@ def get_steamauto_cli_path():
 
 
 def _snapshot_executables(game_path):
-    """Create temporary backup copies of every .exe in the game directory.
+    """Back up every .exe in the game folder before SteamAutoCrack touches them.
 
-    Returns a mapping of {original_path: backup_path} so we can restore if
-    the cracking tool removes an exe without producing a replacement.
+    Returns {original_path: backup_path} so the caller can restore later.
     """
     backups = {}
     backup_dir = game_path / ".steamidra_exe_backups"
@@ -88,14 +88,14 @@ def _verify_and_restore(
     backups: dict[Path, Path],
     print_func: Callable[[str], None],
 ):
-    """Check that every backed-up exe still exists; restore any that vanished.
+    """Put back any .exe SteamAutoCrack removed without replacement.
 
-    Returns the number of executables that had to be restored.
+    Returns the count of files restored.
     """
     restored = 0
     for original, backup in backups.items():
         if not original.exists():
-            # The exe was removed without a replacement being created
+            # exe was removed and nothing patched took its place
             if backup.exists():
                 shutil.copy2(backup, original)
                 print_func(
@@ -109,21 +109,21 @@ def _verify_and_restore(
                     "backup is also missing. Manual intervention needed."
                 )
 
-    # Clean up the backup directory if everything went fine
+    # Drop the backup dir if everything came back okay
     if backups:
         backup_dir = next(iter(backups.values())).parent
         try:
             shutil.rmtree(backup_dir)
         except OSError:
-            pass  # Non-critical cleanup; ignore
+            pass  # cleanup is non-critical
     return restored
 
 
 def _ensure_config_has_api_key(cli_dir):
-    """Make sure config.json in the CLI directory has the Steam Web API key.
+    """Drop the Steam Web API key into config.json if it's missing.
 
-    Without this key, SteamAutoCrack may fail with a "NO LICENSE" error when
-    generating Goldberg emulator game info. The key is loaded from strings.py.
+    Without the key SteamAutoCrack hits a "NO LICENSE" error when it tries
+    to generate Goldberg game info. Key comes from strings.py.
     """
     config_path = cli_dir / "config.json"
     if config_path.exists():
@@ -148,14 +148,16 @@ def run_steamauto(
     mode: str = "full",
     print_func = print,
 ):
-    """Run SteamAutoCrack in either full mode (default) or steamless-only.
+    """Run SteamAutoCrack. Default is the full Goldberg + emu pipeline,
+    'steamless_only' just unpacks the SteamStub and leaves the rest alone
+    so achievements stay alive.
 
-    mode='full'           — original behaviour: generate emu game info,
-                            generate emu config, unpack steamstub, apply
-                            Goldberg emulator. Breaks Steam achievements.
-    mode='steamless_only' — only unpack steamstub. Skips all four
-                            Goldberg / EMU process steps. Achievement-safe
-                            because the Steam API stays intact.
+    mode='full'           — generate emu game info, generate emu config,
+                            unpack steamstub, apply Goldberg emulator.
+                            Breaks Steam achievements.
+    mode='steamless_only' — only unpack steamstub, skip every Goldberg /
+                            EMU step. Achievement-safe because the Steam
+                            API stays intact.
     """
     game_path = game_path.resolve()
     cli = get_steamauto_cli_path()
@@ -230,12 +232,13 @@ def run_steamauto(
 
 
 def _write_steamless_only_config(cli_dir: Path) -> Path:
-    """Write a one-shot config.json that turns off every emulator /
-    Goldberg / generator step, leaving only Unpack=true (SteamStub).
+    """Write a one-shot config.json with every Goldberg / EMU / generator
+    step turned off, leaving only Unpack=true so SteamStub is the only
+    thing the CLI actually does.
 
-    Returns the path to the written file. Caller deletes it after the
-    run. We base the override on whatever the CLI already has so any
-    user customisation (Steamless flag set, debug log, etc) is kept.
+    Returns the file path. Caller deletes it after the run. We start from
+    the existing config.json so user customisation (Steamless flag set,
+    debug log, etc) is kept.
     """
     base_cfg_path = cli_dir / "config.json"
     base = {}

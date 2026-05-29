@@ -141,6 +141,15 @@ def restore_manifest(deleted_path: Path) -> bool:
             "restore_manifest: restored %s from staging dir", dest,
         )
         return True
+    except PermissionError as exc:
+        # Steam holds depotcache exclusively while it's running, especially
+        # when SteaMidra runs as admin and Steam doesn't. Every restore
+        # attempt then raises "Access Denied" / "Accesso negato" / "Accès
+        # refusé" depending on locale. Spamming WARN per tick floods the
+        # live log panel (vin's case). The condition is normal, the user
+        # can't fix it from inside SteaMidra, so log at debug and move on.
+        logger.debug("restore_manifest: %s held by Steam (%s)", deleted_path, exc)
+        return False
     except Exception as exc:
         logger.warning("restore_manifest failed for %s: %s", deleted_path, exc)
         return False

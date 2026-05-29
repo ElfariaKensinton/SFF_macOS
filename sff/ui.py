@@ -1260,9 +1260,12 @@ class UI:
             #   1. waits for SteaMidra's PID to actually exit before touching
             #      anything (polling tasklist with a 30s ceiling so a stuck
             #      shutdown doesn't deadlock the bat),
-            #   2. uses /MIR so robocopy purges stale files, with /XD .git
-            #      and /XF tmp_updater.* so the running bat's own files
-            #      survive,
+            #   2. uses /MIR so robocopy purges stale files (old _internal\
+            #      contents, retired DLLs, etc.) while /XD and /XF protect
+            #      user-data folders + files that live next to the EXE so
+            #      the user's saved_lua\, settings.bin, and friends survive
+            #      the mirror; tmp_updater.* and update.zip are excluded so
+            #      the running bat doesn't delete itself mid-copy,
             #   3. captures robocopy's exit code and writes it into
             #      tmp_updater.log next to the EXE so a failed update is
             #      visible after the fact even though the cmd window is
@@ -1298,10 +1301,32 @@ class UI:
                 # checkouts, the user's lumacore + manifest folders so an
                 # update doesn't wipe their library data). /XF keeps the
                 # bat itself + the log alive while it runs.
+                # /XD protects user-data DIRECTORIES from /MIR's purge:
+                #   - .git              (source-tree checkouts)
+                #   - lumacore          (DLLs + per-build pattern caches)
+                #   - manifests, manifest_backup, downloaded_files
+                #                       (game manifest library + staging)
+                #   - saved_lua         (the user's actual lua collection)
+                #   - backups           (SteaMidra's own backup folder)
+                #   - webengine_profile (store browser login cookies)
+                # /XF protects user-data FILES that live next to the EXE:
+                #   - settings.bin              (encrypted prefs)
+                #   - recent_files.json         (recent files list)
+                #   - analytics.json            (usage history)
+                #   - workshop_tracker.json     (workshop subscriptions)
+                #   - all_games.txt             (downloaded once, large)
+                # plus the bat's own working files (tmp_updater.*, update.zip).
+                # debug.log + crash.log + api_cache.json + lumacore_diag.txt
+                # are intentionally NOT excluded so a fresh build starts with
+                # clean diagnostics; api cache + lumacore diag rebuild on
+                # first launch.
                 "robocopy " + convert([str(tmp_update), str(app_dir)])
                 + " /MIR /R:2 /W:1"
                 + " /XD .git lumacore manifest_backup downloaded_files manifests"
+                + " saved_lua backups webengine_profile"
                 + " /XF tmp_updater.bat tmp_updater.log update.zip"
+                + " settings.bin recent_files.json analytics.json"
+                + " workshop_tracker.json all_games.txt"
                 + " >> %LOG% 2>&1\n"
                 "set RC=%errorlevel%\n"
                 "echo [updater] robocopy exit=%RC% >> %LOG%\n"
@@ -1309,11 +1334,21 @@ class UI:
                 "  echo [updater] FAIL: robocopy reported a fatal error. Install left in place. >> %LOG%\n"
                 "  goto cleanup\n"
                 ")\n"
-                "rmdir /s /q " + convert([str(tmp_update)]) + " >> %LOG% 2>&1\n"
-                "del /q " + convert([str(update_zip)]) + " >> %LOG% 2>&1\n"
                 "echo [updater] launching new EXE >> %LOG%\n"
                 "start \"\" " + convert([str(app_dir / exe_name)]) + "\n"
                 ":cleanup\n"
+                # Clean up the staging dir + the downloaded zip on every exit
+                # path, success OR failure. Earlier versions only cleaned up
+                # on the success path, so a failed update left both
+                # tmp_update\ and update.zip lying in the install folder
+                # until the next manual cleanup. Users hitting this saw
+                # what looked like "another SteaMidra inside SteaMidra"
+                # under tmp_update\ for as long as the bat had been there.
+                # /S /Q on rmdir is silent, and del 2>nul swallows the
+                # not-found case so neither command can re-introduce a
+                # log line that confuses triage.
+                "rmdir /s /q " + convert([str(tmp_update)]) + " >> %LOG% 2>&1\n"
+                "del /q " + convert([str(update_zip)]) + " >> %LOG% 2>&1\n"
                 "echo [updater] done %DATE% %TIME% >> %LOG%\n"
                 "(goto) 2>nul & del \"%~f0\"\n",
                 encoding="utf-8",
