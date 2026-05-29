@@ -87,10 +87,16 @@ if sys.platform == "linux":
         else:
             # X11. Don't pin in-process-gpu, don't fight the WM over
             # compositing. Plain GPU process with the sandbox off and
-            # the GPU blocklist override. Works on KDE / GNOME / XFCE
-            # and anything else running an X server.
+            # the GPU blocklist override. zero-copy is fine on X11
+            # (the Windows DWM 1-frame placeholder bug doesn't apply
+            # under X11), and adding it back is what made the modern
+            # UI render correctly on Mint and the other lightweight
+            # X11 desktops that 6.2.7's flag set was leaving grey.
+            # Also matches what 6.2.3 shipped, which users confirmed
+            # working on Mint.
             _default_linux_flags = (
-                "--no-sandbox --ignore-gpu-blocklist --enable-gpu-rasterization"
+                "--no-sandbox --ignore-gpu-blocklist --enable-gpu-rasterization "
+                "--enable-zero-copy"
             )
     os.environ.setdefault('QTWEBENGINE_CHROMIUM_FLAGS', _default_linux_flags)
 else:

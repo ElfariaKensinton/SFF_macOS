@@ -405,6 +405,8 @@ class ManifestDownloader:
             return get_request_raw(manifest_url)
         # oureveryday path ─────────────────────────────────────────────────────
         # Step 1: clearnet GMRC endpoint
+        # Step 2: ManifestHub fallback (auto-prompts for key if none cached)
+        # Step 3: caller falls through to interactive CDN fetch
         req_code = asyncio.run(get_gmrc(manifest_id, silent=True))
         if req_code is not None:
             cdn_server = cast(ContentServer, cdn_client.get_content_server())
@@ -416,10 +418,15 @@ class ManifestDownloader:
             result = get_request_raw(manifest_url)
             if result is not None:
                 return result
-        # No further parallel sources for oureveryday — keeping the
-        # provider self-contained avoids the request fan-out racing the
-        # primary endpoint. Caller falls through to the interactive CDN
-        # fetch (Step 3) when this returns None.
+        # GMRC dead or returned nothing usable. Try ManifestHub before
+        # giving up so users with a key configured don't get blocked when
+        # the primary endpoint goes down. Same provider that the hubcap
+        # path uses, just runs as a fallback here instead of as the second
+        # tier. Returns None silently if no key is set so the caller falls
+        # through to the interactive CDN prompt.
+        mh_result = self._try_manifesthub(depot_id, manifest_id)
+        if mh_result is not None:
+            return mh_result
         return None
 
     def resolve_gmrc(self, manifest_id):

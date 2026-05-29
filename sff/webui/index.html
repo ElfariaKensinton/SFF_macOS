@@ -143,11 +143,37 @@
                 </div>
             </div>
 
-            <div class="hint-banner" data-tooltip="Steam DRM (SteamStub) protects some games like Teardown, Doom Eternal, Resident Evil. LumaCore can fake ownership but the wrapper still does its own local check and the game refuses to launch.">
+            <div class="hint-banner" data-tooltip="Steam DRM (SteamStub) protects some games like Teardown, Doom Eternal, Resident Evil, Lost Planet 2, and other older titles. LumaCore can fake ownership but the wrapper still does its own local check and the game refuses to launch.">
                 <svg class="hint-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                 <div class="hint-text">
-                    <strong>Hitting Steam error 54 when launching a game?</strong>
-                    The game uses Steam DRM (SteamStub). LumaCore can't bypass the wrapper's local check on its own. Use <em>Remove DRM (Steamless)</em> below to strip the wrapper. Achievement-safe.
+                    <strong>Hitting Steam error 53 / 54 when launching a game?</strong>
+                    The game uses Steam DRM (SteamStub). LumaCore can't bypass the wrapper's local check on its own. Use <em>Remove DRM (Steamless)</em> below to strip the wrapper. Achievement-safe. <br>
+                    <strong>Game says EAC isn't installed?</strong>
+                    <button id="btn-eac-guide" class="hint-inline-btn" type="button">Show EAC fix steps</button>
+                    <br>
+                    <strong>Steam says "Content Still Encrypted" on update or download?</strong>
+                    The manifests for that game are missing or stale. Run <em>Update All Games</em> from the home page to redownload them through SteaMidra.
+                </div>
+            </div>
+
+            <div id="eac-guide-modal" class="modal hidden">
+                <div class="modal-overlay"></div>
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2>EasyAntiCheat (EAC) fix</h2>
+                        <button class="modal-close" data-tooltip="Close">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <p>If your game doesn't launch and says <em>"EasyAntiCheat is not installed"</em> or fails the anti-cheat check, do this:</p>
+                        <ol style="line-height:1.7;">
+                            <li>Open Steam, right-click the game in your library, then <strong>Properties</strong>.</li>
+                            <li>Go to <strong>Installed Files</strong> (or <strong>Local Files</strong> on older Steam).</li>
+                            <li>Click <strong>Verify integrity of game files...</strong> and let it finish.</li>
+                            <li>Launch the game once <strong>with EAC</strong>. Wait for it to fully load (or until the EAC installer prompt finishes), then close the game.</li>
+                            <li>Now run the SteaMidra fix again (Goldberg Emu, Remove DRM, or whichever fix you were applying).</li>
+                        </ol>
+                        <p>This works because Steam re-installs the EAC service files during verify, and launching once with EAC armed bootstraps the local EAC client. After that, the SteaMidra fix sticks.</p>
+                    </div>
                 </div>
             </div>
 
@@ -1621,7 +1647,13 @@
             </div>
             <div id="dlc-check-body" class="modal-body" style="max-height:60vh;overflow-y:auto;">
             </div>
-            <div class="modal-footer" style="justify-content:flex-end;">
+            <div class="modal-footer" style="justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                <div id="dlc-check-bulk-actions" style="display:none;gap:8px;">
+                    <span style="font-size:12px;color:var(--fg-muted);align-self:center;">Download missing DLCs through:</span>
+                    <button class="btn dlc-bulk-dl" data-source="hubcap">Hubcap</button>
+                    <button class="btn dlc-bulk-dl" data-source="oureveryday">Oureveryday</button>
+                    <button class="btn dlc-bulk-dl" data-source="ryuu">Ryuu</button>
+                </div>
                 <button class="btn modal-cancel">Close</button>
             </div>
         </div>

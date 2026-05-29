@@ -69,10 +69,13 @@ async def get_request(
     type = "text",
     timeout = 10,
     headers = None,
+    *,
+    redact_url: bool = False,
 ):
+    log_url = "<redacted>" if redact_url else url
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            logger.debug(f"Making request to {url}")
+            logger.debug(f"Making request to {log_url}")
             response = await client.get(url, headers=headers)
         if response.status_code == 200:
             try:
@@ -81,7 +84,13 @@ async def get_request(
             except ValueError:
                 return
         else:
-            logger.debug(f"Error {response.status_code}: {response.text[:200]}")
+            # Body redacted when the URL is redacted, otherwise the upstream
+            # error page (e.g. openresty 503 HTML) leaks identifying details
+            # back into the live log even though the URL itself was masked.
+            if redact_url:
+                logger.debug(f"Error {response.status_code} (body redacted)")
+            else:
+                logger.debug(f"Error {response.status_code}: {response.text[:200]}")
 
     except httpx.RequestError as e:
         logger.debug(f"Request error: {repr(e)}")
@@ -137,10 +146,13 @@ async def get_gmrc(manifest_id: Union[str, int], silent: bool = False):
     result = None
 
     # --- Primary endpoint ---
+    # The encrypted URL is hidden on purpose, no logging it in plain text
+    # via the debug log, hence redact_url=True. Already handles "the link
+    # leaked into live log" case.
     if sys.platform != "win32":
-        result = await get_request(url, headers=headers)
+        result = await get_request(url, headers=headers, redact_url=True)
     else:
-        request_task = asyncio.create_task(get_request(url, headers=headers))
+        request_task = asyncio.create_task(get_request(url, headers=headers, redact_url=True))
         cancel_task = asyncio.create_task(_wait_for_enter())
         done, pending = await asyncio.wait(
             {request_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED

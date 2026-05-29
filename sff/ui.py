@@ -1464,7 +1464,19 @@ class UI:
             (get_setting(Settings.MANIFEST_UPDATE_EXCLUDES) or "").split(",")
             if x.strip()
         )
+        # Track which appids we already touched in pass 1 so pass 2 can
+        # skip them and only fill in lua files that don't have an installed
+        # game. LumaCore locks games to whatever manifest was downloaded,
+        # so the only way users get a newer version is by us pushing a
+        # fresh manifest into depotcache and patching the ACF.
         explored_ids = []
+        depotcache = self.steam_path / "depotcache"
+
+        # ── Pass 1: installed games ──────────────────────────────────────
+        # Walk every .acf, ignore games in the exclude list, refresh
+        # manifests through the configured cascade, then patch ACF so Steam
+        # picks the new GID up.
+        print(Fore.CYAN + "\n=== Pass 1: refreshing installed games ===" + Style.RESET_ALL)
         for lib in steam_libs:
             steamapps = lib / "steamapps"
             acf_files = steamapps.glob("*.acf")
@@ -1485,13 +1497,15 @@ class UI:
                     Fore.YELLOW + f"\nUpdating manifests for {acf.name}...\n" + Style.RESET_ALL
                 )
                 explored_ids.append(acf.id)
-                # TODO: DRY this
                 parsed_lua = lua_manager.fetch_lua(
                     LuaChoice.ADD_LUA,
                     lua_manager.saved_lua / f"{acf.id}.lua",
                 )
                 if parsed_lua is None:
-                    return MainReturnCode.LOOP_NO_PROMPT
+                    print(Fore.RED + f"✗ Failed to parse saved lua for {acf.name}, skipping" + Style.RESET_ALL)
+                    continue
+                # Refresh the stplug-in copy in case a saved_lua/ rev
+                # changed since the original install.
                 install_lua_to_steam(
                     self.steam_path,
                     str(parsed_lua.app_id),
@@ -1507,8 +1521,9 @@ class UI:
                     manifest_paths = downloader.download_manifests_parallel(parsed_lua, auto_manifest=True)
                 else:
                     manifest_paths = downloader.download_manifests(parsed_lua, auto_manifest=True)
-                # Build {depot_id: manifest_id} map from returned filenames
-                # Filename format: {depot_id}_{manifest_id}.manifest
+                # Build {depot_id: manifest_id} from returned filenames so
+                # ACFWriter can patch InstalledDepots / MountedDepots in
+                # place. Filename shape: {depot_id}_{manifest_id}.manifest
                 new_manifest_map = {}
                 for mp in (manifest_paths or []):
                     stem = Path(mp).stem
@@ -1519,13 +1534,96 @@ class UI:
                     acf_writer = ACFWriter(lib)
                     acf_writer.patch_acf_depot_manifests(acf_file, new_manifest_map)
                     acf_writer._patch_acf_error_state(acf_file)
+                    print(
+                        Fore.GREEN
+                        + f"  Patched ACF with {len(new_manifest_map)} depot(s)"
+                        + Style.RESET_ALL
+                    )
+
+        # ── Pass 2: stplug-in lua sweep ──────────────────────────────────
+        # Catches games that aren't installed yet (or whose ACF got removed
+        # while the lua stayed put) and any depot whose manifest never made
+        # it into depotcache the first time around. Pulls each missing
+        # {depot_id}_{manifest_id}.manifest through the same cascade.
+        if self.os_type == OSType.WINDOWS:
+            stplug_in = self.steam_path / "config" / "stplug-in"
+        else:
+            # SLSteam path — best effort, the directory is configurable per
+            # install. If nothing is there, just skip pass 2 cleanly.
+            stplug_in = self.steam_path / "config" / "stplug-in"
+        if stplug_in.exists():
+            print(
+                Fore.CYAN
+                + "\n=== Pass 2: filling missing manifests for every stplug-in lua ==="
+                + Style.RESET_ALL
+            )
+            from sff.lua.manager import parse_lua_contents
+            lua_files = sorted(stplug_in.glob("*.lua"))
+            for lua_file in lua_files:
+                stem = lua_file.stem
+                if not stem.isdigit():
+                    continue
+                if stem in excluded_set:
+                    print(Fore.LIGHTBLACK_EX + f"Skipping {stem}.lua (excluded from updates)" + Style.RESET_ALL)
+                    continue
+                if int(stem) in explored_ids:
+                    continue
+                try:
+                    contents = lua_file.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError) as e:
+                    logger.warning("Pass 2: cannot read %s: %s", lua_file, e)
+                    continue
+                parsed = parse_lua_contents(contents, lua_file)
+                if parsed is None:
+                    continue
+                # Quick prefilter: if every depot in the lua already has a
+                # manifest in depotcache, don't waste a Steam fetch.
+                pin_map = getattr(parsed, "manifest_overrides", {}) or {}
+                use_pins = get_setting(Settings.USE_MANIFEST_PINS)
+                missing_depots = []
+                for pair in parsed.depots:
+                    if not pair.decryption_key:
+                        continue
+                    pinned = pin_map.get(pair.depot_id) if use_pins else None
+                    if pinned:
+                        target = depotcache / f"{pair.depot_id}_{pinned}.manifest"
+                        if not target.exists():
+                            missing_depots.append(pair.depot_id)
+                    else:
+                        # No pin, so we don't know the GID until the resolver
+                        # runs. Treat as potentially missing and let pass 2
+                        # do the fetch decide.
+                        missing_depots.append(pair.depot_id)
+                if not missing_depots:
+                    continue
+                print(
+                    Fore.YELLOW
+                    + f"\nFilling missing manifests for app {parsed.app_id} ({lua_file.name})..."
+                    + Style.RESET_ALL
+                )
+                use_parallel = get_setting(Settings.USE_PARALLEL_DOWNLOADS)
+                try:
+                    if use_parallel:
+                        downloader.download_manifests_parallel(parsed, auto_manifest=True)
+                    else:
+                        downloader.download_manifests(parsed, auto_manifest=True)
+                except Exception as e:
+                    logger.warning("Pass 2: download failed for %s: %s", lua_file.name, e)
+                    print(
+                        Fore.RED
+                        + f"  ✗ Pass 2 failed for {lua_file.name}: {e}"
+                        + Style.RESET_ALL
+                    )
+
         if steam_proc:
-            # pre-seed depotcache before Steam starts so it finds manifests locally
+            # Pre-seed depotcache before Steam starts so it finds manifests
+            # locally instead of trying to redownload them from Steam.
             downloader._preseed_depotcache()
             steam_proc.prompt_launch_or_restart()
         print(
-            Fore.GREEN + "\nSuccess! All game manifests have been updated!\n"
-            "Try updating them via Steam."
+            Fore.GREEN + "\nSuccess! All game manifests have been updated.\n"
+            "If Steam shows \"Content Still Encrypted\" on a game, that game's manifests "
+            "were missing — run this again to refill them."
             + Style.RESET_ALL
         )
         return MainReturnCode.LOOP

@@ -143,6 +143,21 @@ class TrayIcon(QObject):
         self._tray.show()
         logger.info("System tray icon created")
 
+        # Fire one notification so users who don't see the icon
+        # immediately get a visual confirmation that it IS up. Windows
+        # 11 hides new tray icons in the overflow menu by default; the
+        # balloon cuts down on "tray icon missing" reports because users
+        # see SteaMidra is alive there even when the icon is overflowed.
+        try:
+            self._tray.showMessage(
+                "SteaMidra",
+                "Running in the system tray. Right-click for the menu.",
+                QSystemTrayIcon.MessageIcon.Information,
+                2500,
+            )
+        except Exception:
+            pass
+
         # Heartbeat: re-show the icon periodically. Cheap insurance
         # against Explorer restarts and DPI changes that can drop the
         # icon without telling Qt.

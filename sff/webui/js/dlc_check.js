@@ -87,12 +87,24 @@
             var typeTag = dlc.type === 'depot'
                 ? '<span class="dlc-tag">depot</span>'
                 : '<span class="dlc-tag">app id</span>';
+            // Per-row Download button. Only shows for missing app-id-type
+            // DLCs (depots can't be downloaded as standalone games), and
+            // it queues the same fastest-download flow the Store tab uses,
+            // just for the DLC's appid. Hubcap by default; users can pick
+            // a different provider via the bulk buttons in the footer.
+            var dlBtn = '';
+            if (!dlc.in_applist && dlc.type !== 'depot') {
+                dlBtn = '<button class="btn dlc-row-dl" data-appid="' + _escape(dlc.id) + '" data-name="' + _escape(dlc.name) + '" style="padding:2px 10px;font-size:12px;">Download</button>';
+            } else {
+                dlBtn = '';
+            }
             return (
                 '<tr>' +
                 '<td>' + status + '</td>' +
                 '<td class="dlc-id">' + _escape(dlc.id) + '</td>' +
                 '<td>' + _escape(dlc.name) + '</td>' +
                 '<td>' + typeTag + keyTag + '</td>' +
+                '<td>' + dlBtn + '</td>' +
                 '</tr>'
             );
         }).join('');
@@ -100,10 +112,41 @@
         body.innerHTML =
             '<table class="dlc-check-table">' +
             '<thead><tr>' +
-            '<th>Status</th><th>App ID</th><th>Name</th><th>Type</th>' +
+            '<th>Status</th><th>App ID</th><th>Name</th><th>Type</th><th></th>' +
             '</tr></thead>' +
             '<tbody>' + rows + '</tbody>' +
             '</table>';
+
+        // Wire per-row download buttons
+        body.querySelectorAll('.dlc-row-dl').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var appid = this.dataset.appid;
+                var name = this.dataset.name || ('App ' + appid);
+                if (!appid) return;
+                Components.showToast('info', 'Queued download for ' + name);
+                Bridge.call('download_game_with_source', String(appid), 'hubcap', '0');
+            });
+        });
+
+        // Wire footer bulk-download buttons. They queue every missing
+        // app-id DLC (skips depot-only entries since those can't be
+        // downloaded as standalone) through the chosen provider.
+        var bulk = document.getElementById('dlc-check-bulk-actions');
+        var missing = dlcs.filter(function (d) {
+            return !d.in_applist && d.type !== 'depot';
+        });
+        if (bulk) {
+            bulk.style.display = missing.length ? 'flex' : 'none';
+            bulk.querySelectorAll('.dlc-bulk-dl').forEach(function (btn) {
+                btn.onclick = function () {
+                    var src = this.dataset.source || 'hubcap';
+                    Components.showToast('info', 'Queueing ' + missing.length + ' DLC(s) through ' + src + '...');
+                    missing.forEach(function (d) {
+                        Bridge.call('download_game_with_source', String(d.id), src, '0');
+                    });
+                };
+            });
+        }
     }
 
     function show(appId) {

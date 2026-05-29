@@ -25,6 +25,8 @@ Only trivial getters use synchronous result= slots.
 
 import json
 import logging
+import os
+import re
 import shutil
 import ssl as _ssl
 import sys
@@ -3296,12 +3298,47 @@ class WebBridge(QObject):
                     "WARNING", "Network error", "[Pre-allocation", "[!",
                 )
 
+                # DDMod prints lines like "  12.34% Downloaded ..." through
+                # the depot loop. Scrape those out and forward as a real
+                # progress update to the JS download tracker so the bar
+                # actually moves instead of sticking at 35% the whole
+                # time. DDMod's own throttled output already caps at
+                # ~5 lines/sec via depot_downloader's reader.
+                _DDMOD_PCT_RE = re.compile(r"^\s*(\d{1,3}(?:\.\d+)?)%\s")
+                # Map DDMod's 0-100 onto the 35-95 slice the UI uses
+                # for "running download" so we don't snap back to 35
+                # mid-flight or pre-empt the 95% "Updating tracker" stage.
+                _DDMOD_FLOOR = 35.0
+                _DDMOD_CEIL = 95.0
+                _last_pct = [-1.0]
+
                 def _print_fn(msg):
                     import re as _re, time as _t
                     clean = _re.sub(r'\x1b\[[0-9;]*m', '', msg).strip()
                     if not clean:
                         return
                     now = _t.monotonic()
+
+                    pct_match = _DDMOD_PCT_RE.match(clean)
+                    if pct_match:
+                        try:
+                            raw = float(pct_match.group(1))
+                        except ValueError:
+                            raw = -1.0
+                        if 0.0 <= raw <= 100.0:
+                            mapped = _DDMOD_FLOOR + (raw / 100.0) * (_DDMOD_CEIL - _DDMOD_FLOOR)
+                            mapped_int = int(mapped)
+                            if mapped_int != int(_last_pct[0]):
+                                _last_pct[0] = mapped
+                                try:
+                                    self.download_progress.emit(json.dumps({
+                                        "app_id": app_id,
+                                        "status": f"Downloading depot files... {raw:.1f}%",
+                                        "progress": mapped_int,
+                                    }))
+                                except Exception:
+                                    pass
+
                     if not clean.startswith(_PASS_PREFIXES) and now - _last_emit[0] < 0.2:
                         return
                     _last_emit[0] = now

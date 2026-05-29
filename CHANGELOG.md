@@ -1,5 +1,50 @@
 # Changelog
 
+## 6.2.8
+
+### Store / download
+
+- Steam-option downloads (the lua + manifest path, not DDMod) now actually fall back to ManifestHub when the primary GMRC endpoint is dead or 503'ing. Before, if the encrypted endpoint was down, the download just stopped after a few depots without ever asking for a ManifestHub key or trying it. Now if you have the ManifestHub API key set in Settings (or get prompted to add one), missing manifests pull from there too.
+- DDMod download progress bar moves now instead of sitting stuck at 35% for the whole download. The bar maps DDMod's own percent output onto the 35-95 range so you actually see download progress in real time.
+- DDMod log spam in the modern UI is way more controlled. The live log only updates the home page log when you're actually on the home page, and the scroll-to-bottom is rAF-throttled so a 200-line burst from DDMod is one repaint instead of 800.
+- Hubcap's "filtered DLC" debug spam during search no longer floods the live log. Those lines still go to debug.log on disk for triage but they don't reach the modern UI's live log anymore. The "not responding" reports during searching were caused by this exact spam.
+
+### Update All Games
+
+- Update All Games does what the name suggests now. First pass walks every installed game's `.acf`, skips anything in your "Exclude from Manifest Updates" list, refreshes the manifest GIDs through the same gmrc / ManifestHub / GitHub mirror cascade, and patches `InstalledDepots` + `MountedDepots` in the ACF so Steam picks the new version up. Second pass scans every `.lua` under `<steam>\config\stplug-in\` and fills in any depot whose manifest never made it to depotcache — useful for games you have a lua for but never finished installing, and for catching depots that silently failed first time around. LumaCore-locked games can finally update through SteaMidra without the manual "delete depotcache + redownload" dance.
+- New "Content Still Encrypted" tip on the home page next to the EAC and SteamStub banners. If Steam throws that error on a download or update, it just means the game's manifests are missing or stale. Run Update All Games and they'll come back. Saves the "why won't this update" question in support.
+
+### LumaCore — Lua sandbox
+
+- Plugin .lua files no longer get the full Lua standard library. The VM used to call `luaL_openlibs` which loaded io, os, package, debug, coroutine alongside the safe libs, which means a hostile lua could read arbitrary files, shell out, or pull external bytecode into the process. Whitelist load now opens base + table + string + math only, then strips dofile, loadfile, load, loadstring, require, and collectgarbage off the base lib. Every binding SteaMidra ships (addappid, setManifestid, setAppticket, etc.) keeps working because they're registered separately. Reported by 𝙈𝙊𝙇𝙀𝘾𝙐𝙇𝙀.
+
+### Live log
+
+- Live log no longer prints the encrypted GMRC endpoint URL or the upstream HTML body when it's redacted. The endpoint is encrypted on purpose and was leaking into the live log on every request.
+- "Access denied" / "accesso negato" spam from the manifest watcher is gone. That's a normal condition when Steam holds the depotcache locked, no point flooding the live log with it.
+
+### Home page
+
+- New EAC fix guide button next to the Steam DRM banner. Click "Show EAC fix steps" and you get a modal walking through verify integrity, launch with EAC armed, then close, then run the fix again. Covers the common "EasyAntiCheat is not installed" failure.
+- Steam DRM banner now mentions error 53 alongside 54. Older games (Lost Planet 2, etc.) hit error 53 instead, same SteamStub root cause.
+- Remove from library now tells you what to do if the game still shows in Steam after deleting. The lua gets deleted properly, but if LumaCore isn't loaded the running Steam keeps the appid in memory until restart. The new message says to restart Steam or run Auto LC Setup if you haven't yet.
+- Remove DRM (Steamless) doesn't crash on the second click anymore. The worker thread cleanup was leaving a stale reference in some edge cases (Steamless cmd window closing fast, second exe locked by the launcher), and the next click hit "An action is already running" forever. The cleanup now drops the stale reference and waits for the thread to drain instead of hanging the GUI thread.
+- Steamless no longer pops a separate cmd window on Windows. It still captures the output and pipes it to the live log like before, just without the flickering cmd window confusing users into thinking the app froze.
+- If Steamless can't replace the original .exe (file held by the game's launcher process, antivirus lock, etc.), it now restores the backup and tells you what to do instead of leaving both the original AND the .unpacked.exe sitting on disk.
+- DLC Check modal now has actual download buttons. Each missing DLC has its own Download button, and the footer has bulk buttons (Hubcap / Oureveryday / Ryuu) that queue every missing DLC at once through the chosen provider. Per-row downloads default to Hubcap.
+
+### Linux
+
+- Modern UI renders correctly on Mint, Pop!_OS, and other lightweight X11 desktops now. The 6.2.7 X11 flag set was missing zero-copy which made Mesa GPU compositing produce a grey page area on those desktops. The 6.2.3 flag set users said worked is back for X11 sessions specifically. Wayland keeps the in-process-gpu set from before, no regression there.
+
+### System tray
+
+- Tray icon fires a one-shot balloon notification on first appearance. Windows 11 hides new tray icons in the overflow menu by default, so users couldn't tell if SteaMidra was alive. The balloon now confirms the icon is up even when overflowed; right-click the system tray and enable SteaMidra in Other system tray icons to make it permanent.
+
+### Updater
+
+- 6.2.6 → 6.2.7 in-place update silently no-op'd for several users (the bat ran, the exe relaunched into the same 6.2.6 build). The bug was in the 6.2.6 bat itself and it's already fixed in the 6.2.7 bat going forward, so 6.2.7 → 6.2.8 will work normally. Users still on 6.2.6 need to manually install 6.2.7 once.
+
 ## 6.2.7
 
 ### In-place updater (Windows frozen build)

@@ -342,6 +342,22 @@ a:hover { text-decoration: underline; }
     color: var(--fg);
 }
 
+.hint-banner .hint-inline-btn {
+    margin-left: 6px;
+    padding: 3px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--btn-bg);
+    color: var(--fg);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.hint-banner .hint-inline-btn:hover {
+    background: var(--accent);
+    color: #fff;
+}
+
 /* ── Buttons ────────────────────────────────────────── */
 
 .btn {

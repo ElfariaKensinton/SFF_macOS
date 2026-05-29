@@ -851,6 +851,18 @@ class SFFMainWindow(QMainWindow):
     # ── Worker management ────────────────────────────────────────
 
     def _start_worker(self, func, label: str = "action", on_done=None):
+        # Detect a stale worker thread that is "not running" but the
+        # references weren't reset yet (subprocess that opened a separate
+        # cmd window and returned can leave us in this state). Treat
+        # that as completed and proceed.
+        if self._worker_thread is not None:
+            try:
+                still_running = self._worker_thread.isRunning()
+            except Exception:
+                still_running = False
+            if not still_running:
+                self._worker_thread = None
+                self._worker = None
         if self._worker_thread is not None and self._worker_thread.isRunning():
             QMessageBox.information(self, "Busy", "An action is already running.")
             return
@@ -865,9 +877,21 @@ class SFFMainWindow(QMainWindow):
         def _on_finish(_result):
             sys.stdout = old_stdout
             sys.stderr = old_stderr
-            if self._worker_thread:
-                self._worker_thread.quit()
-                self._worker_thread.wait()
+            wt = self._worker_thread
+            if wt is not None:
+                try:
+                    wt.quit()
+                    # Cap the wait so a stuck thread doesn't freeze the
+                    # whole window. The worker subprocess (Steamless,
+                    # cmd window) has already returned by this point;
+                    # we just need the QThread event loop to drain.
+                    wt.wait(2000)
+                except Exception:
+                    pass
+                try:
+                    wt.deleteLater()
+                except Exception:
+                    pass
             self._worker_thread = None
             self._worker = None
             self._append_log(f"--- Done: {label} ---\n")
@@ -1194,6 +1218,26 @@ class SFFMainWindow(QMainWindow):
         text = re.sub(r'^\d{2}:\d{2}:\d{2}\s*', '', text)
         if not text:
             return
+        # Hard-drop list for known-spammy debug patterns. These fire per
+        # filtered row during Store search and during preserver tick;
+        # they're useful in debug.log on disk but in the live log panel
+        # they pile up to hundreds of lines per query and the modern UI
+        # gets bogged down. File log keeps them for triage. Live log
+        # never sees them. The "not responding" reports during searching
+        # were caused by this exact spam.
+        if lvl == 'DEBU':
+            _SPAM_NEEDLES = (
+                'search_games: filtered Hubcap',
+                'restore_manifest: no staged copy',
+                'Cache hit for key:',
+                'Cache expired for key:',
+                'Loaded app ',
+                'Cached data for key:',
+                'Saved cache with',
+            )
+            for needle in _SPAM_NEEDLES:
+                if needle in text:
+                    return
         # Drop DEBUG lines first when the buffer is hot — debug noise
         # during parallel manifest downloads is the main offender and
         # the user can re-enable verbose logging from the log panel

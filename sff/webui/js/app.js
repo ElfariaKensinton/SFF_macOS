@@ -19,6 +19,7 @@ window.App = (function() {
         Tooltips.init();
         _initSidebar();
         _initLogPanel();
+        _initEacGuideButton();
         _initGlobalListeners();
         if (window.DlcCheck) DlcCheck.init();
 
@@ -234,6 +235,16 @@ window.App = (function() {
     }
 
     var _logMinLevel = 20; // INFO by default
+
+    function _initEacGuideButton() {
+        var btn = document.getElementById('btn-eac-guide');
+        if (!btn) return;
+        btn.addEventListener('click', function(ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            Components.showModal('eac-guide-modal');
+        });
+    }
 
     function _initLogPanel() {
         // Sidebar Logs button opens the native GlobalLogWindow (independent OS window)

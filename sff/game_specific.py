@@ -459,6 +459,13 @@ class GameHandler:
             str(game_exe.absolute()),
         ]
         print(Fore.CYAN + f"Steamless: running on {game_exe.name}..." + Style.RESET_ALL)
+        # Don't pop a console window for the steamless run on Windows.
+        # The cmd window flickering on top of SteaMidra was confusing
+        # users into thinking the app froze, and capturing stdout means
+        # we already forward the steamless output through the live log.
+        _popen_extra: dict = {}
+        if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            _popen_extra["creationflags"] = subprocess.CREATE_NO_WINDOW
         try:
             output = subprocess.run(
                 cmd,
@@ -467,6 +474,7 @@ class GameHandler:
                 cwd=str(steamless_dir),
                 timeout=120,
                 env=run_env,
+                **_popen_extra,
             )
         except subprocess.TimeoutExpired:
             msg = f"Steamless timed out on {game_exe.name}"
@@ -479,13 +487,43 @@ class GameHandler:
 
         if unpacked.exists() and "Successfully unpacked file!" in stdout_text:
             backup = game_exe.with_suffix(game_exe.suffix + ".steamlocked.bak")
+            backup_ok = True
             try:
                 if backup.exists():
                     backup.unlink()
                 game_exe.rename(backup)
             except OSError as e:
-                print(Fore.YELLOW + f"Could not back up original: {e}" + Style.RESET_ALL)
-            unpacked.rename(game_exe)
+                # File was held by the launcher / a running game process.
+                # Don't try the unpacked-rename below, that would leave
+                # both .exe AND .exe.unpacked.exe on disk and confuse the
+                # user. Surface what happened so they can close the game
+                # / launcher and click Remove DRM again.
+                backup_ok = False
+                msg = (
+                    f"Steamless: unpacked {game_exe.name} but couldn't back "
+                    f"up the original ({e}). Close the game / launcher "
+                    "process, delete the .unpacked.exe leftover, and run "
+                    "Remove DRM again."
+                )
+                print(Fore.YELLOW + msg + Style.RESET_ALL)
+                return False, msg
+            try:
+                unpacked.rename(game_exe)
+            except OSError as e:
+                # Backup succeeded but unpacked-to-original rename failed.
+                # Restore the backup so the user isn't left with the game
+                # missing its main .exe entirely.
+                msg = (
+                    f"Steamless: backed up {game_exe.name} but couldn't "
+                    f"replace it with the unpacked version ({e}). Restoring "
+                    "the original."
+                )
+                print(Fore.YELLOW + msg + Style.RESET_ALL)
+                try:
+                    backup.rename(game_exe)
+                except OSError:
+                    pass
+                return False, msg
             msg = (
                 f"Steamless: unpacked {game_exe.name}. "
                 f"Original saved as {backup.name}."
