@@ -211,7 +211,7 @@ class WebBridge(QObject):
         """
         def _do():
             # Steam catalog is always the primary source.
-            result = _search_steam_catalog(query, offset, per_page)
+            result = _search_steam_catalog(query, offset, per_page, sort_by=sort_by or 'updated')
             result.pop('fallback', None)
 
             client = self._get_store_client()
@@ -564,6 +564,20 @@ class WebBridge(QObject):
                 request_update=request_update,
             )
             if not lua_path:
+                # Surface a clear failure to the UI so the bar doesnt sit at
+                # 10% forever. download_lua_direct returns None on timeout
+                # against the Steam CM (30s ceiling) or any other source
+                # error. The user can switch source and retry.
+                self.download_progress.emit(json.dumps({
+                    "task": "download_fastest",
+                    "app_id": app_id,
+                    "status": (
+                        "Lua download failed. Steam CM may be down or the "
+                        "selected source returned nothing. Try a different "
+                        "provider (Hubcap / oureveryday) and retry."
+                    ),
+                    "progress": 0,
+                }))
                 return False
 
             saved_lua = saved_lua_root
@@ -774,6 +788,205 @@ class WebBridge(QObject):
             "progress": -1,
             "info": True,
         }))
+
+    @pyqtSlot(str, str)
+    def download_dlc_oureveryday(self, dlc_appid, parent_appid):
+        """Oureveryday DLC-only path: pull just the DLCs depot manifest +
+        decryption key without re-downloading the parent game.
+
+        Flow:
+          1. Resolve parent app info from Steam, pull every depot whose
+             `dlcappid` matches the DLC appid. That gives us the depot
+             list and per-depot public manifest GID.
+          2. For each depot, fetch the depot key from the bundled key
+             database (same one oureveryday uses for the full game flow).
+             Skip any depot whose key isn't on file.
+          3. Pull the manifest bytes through the existing cascade
+             (gmrc -> ManifestHub https mirrors -> GitHub mirror -> CDN)
+             and drop into <steam>/depotcache/.
+          4. APPEND `addappid(<depot>, 1, "<key>")` lines to the existing
+             <steam>/config/stplug-in/<parent>.lua. Never overwrite the
+             whole file, so existing depot keys + setManifestid pins the
+             user already has stay intact. If the parent lua doesnt exist
+             yet, create it with `addappid(<parent>)` plus the new lines.
+        """
+        if not dlc_appid or not dlc_appid.strip().isdigit():
+            self._emit_task_result("download_dlc", False, f"Invalid DLC App ID: '{dlc_appid}'")
+            return
+        if not parent_appid or not parent_appid.strip().isdigit():
+            self._emit_task_result("download_dlc", False, f"Invalid parent App ID: '{parent_appid}'")
+            return
+
+        def _do():
+            import json as _json
+            from pathlib import Path as _Path
+            try:
+                from sff.steam_client import create_provider_for_current_thread
+                from sff.manifest.downloader import ManifestDownloader
+            except Exception as e:
+                logger.exception("download_dlc_oureveryday: import failed: %s", e)
+                return (False, f"Internal error: {e}")
+
+            steam_path = self._steam_path
+            if not steam_path:
+                return (False, "Steam path not configured")
+
+            self.download_progress.emit(_json.dumps({
+                "app_id": dlc_appid, "status": "Resolving DLC depots", "progress": 10
+            }))
+
+            # Step 1: parent appinfo for depot mapping
+            try:
+                provider = create_provider_for_current_thread()
+                from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FT
+                with ThreadPoolExecutor(max_workers=1) as _ex:
+                    _fut = _ex.submit(provider.get_single_app_info, int(parent_appid))
+                    try:
+                        parent_info = _fut.result(timeout=30)
+                    except _FT:
+                        return (False, "Steam app-info timed out (CM down?)")
+            except Exception as e:
+                logger.warning("download_dlc_oureveryday: provider failed: %s", e)
+                return (False, f"Steam query failed: {e}")
+            if not parent_info:
+                return (False, f"Steam returned no info for parent app {parent_appid}")
+
+            depots = parent_info.get("depots") or {}
+            if not isinstance(depots, dict):
+                return (False, "Parent depot map is malformed")
+
+            dlc_depots = []
+            for depot_id, depot_data in depots.items():
+                if not depot_id.isdigit() or not isinstance(depot_data, dict):
+                    continue
+                if str(depot_data.get("dlcappid", "")) != str(dlc_appid):
+                    continue
+                manifests = depot_data.get("manifests") or {}
+                gid = ""
+                if isinstance(manifests, dict):
+                    pub = manifests.get("public") or {}
+                    if isinstance(pub, dict):
+                        gid = str(pub.get("gid") or "")
+                dlc_depots.append((depot_id, gid))
+
+            if not dlc_depots:
+                return (False, f"No depots tagged with dlcappid={dlc_appid} on the parent")
+
+            # Step 2: bundled depot keys
+            self.download_progress.emit(_json.dumps({
+                "app_id": dlc_appid, "status": "Loading depot keys", "progress": 25
+            }))
+            keys_dict = {}
+            try:
+                local_db = _Path(__file__).parent.parent / "lua" / "fallback_depotkeys.json"
+                if local_db.exists():
+                    keys_dict = _json.loads(local_db.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.debug("download_dlc_oureveryday: key db load failed: %s", e)
+
+            # Step 3: fetch manifests through the standard cascade
+            self.download_progress.emit(_json.dumps({
+                "app_id": dlc_appid, "status": "Downloading DLC manifests", "progress": 50
+            }))
+            downloader = ManifestDownloader(provider, _Path(steam_path))
+            cdn = None
+            try:
+                cdn = downloader.get_cdn_client()
+            except Exception as e:
+                logger.debug("download_dlc_oureveryday: cdn client failed: %s", e)
+
+            saved = 0
+            new_lines = []
+            for depot_id, gid in dlc_depots:
+                key = keys_dict.get(depot_id)
+                if not key:
+                    logger.debug("download_dlc_oureveryday: no bundled key for depot %s", depot_id)
+                    continue
+                if not gid:
+                    # No public manifest GID listed. Still add the key line
+                    # so LumaCore can decrypt anything Steam later resolves
+                    # for that depot.
+                    new_lines.append(f'addappid({depot_id}, 1, "{key}")')
+                    continue
+                try:
+                    raw = downloader.download_single_manifest(
+                        depot_id, gid, cdn_client=cdn, app_id=str(parent_appid),
+                    )
+                except Exception as e:
+                    logger.debug("download_dlc_oureveryday: depot %s fetch raised: %s", depot_id, e)
+                    raw = None
+                if raw:
+                    try:
+                        if downloader._write_manifest_to_depotcache(raw, depot_id, gid, decrypt=False, dec_key=key):
+                            saved += 1
+                    except Exception as e:
+                        logger.debug("download_dlc_oureveryday: write %s_%s failed: %s", depot_id, gid, e)
+                new_lines.append(f'addappid({depot_id}, 1, "{key}")')
+
+            # Always announce the DLC appid as owned even if no depots had
+            # keys — the appid alone is enough for LumaCore to mark the
+            # title.
+            new_lines.append(f"addappid({dlc_appid})")
+
+            # Step 4: merge into existing parent lua, preserving prior keys
+            self.download_progress.emit(_json.dumps({
+                "app_id": dlc_appid, "status": "Updating parent lua", "progress": 85
+            }))
+            stplug = _Path(steam_path) / "config" / "stplug-in"
+            stplug.mkdir(parents=True, exist_ok=True)
+            lua_path = stplug / f"{parent_appid}.lua"
+            existing_text = ""
+            if lua_path.exists():
+                try:
+                    existing_text = lua_path.read_text(encoding="utf-8", errors="replace")
+                except Exception as e:
+                    logger.warning("download_dlc_oureveryday: could not read existing lua: %s", e)
+                    existing_text = ""
+            if not existing_text:
+                # Fresh lua. Seed with parent appid line so LumaCore picks
+                # the title up.
+                existing_text = f"addappid({parent_appid})\n"
+
+            # Dedupe: skip lines that already appear verbatim in the file.
+            # Lua matching here is line-for-line, so this avoids double
+            # entries on repeat clicks.
+            existing_lines = set(l.strip() for l in existing_text.splitlines() if l.strip())
+            appended = 0
+            extra = []
+            for line in new_lines:
+                if line not in existing_lines:
+                    extra.append(line)
+                    existing_lines.add(line)
+                    appended += 1
+            if extra:
+                if not existing_text.endswith("\n"):
+                    existing_text += "\n"
+                existing_text += "\n".join(extra) + "\n"
+                try:
+                    lua_path.write_text(existing_text, encoding="utf-8")
+                except Exception as e:
+                    logger.exception("download_dlc_oureveryday: lua write failed: %s", e)
+                    return (False, f"Failed to write parent lua: {e}")
+
+            self.download_progress.emit(_json.dumps({
+                "app_id": dlc_appid, "status": "Complete", "progress": 100
+            }))
+            msg = (
+                f"DLC {dlc_appid} added to {parent_appid}.lua "
+                f"({saved} manifest(s) saved, {appended} key line(s) appended)"
+                if appended or saved
+                else f"DLC {dlc_appid} already present in {parent_appid}.lua"
+            )
+            return (True, msg)
+
+        def _on_done(result):
+            if isinstance(result, tuple):
+                ok, msg = result
+                self._emit_task_result("download_dlc", ok, msg, dlc_app_id=dlc_appid, parent_app_id=parent_appid)
+            else:
+                self._emit_task_result("download_dlc", False, "DLC download failed", dlc_app_id=dlc_appid, parent_app_id=parent_appid)
+
+        self._run_async(_do, on_done=_on_done)
 
     @pyqtSlot(str, str)
     def download_game_version(self, app_id, manifest_override_json):
@@ -3655,6 +3868,16 @@ class WebBridge(QObject):
         try:
             if not self._steam_path:
                 return "[]"
+            # Cache the full disk walk for a few seconds. Going to the Library
+            # tab fires get_installed_games + load_library + lure-fix sweep
+            # back-to-back, all of which would re-walk every drive letter and
+            # re-parse every .acf otherwise. DaemonCipher saw the GUI freeze
+            # for ~1s every time he came back to Library on a 35-game library.
+            import time as _t
+            _now = _t.monotonic()
+            _cached = getattr(self, '_installed_games_cache', None)
+            if _cached and (_now - _cached[0]) < 5.0:
+                return _cached[1]
             from sff.storage.vdf import get_steam_libs
             import os
             libs = list(get_steam_libs(self._steam_path))
@@ -3708,7 +3931,9 @@ class WebBridge(QObject):
                     except Exception:
                         continue
             games.sort(key=lambda g: g.get("name", "").lower())
-            return json.dumps(games)
+            payload = json.dumps(games)
+            self._installed_games_cache = (_now, payload)
+            return payload
         except Exception:
             return "[]"
 
@@ -4790,7 +5015,7 @@ def _load_steam_applist():
     return _STEAM_APPLIST_CACHE or []
 
 
-def _search_steam_catalog(query, offset, per_page):
+def _search_steam_catalog(query, offset, per_page, sort_by='updated'):
     """Fallback store search using full Steam public app list when Hubcap is unavailable."""
     apps = _load_steam_applist()
     if not apps:
@@ -4805,6 +5030,20 @@ def _search_steam_catalog(query, offset, per_page):
                 a for a in apps
                 if _matches_normalized(q_norm, _normalize_for_search(a.get("name", "")))
             ]
+    # Apply user-selected sort BEFORE pagination. Without this every page
+    # was paginated in raw Steam-applist order (lowest appid first), which
+    # is what made every sort method produce the same result.
+    sb = (sort_by or 'updated').lower()
+    if sb == 'name_asc':
+        apps = sorted(apps, key=lambda a: (a.get('name') or '').lower())
+    elif sb == 'name_desc':
+        apps = sorted(apps, key=lambda a: (a.get('name') or '').lower(), reverse=True)
+    elif sb == 'oldest':
+        apps = sorted(apps, key=lambda a: a.get('appid') or 0)
+    elif sb == 'newest':
+        apps = sorted(apps, key=lambda a: a.get('appid') or 0, reverse=True)
+    # 'updated' falls through to natural Hubcap-merge order (Steam's own
+    # latest-updates ordering is set by the Hubcap overlay later).
     total = len(apps)
     page_apps = apps[offset: offset + per_page]
     app_ids = [a["appid"] for a in page_apps if a.get("appid")]

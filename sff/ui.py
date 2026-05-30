@@ -1286,12 +1286,22 @@ class UI:
                 # even on a slow shutdown. tasklist /FI returns the header
                 # when the PID is gone, so a successful exit produces no
                 # data line and the FIND below fails -> we break.
+                # If the process is still alive after 30s we taskkill /F
+                # it. Earlier bats did not, which is what wedged Vikram
+                # and Arxalor on 6.2.6 / 6.2.7: the PyInstaller exe held
+                # file locks well past the polite shutdown, robocopy then
+                # hit a locked file and stalled forever inside %LOG%.
                 "set /a tries=0\n"
                 ":waitloop\n"
                 "set /a tries+=1\n"
-                "tasklist /FI \"PID eq " + str(current_pid) + "\" 2>nul | find \"" + str(current_pid) + "\" >nul\n"
+                "tasklist /FI \"PID eq " + str(current_pid) + "\" /NH 2>nul | find \"" + str(current_pid) + "\" >nul\n"
                 "if errorlevel 1 goto exited\n"
-                "if !tries! GEQ 30 (echo [updater] WARN: pid still alive after 30s, continuing anyway >> %LOG% & goto exited)\n"
+                "if !tries! GEQ 30 (\n"
+                "  echo [updater] WARN: pid still alive after 30s, force-killing >> %LOG%\n"
+                "  taskkill /F /PID " + str(current_pid) + " >> %LOG% 2>&1\n"
+                "  timeout /t 2 /nobreak >nul\n"
+                "  goto exited\n"
+                ")\n"
                 "timeout /t 1 /nobreak >nul\n"
                 "goto waitloop\n"
                 ":exited\n"
@@ -1332,6 +1342,15 @@ class UI:
                 "echo [updater] robocopy exit=%RC% >> %LOG%\n"
                 "if %RC% GEQ 8 (\n"
                 "  echo [updater] FAIL: robocopy reported a fatal error. Install left in place. >> %LOG%\n"
+                "  goto cleanup\n"
+                ")\n"
+                # Verify the new exe actually exists on disk before relaunch.
+                # If robocopy reported success but for some reason the exe
+                # is missing (an /XF rule went wrong, antivirus quarantined
+                # it, etc.), surface that as a clear failure instead of
+                # silently skipping the relaunch.
+                "if not exist " + convert([str(app_dir / exe_name)]) + " (\n"
+                "  echo [updater] FAIL: new EXE missing after robocopy. Install incomplete. >> %LOG%\n"
                 "  goto cleanup\n"
                 ")\n"
                 "echo [updater] launching new EXE >> %LOG%\n"

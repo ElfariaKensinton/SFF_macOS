@@ -4,7 +4,7 @@
 !define APPNAME    "SteaMidra"
 !define COMPANY    "Midrags"
 !ifndef VERSION
-  !define VERSION  "6.2.8"
+  !define VERSION  "6.2.9"
 !endif
 !define EXENAME    "SteaMidra_GUI.exe"
 !define PUBLISHER  "Midrags"

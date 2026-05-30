@@ -217,6 +217,14 @@ class Settings(Enum):
     CLOUD_PROVIDER = SettingItem("cloud_provider", "Cloud Save Provider", False, str)
     CLOUD_RCLONE_EXE = SettingItem("cloud_rclone_exe", "Cloud Save rclone Executable", False, str)
     CLOUD_RCLONE_REMOTE = SettingItem("cloud_rclone_remote", "Cloud Save rclone Remote", False, str)
+    # 6.2.9: Local-provider destination folder. Set via the Browse button on
+    # the Cloud Saves tab next to "Local Backup Folder". Empty falls back to
+    # %APPDATA%\SteaMidra\save_backups\.
+    CLOUD_LOCAL_BACKUP_DEST = SettingItem(
+        "cloud_local_backup_dest",
+        "Local Cloud-Save Backup Folder",
+        False, str,
+    )
     # 6.2.4: per-game custom save paths the user added by hand. Stored as
     # JSON {"<app_id>": "<absolute path>"} so the cloud-saves "All Save
     # Locations" scan picks them up alongside emu / Steam-userdata folders.

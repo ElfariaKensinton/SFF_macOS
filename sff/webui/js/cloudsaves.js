@@ -235,8 +235,32 @@ window.CloudSaves = (function() {
                     if (path) {
                         var input = document.getElementById('cloud-backup-dest');
                         if (input) input.value = path;
+                        // Persist immediately so the user doesnt have to
+                        // re-pick this every session. Settings-level setting,
+                        // not provider config (saved here even if the user
+                        // never clicks Save Provider Config below).
+                        Bridge.call('set_setting', 'cloud_local_backup_dest', path);
                     }
                 });
+            });
+        }
+
+        // Persist manual edits in cloud-backup-dest as the user types
+        // (debounced to avoid spamming setSetting). Saves once they stop
+        // typing for ~600ms.
+        var _backupDestInput = document.getElementById('cloud-backup-dest');
+        if (_backupDestInput) {
+            var _saveTimer = null;
+            _backupDestInput.addEventListener('input', function() {
+                if (_saveTimer) clearTimeout(_saveTimer);
+                var v = _backupDestInput.value.trim();
+                _saveTimer = setTimeout(function() {
+                    Bridge.call('set_setting', 'cloud_local_backup_dest', v);
+                }, 600);
+            });
+            // Restore previously-saved path on first init.
+            Bridge.callWithCallback('get_setting', 'cloud_local_backup_dest', function(v) {
+                if (v && !_backupDestInput.value) _backupDestInput.value = v;
             });
         }
 

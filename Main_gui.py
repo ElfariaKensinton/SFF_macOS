@@ -36,81 +36,17 @@ if sys.stdout is None:
 
 
 os.environ.setdefault('QTWEBENGINE_DISABLE_SANDBOX', '1')
-# QtWebEngine flags. Windows is fine on the default GPU-compositing
-# path (ANGLE -> D3D11), Linux is the headache.
-#
-# Wayland on any compositor: the GPU process can dma-buf-export a
-# frame the compositor refuses to import on Mesa Intel/AMD setups,
-# so the page area goes blank or flickers. `--in-process-gpu` keeps
-# GPU code in the browser process, which kills the IPC handoff and
-# the dma-buf cycle, and the page actually renders.
-#
-# X11 + KDE / GNOME: stock Chromium GPU works fine, no special flags
-# beyond the sandbox + blocklist override.
-#
-# X11 + XFCE (xfwm4) and other lightweight stacks: pinning
-# `--in-process-gpu` together with `--disable-gpu-compositing` fights
-# xfwm4's surface-ownership model, the renderer surface unmaps after
-# first paint, and yall get the modern UI flashing then dying into a
-# grey window. That's exactly how Skyflizz hit it on Ubuntu 24.04 XFCE.
-# Fix: do NOT pin in-process-gpu on X11 sessions. Let Chromium pick
-# its own GPU process layout.
-#
-# 6.2.7 was tuned only for Wayland. 6.2.8 splits it: detect
-# `XDG_SESSION_TYPE` + `WAYLAND_DISPLAY` and pick the flag stack the
-# running session actually wants.
-#
-# `STEAMIDRA_LINUX_FORCE_SOFTWARE=1` is the escape hatch for users
-# whose GPU stack is hopeless (out-of-tree Mesa, broken Nouveau,
-# headless WSL session, etc).
-if sys.platform == "linux":
-    if os.environ.get("STEAMIDRA_LINUX_FORCE_SOFTWARE", "").strip() in ("1", "true", "True"):
-        # Full software path. Slowest, but renders at all on configs
-        # where every GPU-backed path fails.
-        _default_linux_flags = (
-            "--no-sandbox --single-process --in-process-gpu "
-            "--disable-gpu --use-gl=swiftshader"
-        )
-    else:
-        _session = os.environ.get("XDG_SESSION_TYPE", "").strip().lower()
-        _is_wayland = (_session == "wayland"
-                       or os.environ.get("WAYLAND_DISPLAY", "").strip() != "")
-        if _is_wayland:
-            # Wayland. `--in-process-gpu` skips the GPU IPC and the
-            # dma-buf import. `--disable-gpu-compositing` keeps the
-            # final frame software-composited so even if a buffer
-            # somehow lands wrong, the compositor doesn't have to
-            # GPU-import it.
-            _default_linux_flags = (
-                "--no-sandbox --in-process-gpu --disable-gpu-compositing"
-            )
-        else:
-            # X11. Don't pin in-process-gpu, don't fight the WM over
-            # compositing. Plain GPU process with the sandbox off and
-            # the GPU blocklist override. zero-copy is fine on X11
-            # (the Windows DWM 1-frame placeholder bug doesn't apply
-            # under X11), and adding it back is what made the modern
-            # UI render correctly on Mint and the other lightweight
-            # X11 desktops that 6.2.7's flag set was leaving grey.
-            # Also matches what 6.2.3 shipped, which users confirmed
-            # working on Mint.
-            _default_linux_flags = (
-                "--no-sandbox --ignore-gpu-blocklist --enable-gpu-rasterization "
-                "--enable-zero-copy"
-            )
-    os.environ.setdefault('QTWEBENGINE_CHROMIUM_FLAGS', _default_linux_flags)
-else:
-    # Windows. `--enable-zero-copy` got dropped because the GPU to DWM
-    # compositor zero-copy handoff produces a 1-frame placeholder texture
-    # during window drag and any layout invalidation, which paints as a
-    # transient checker / white flash on top of the page (worse on dark
-    # themes since the flash contrasts harder). GPU rasterization and
-    # the blocklist override stay on so the store grid and large list
-    # views still raster on the GPU.
-    os.environ.setdefault(
-        'QTWEBENGINE_CHROMIUM_FLAGS',
-        '--no-sandbox --ignore-gpu-blocklist --enable-gpu-rasterization',
-    )
+# Linux + Windows share one QtWebEngine flag stack now. 6.2.3 used
+# this exact line for both platforms and Mint, Pop, Ubuntu, Fedora,
+# Windows 10/11 all rendered correctly back then. Every version since
+# tried to get clever per-session and broke at least one user. Going
+# back to one line, no detection. The Windows white-flash work is
+# gated on win32 in main_window.py via WA_OpaquePaintEvent, not via
+# stripping zero-copy here.
+os.environ.setdefault(
+    'QTWEBENGINE_CHROMIUM_FLAGS',
+    '--no-sandbox --ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy',
+)
 
 import PyQt6.QtWebEngineWidgets  # noqa: F401 - must import before QCoreApplication
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox

@@ -221,13 +221,18 @@ class SFFMainWindow(QMainWindow):
         # producing the brief white / checker flash users see during drag,
         # download start, and theme switches. The flash is worse on dark
         # themes because the contrast is higher.
-        try:
-            from PyQt6.QtCore import Qt as _Qt
-            self._web_view.setAttribute(_Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
-            self._web_view.setAttribute(_Qt.WidgetAttribute.WA_NoSystemBackground, True)
-            self._web_view.setAutoFillBackground(False)
-        except Exception:
-            pass
+        # Windows-only. On Linux these attributes interact badly with
+        # X11 + Mesa compositors and the page doesnt paint. 6.2.3
+        # didnt set them and rendered fine on Mint, so leave the
+        # default Qt opaque painting for Linux.
+        if sys.platform == "win32":
+            try:
+                from PyQt6.QtCore import Qt as _Qt
+                self._web_view.setAttribute(_Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+                self._web_view.setAttribute(_Qt.WidgetAttribute.WA_NoSystemBackground, True)
+                self._web_view.setAutoFillBackground(False)
+            except Exception:
+                pass
         root_layout.addWidget(self._web_view)
         self._web_channel = QWebChannel()
         from sff.gui.web_bridge import WebBridge

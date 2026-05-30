@@ -1,5 +1,45 @@
 # Changelog
 
+## 6.2.9
+
+### Linux
+
+- Modern UI on Linux is one flag stack again. 6.2.7 / 6.2.8 tried to detect Wayland vs X11 and pick different Chromium flags per session, but the detection kept misclassifying Cinnamon-Wayland and GNOME-Wayland-with-XWayland users and dropping them into the wrong branch, which is what made the page render grey or not paint for Glitch on Mint. Reverted to the same single line 6.2.3 shipped: `--no-sandbox --ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy`. No more session detection, no software escape hatch env-var, just the flag stack users actually confirmed working back then.
+- Stripped the `WA_OpaquePaintEvent` / `WA_NoSystemBackground` attributes off the QWebEngineView on Linux. They were added in 6.2.6 to fix the Windows drag-flash and they help on Windows, but on Linux they conflict with how Mesa-on-X11 reports the window surface and can leave the page area unpainted on first show. Now Windows-only, Linux gets the default Qt opaque-paint behaviour (which is what 6.2.3 had).
+
+### Library tab
+
+- Library tab no longer freezes for a beat every time you switch back to it. The drive-letter walk that finds extra Steam libraries was re-running on every Library / Fix Game / Lure Fix call, parsing every `appmanifest_*.acf` each time. Now cached for 5 seconds across the whole bridge, so coming back to Library reuses the previous scan instead of redoing it. DaemonCipher hit this on a 35-game library.
+
+### Store / search
+
+- Store sort options actually sort now. "Recently Updated", "Newest", "Oldest", "Name A-Z", and "Name Z-A" all changed nothing in 6.2.8 because the Steam catalog page sliced results by raw appid order before the sort key was applied. Sort goes through before pagination now. Ivanchick reported this.
+
+### DLC check
+
+- DLC check Download buttons split by source now. Hubcap and Ryuu route to the parent game's full bundle (same as the regular Store download), since both of them only ship the parent zip and trying to pull a standalone DLC through them kept failing. Oureveryday now does the right thing for per-DLC clicks: pulls just the DLC's depot manifest through the gmrc / ManifestHub / GitHub cascade, looks the depot key up in the bundled key DB, and APPENDS to the existing `<parent>.lua` instead of overwriting it. So DLC keys you add later don't wipe out the keys the parent download already wrote. If the parent lua doesn't exist yet, oureveryday seeds one with `addappid(<parent>)` plus the new DLC lines. Lawbymike and Kinge both hit the overwrite case.
+
+### Cloud Saves
+
+- Local provider now has a "Local Backup Folder" picker on the Cloud Saves tab. Pick any folder on your PC and that's where every per-game backup goes (`<your folder>/Game Name [AppID]/remote/`). Setting persists across sessions. Leave it blank and the legacy `%APPDATA%\SteaMidra\save_backups\` default still works. Was an explicit ask to know where Local backups land and to be able to change it.
+
+### Manifest downloads
+
+- The encrypted gmrc primary endpoint now has two HTTPS fallback mirrors when it goes down or returns garbage. Both fallbacks travel over TLS and are kept encrypted in source the same way the primary URL is, and stay redacted in the live log. Manifest downloads keep working through the gmrc downtime windows users keep hitting.
+- Returned request codes are sanity-checked before use. Captive portals and MITM attempts on the http primary used to slip through with HTML or ad redirects in the body, which then turned into "manifest id" prompts later. Anything that isn't a numeric request code (real responses are 16-22 digit decimals) is rejected and the next fallback runs instead.
+
+### Steam-option download
+
+- The Steam-option download (the one that grabs the lua + manifests, not DDMod) no longer freezes at 10% forever. The Steam app-info call inside the lua-build step had no timeout, so a flaky Steam CM left the worker wedged at "Downloading Lua" with the bar stuck. Hard 30s ceiling now. On timeout the user gets a clear error telling them the CM is unreachable and to retry or switch source instead of staring at a frozen bar.
+
+### In-place updater (Windows frozen build)
+
+- Updater no longer hangs forever when the running EXE refuses to release file locks. The 6.2.6 / 6.2.7 bats waited 30s for the process to exit and then tried to robocopy regardless, so a half-alive PyInstaller exe still holding a file would wedge robocopy. Now after 30s the bat issues `taskkill /F /PID` to force the exit, sleeps 2s for the locks to drop, then proceeds. Vikram and Arxalor both hit this on 6.2.6 and 6.2.7 respectively. Plus the bat now verifies the new exe exists on disk before relaunching, so a robocopy that reported success but somehow lost the exe (antivirus quarantine, weird /XF rule) surfaces as a clean failure in `tmp_updater.log` instead of silently leaving the user on the old build.
+
+### README
+
+- Added a YouTube setup walkthrough by @yensnc and a step-by-step ManifestHub API key tutorial by @novoagain to the README, both credited.
+
 ## 6.2.8
 
 ### Store / download
@@ -25,8 +65,8 @@
 
 ### Home page
 
-- New EAC fix guide button next to the Steam DRM banner. Click "Show EAC fix steps" and you get a modal walking through verify integrity, launch with EAC armed, then close, then run the fix again. Covers the common "EasyAntiCheat is not installed" failure.
-- Steam DRM banner now mentions error 53 alongside 54. Older games (Lost Planet 2, etc.) hit error 53 instead, same SteamStub root cause.
+- New EAC fix guide button next to the Steam DRM banner. Click "Show EAC fix steps" and you get a 7-page modal walking through verify integrity, Steam launch options, renaming the EasyAntiCheat folder, the executable swap, steam_appid.txt / .bat tricks, the firewall block, and crack files as a last resort. Methods are ranked easiest first and the modal is upfront that SteaMidra's tools (Goldberg, Remove DRM, SteamAutoCrack) don't fix EAC themselves.
+- Steam DRM banner now mentions "Application load error 6:0000065432" alongside error 53 / 54. Older games hit that popup instead, same SteamStub root cause and same Remove DRM fix.
 - Remove from library now tells you what to do if the game still shows in Steam after deleting. The lua gets deleted properly, but if LumaCore isn't loaded the running Steam keeps the appid in memory until restart. The new message says to restart Steam or run Auto LC Setup if you haven't yet.
 - Remove DRM (Steamless) doesn't crash on the second click anymore. The worker thread cleanup was leaving a stale reference in some edge cases (Steamless cmd window closing fast, second exe locked by the launcher), and the next click hit "An action is already running" forever. The cleanup now drops the stale reference and waits for the thread to drain instead of hanging the GUI thread.
 - Steamless no longer pops a separate cmd window on Windows. It still captures the output and pipes it to the live log like before, just without the flickering cmd window confusing users into thinking the app froze.
@@ -35,7 +75,7 @@
 
 ### Linux
 
-- Modern UI renders correctly on Mint, Pop!_OS, and other lightweight X11 desktops now. The 6.2.7 X11 flag set was missing zero-copy which made Mesa GPU compositing produce a grey page area on those desktops. The 6.2.3 flag set users said worked is back for X11 sessions specifically. Wayland keeps the in-process-gpu set from before, no regression there.
+- Modern UI renders correctly on Mint, Pop!_OS, and pretty much every Linux desktop again. The 6.2.7 / 6.2.8-early splits between Wayland and X11 kept misclassifying sessions and dropping users into the wrong flag stack, which is what made the modern UI go grey on Glitch's Mint setup. The flag stack is back to byte-identical to 6.2.3 unconditionally for every Linux session, which is the version users actually confirmed working. `STEAMIDRA_LINUX_FORCE_SOFTWARE=1` stays as the opt-in software-render escape hatch for hopeless GPU stacks.
 
 ### System tray
 

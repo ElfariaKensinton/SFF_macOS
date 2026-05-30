@@ -78,7 +78,19 @@ def get_oureverday(dest, app_id):
     print(Fore.CYAN + f"[Step 1] Fetching depot list for {app_id} from Steam client..." + Style.RESET_ALL)
     try:
         provider = create_provider_for_current_thread()
-        app_info = provider.get_single_app_info(int(app_id))
+        # 30s hard ceiling on the Steam app-info call. SteamKit's gevent
+        # socket can hang silently on a flaky CM, which is what made
+        # Steam-option downloads stall at 10% with no log line. Forcing
+        # a timeout means the user gets a clear error instead of a frozen
+        # progress bar.
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FT
+        with ThreadPoolExecutor(max_workers=1) as _ex:
+            _fut = _ex.submit(provider.get_single_app_info, int(app_id))
+            try:
+                app_info = _fut.result(timeout=30)
+            except _FT:
+                print(Fore.RED + f"Steam app-info timed out for {app_id} (CM probably down)." + Style.RESET_ALL)
+                return None
         if not app_info:
             print(Fore.RED + f"Failed to query Steam App Info for {app_id}." + Style.RESET_ALL)
             return None

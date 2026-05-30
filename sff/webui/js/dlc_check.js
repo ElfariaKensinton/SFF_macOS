@@ -117,20 +117,37 @@
             '<tbody>' + rows + '</tbody>' +
             '</table>';
 
-        // Wire per-row download buttons
+        // Wire per-row download buttons. Per-row default is now oureveryday
+        // because Hubcap/Ryuu need the FULL game zip path (queues the
+        // parent appid bundle), and a single per-row button can't ask the
+        // user to confirm theyre OK redownloading the whole game just to
+        // unlock a single DLC. The bulk picker exposes Hubcap/Ryuu/Oureveryday
+        // explicitly so the user picks knowingly.
         body.querySelectorAll('.dlc-row-dl').forEach(function (btn) {
             btn.addEventListener('click', function () {
                 var appid = this.dataset.appid;
                 var name = this.dataset.name || ('App ' + appid);
                 if (!appid) return;
-                Components.showToast('info', 'Queued download for ' + name);
-                Bridge.call('download_game_with_source', String(appid), 'hubcap', '0');
+                if (!_currentAppId) {
+                    Components.showToast('warning', 'Parent app id missing.');
+                    return;
+                }
+                Components.showToast('info', 'Queued DLC ' + name + ' (oureveryday)...');
+                Bridge.call('download_dlc_oureveryday', String(appid), String(_currentAppId));
             });
         });
 
-        // Wire footer bulk-download buttons. They queue every missing
-        // app-id DLC (skips depot-only entries since those can't be
-        // downloaded as standalone) through the chosen provider.
+        // Bulk-download buttons. Provider routing:
+        //   * hubcap / ryuu   -> queue the PARENT game's appid via the
+        //                        normal store flow. Hubcap/Ryuu only know
+        //                        how to ship the full game zip, so we
+        //                        download the parent which already covers
+        //                        every DLC in one shot. Single call, not
+        //                        one per DLC.
+        //   * oureveryday     -> per-DLC manifest+key pull that appends to
+        //                        the parent's existing lua without nuking
+        //                        any keys the user already has. Loops over
+        //                        each missing DLC.
         var bulk = document.getElementById('dlc-check-bulk-actions');
         var missing = dlcs.filter(function (d) {
             return !d.in_applist && d.type !== 'depot';
@@ -139,10 +156,24 @@
             bulk.style.display = missing.length ? 'flex' : 'none';
             bulk.querySelectorAll('.dlc-bulk-dl').forEach(function (btn) {
                 btn.onclick = function () {
-                    var src = this.dataset.source || 'hubcap';
-                    Components.showToast('info', 'Queueing ' + missing.length + ' DLC(s) through ' + src + '...');
+                    var src = this.dataset.source || 'oureveryday';
+                    if (!_currentAppId) {
+                        Components.showToast('warning', 'Parent app id missing.');
+                        return;
+                    }
+                    if (src === 'hubcap' || src === 'ryuu') {
+                        Components.showToast('info',
+                            'Queueing parent app (' + _currentAppId + ') through ' + src +
+                            ' — DLCs will come with it.');
+                        Bridge.call('download_game_with_source',
+                            String(_currentAppId), src, '0');
+                        return;
+                    }
+                    // oureveryday: per-DLC append
+                    Components.showToast('info', 'Queueing ' + missing.length + ' DLC(s) through oureveryday...');
                     missing.forEach(function (d) {
-                        Bridge.call('download_game_with_source', String(d.id), src, '0');
+                        Bridge.call('download_dlc_oureveryday',
+                            String(d.id), String(_currentAppId));
                     });
                 };
             });

@@ -243,6 +243,32 @@ window.App = (function() {
             ev.preventDefault();
             ev.stopPropagation();
             Components.showModal('eac-guide-modal');
+            _resetEacPages();
+        });
+        _wireEacTabs();
+    }
+
+    function _resetEacPages() {
+        var tabs = document.querySelectorAll('#eac-guide-modal .eac-tab');
+        var pages = document.querySelectorAll('#eac-guide-modal .eac-page');
+        tabs.forEach(function(t) { t.classList.toggle('eac-tab-active', t.getAttribute('data-page') === '1'); });
+        pages.forEach(function(p) { p.classList.toggle('hidden', p.getAttribute('data-page') !== '1'); });
+    }
+
+    function _wireEacTabs() {
+        var tabs = document.querySelectorAll('#eac-guide-modal .eac-tab');
+        if (!tabs || tabs.length === 0) return;
+        tabs.forEach(function(tab) {
+            tab.addEventListener('click', function(ev) {
+                ev.preventDefault();
+                var target = tab.getAttribute('data-page');
+                document.querySelectorAll('#eac-guide-modal .eac-tab').forEach(function(t) {
+                    t.classList.toggle('eac-tab-active', t === tab);
+                });
+                document.querySelectorAll('#eac-guide-modal .eac-page').forEach(function(p) {
+                    p.classList.toggle('hidden', p.getAttribute('data-page') !== target);
+                });
+            });
         });
     }
 

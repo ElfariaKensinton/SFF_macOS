@@ -146,9 +146,9 @@
             <div class="hint-banner" data-tooltip="Steam DRM (SteamStub) protects some games like Teardown, Doom Eternal, Resident Evil, Lost Planet 2, and other older titles. LumaCore can fake ownership but the wrapper still does its own local check and the game refuses to launch.">
                 <svg class="hint-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                 <div class="hint-text">
-                    <strong>Hitting Steam error 53 / 54 when launching a game?</strong>
-                    The game uses Steam DRM (SteamStub). LumaCore can't bypass the wrapper's local check on its own. Use <em>Remove DRM (Steamless)</em> below to strip the wrapper. Achievement-safe. <br>
-                    <strong>Game says EAC isn't installed?</strong>
+                    <strong>Hitting Steam error 53 / 54 or "Application load error 6:0000065432" when launching a game?</strong>
+                    The game uses Steam DRM (SteamStub). The 6:0000065432 popup is the same root cause on older titles, just a different code. LumaCore can't bypass the wrapper's local check on its own. Use <em>Remove DRM (Steamless)</em> below to strip the wrapper. Achievement-safe. <br>
+                    <strong>Game says EAC isn't installed or won't launch with anti-cheat errors?</strong>
                     <button id="btn-eac-guide" class="hint-inline-btn" type="button">Show EAC fix steps</button>
                     <br>
                     <strong>Steam says "Content Still Encrypted" on update or download?</strong>
@@ -158,21 +158,110 @@
 
             <div id="eac-guide-modal" class="modal hidden">
                 <div class="modal-overlay"></div>
-                <div class="modal-content">
+                <div class="modal-content" style="max-width:760px;">
                     <div class="modal-header">
-                        <h2>EasyAntiCheat (EAC) fix</h2>
+                        <h2>EAC fixes — disable EAC for offline / performance</h2>
                         <button class="modal-close" data-tooltip="Close">&times;</button>
                     </div>
                     <div class="modal-body">
-                        <p>If your game doesn't launch and says <em>"EasyAntiCheat is not installed"</em> or fails the anti-cheat check, do this:</p>
-                        <ol style="line-height:1.7;">
-                            <li>Open Steam, right-click the game in your library, then <strong>Properties</strong>.</li>
-                            <li>Go to <strong>Installed Files</strong> (or <strong>Local Files</strong> on older Steam).</li>
-                            <li>Click <strong>Verify integrity of game files...</strong> and let it finish.</li>
-                            <li>Launch the game once <strong>with EAC</strong>. Wait for it to fully load (or until the EAC installer prompt finishes), then close the game.</li>
-                            <li>Now run the SteaMidra fix again (Goldberg Emu, Remove DRM, or whichever fix you were applying).</li>
-                        </ol>
-                        <p>This works because Steam re-installs the EAC service files during verify, and launching once with EAC armed bootstraps the local EAC client. After that, the SteaMidra fix sticks.</p>
+                        <p style="margin-top:0;">SteaMidra's tools (Goldberg, Remove DRM, SteamAutoCrack) do <strong>not</strong> fix EAC. EAC is a separate kernel-level service the game itself loads. Use one of the methods below. Methods are ranked easiest first. Try them in order.</p>
+                        <p style="opacity:0.75;font-size:13px;">For competitive online games (Apex, Rust, Fortnite, Dead by Daylight) bypassing EAC will get you banned. Only use these for offline / single-player / modding.</p>
+
+                        <div class="eac-page-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin:12px 0;">
+                            <button class="eac-tab eac-tab-active" data-page="1" type="button">1. Verify + first launch</button>
+                            <button class="eac-tab" data-page="2" type="button">2. Steam launch options</button>
+                            <button class="eac-tab" data-page="3" type="button">3. Rename EAC folder</button>
+                            <button class="eac-tab" data-page="4" type="button">4. Executable swap</button>
+                            <button class="eac-tab" data-page="5" type="button">5. steam_appid.txt / .bat</button>
+                            <button class="eac-tab" data-page="6" type="button">6. Firewall block</button>
+                            <button class="eac-tab" data-page="7" type="button">7. Crack files</button>
+                        </div>
+
+                        <div class="eac-page" data-page="1">
+                            <h3 style="margin-top:0;">1. Verify game files, then launch once with EAC armed</h3>
+                            <p>Easiest one. Works when EAC service files got corrupted or the local EAC client never bootstrapped. Try this <strong>before</strong> anything else.</p>
+                            <ol style="line-height:1.7;">
+                                <li>Open Steam, right-click the game, then <strong>Properties</strong>.</li>
+                                <li>Open <strong>Installed Files</strong> (or <strong>Local Files</strong> on older Steam).</li>
+                                <li>Click <strong>Verify integrity of game files</strong> and let it finish.</li>
+                                <li>Launch the game once <strong>with EAC enabled</strong>. Wait until the EAC installer prompt finishes or the title screen renders, then close the game.</li>
+                                <li>Now retry whatever you were doing. The EAC service is registered on disk so any further launch (cracked or vanilla) sees a sane environment.</li>
+                            </ol>
+                            <p style="opacity:0.85;">If the game already loaded once with EAC armed and still throws the error, jump to method 2.</p>
+                        </div>
+
+                        <div class="eac-page hidden" data-page="2">
+                            <h3 style="margin-top:0;">2. Steam launch options</h3>
+                            <p>Some games respect a launch-arg toggle. Right-click the game, <strong>Properties</strong>, scroll to <strong>Launch Options</strong>, paste one of these and try the game:</p>
+                            <pre style="background:rgba(0,0,0,0.25);padding:10px;border-radius:4px;line-height:1.5;">-noeac
+-eac-nop
+--no-anti-cheat</pre>
+                            <p>Test one at a time. If the game still boots EAC, the dev didn't expose a flag. Move to method 3.</p>
+                        </div>
+
+                        <div class="eac-page hidden" data-page="3">
+                            <h3 style="margin-top:0;">3. Rename the EasyAntiCheat folder</h3>
+                            <p>Works on titles where EAC is loosely integrated. Game falls through to offline mode if it can't find the EAC dir.</p>
+                            <ol style="line-height:1.7;">
+                                <li>Right-click the game in Steam, <strong>Manage</strong>, <strong>Browse local files</strong>.</li>
+                                <li>Find the <code>EasyAntiCheat</code> folder.</li>
+                                <li>Rename it to <code>EasyAntiCheat_BACKUP</code>.</li>
+                                <li>Launch the game from its main <code>.exe</code> directly, not through Steam.</li>
+                            </ol>
+                            <p>If the game crashes instantly, EAC is deeply integrated and this won't work. Restore the folder name and try method 4.</p>
+                        </div>
+
+                        <div class="eac-page hidden" data-page="4">
+                            <h3 style="margin-top:0;">4. Executable swap (FromSoftware-style)</h3>
+                            <p>The classic Elden Ring / Armored Core VI offline trick. Steam thinks it's launching the EAC wrapper but actually launches the raw game.</p>
+                            <ol style="line-height:1.7;">
+                                <li>Open the game's install folder.</li>
+                                <li>Find the EAC launcher (usually <code>start_protected_game.exe</code> or <code>EACLauncher.exe</code>).</li>
+                                <li>Rename it to <code>start_protected_game_BACKUP.exe</code>.</li>
+                                <li>Find the real game executable (e.g. <code>eldenring.exe</code>). Copy it.</li>
+                                <li>Rename the copy to match the original wrapper name (<code>start_protected_game.exe</code>).</li>
+                                <li>Launch through Steam normally.</li>
+                            </ol>
+                            <p>Game boots straight into offline mode. Multiplayer is gone, single-player and mods work.</p>
+                        </div>
+
+                        <div class="eac-page hidden" data-page="5">
+                            <h3 style="margin-top:0;">5. steam_appid.txt or a .bat launcher</h3>
+                            <p>Most common bypass for Unreal Engine games. Skips the Steam bootstrapper that loads EAC.</p>
+                            <p><strong>steam_appid.txt:</strong></p>
+                            <ol style="line-height:1.7;">
+                                <li>Browse to where the actual game <code>.exe</code> lives (often <code>Binaries/Win64</code>).</li>
+                                <li>Create a new file named exactly <code>steam_appid.txt</code>.</li>
+                                <li>Paste the game's Steam App ID inside (the number from the Steam store URL). Save.</li>
+                                <li>Launch the game by double-clicking the <code>.exe</code>, NOT through Steam.</li>
+                            </ol>
+                            <p>If the game errors out with "tampered file", use a .bat instead. Same folder as the .exe, paste this and rename App ID + exe name:</p>
+                            <pre style="background:rgba(0,0,0,0.25);padding:10px;border-radius:4px;line-height:1.5;">set SteamAppId=1234567
+set SteamGameId=1234567
+start YourGame-Shipping.exe</pre>
+                            <p>Save as <code>LaunchOffline.bat</code>. Double-click to play.</p>
+                        </div>
+
+                        <div class="eac-page hidden" data-page="6">
+                            <h3 style="margin-top:0;">6. Firewall block (zero-risk offline)</h3>
+                            <p>Cuts the game's network access so EAC can't reach its servers. Forces local offline mode without touching any game files. Safest of the bunch.</p>
+                            <ol style="line-height:1.7;">
+                                <li>Start menu, type <strong>Windows Defender Firewall with Advanced Security</strong>, open it.</li>
+                                <li>Left sidebar, <strong>Outbound Rules</strong>.</li>
+                                <li>Right sidebar, <strong>New Rule</strong>.</li>
+                                <li>Pick <strong>Program</strong>, browse to the game's main <code>.exe</code>.</li>
+                                <li>Choose <strong>Block the connection</strong>. Leave Domain / Private / Public all checked.</li>
+                                <li>Name it (e.g. "Block Elden Ring online") and finish.</li>
+                            </ol>
+                            <p>Game boots, EAC fails to phone home, game falls through to offline mode. No file edits needed.</p>
+                        </div>
+
+                        <div class="eac-page hidden" data-page="7">
+                            <h3 style="margin-top:0;">7. Crack / fix files</h3>
+                            <p>If none of the above work, the game's EAC integration is too deep and you'll need pre-made crack files for that specific title. Check the game's NexusMods page or its modding subreddit and look for "EAC bypass" or "offline launcher". Drop the files in per the README they ship with.</p>
+                            <p>SteaMidra's <em>Crack Files</em> button on the home page also pulls community-maintained fix files from the CrakFiles repo for some games. Try that first before hunting on Nexus.</p>
+                            <p style="opacity:0.75;font-size:13px;">Don't ever launch a cracked online game on official servers. Permanent ban risk.</p>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -773,6 +862,17 @@
                     </div>
                 </div>
                 <button id="provider-save-config" class="btn btn-primary" style="margin-top:10px;display:none">Save Provider Config</button>
+
+                <div id="cloud-backup-dest-row" class="input-group" style="margin-top:12px;">
+                    <label>Local Backup Folder:
+                        <small style="opacity:0.6;">(where your Steam-cloud saves get copied to)</small>
+                    </label>
+                    <div class="input-with-btn">
+                        <input type="text" id="cloud-backup-dest" placeholder="Browse to a folder on your PC..." data-tooltip="The folder Local-provider backups will be saved to. Each game gets its own subfolder named like 'Game Name [AppID]\remote'.">
+                        <button id="cloud-backup-browse" class="btn">Browse</button>
+                    </div>
+                    <small style="opacity:0.55;">Defaults to <code>%APPDATA%\SteaMidra\save_backups\</code> if you leave this blank, but the per-game backup goes wherever you point this.</small>
+                </div>
             </div>
 
             <div class="cloudsaves-setup">

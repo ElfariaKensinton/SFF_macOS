@@ -11,6 +11,10 @@ SteaMidra helps you set up games to work with Steam using Lua scripts, manifests
 
 Need help? Chat with us on our Discord server: https://discord.gg/V8aZqnbB84
 
+**SteaMidra setup tutorial:** [Full walkthrough by @yensnc](https://youtu.be/PQ1FqK8NJ44)
+
+**ManifestHub API key tutorial:** [Step-by-step screenshots by @novoagain](https://imgur.com/a/ubLeqer)
+
 **Old SteaMidra setup tutorial (outdated):** ["Outdated" tutorial for new users](https://youtu.be/9aAaQ8dSnTY)
 
 **Python setup tutorial:** [Python Tutorial](https://youtu.be/cFfItiV8-pk)
@@ -173,6 +177,8 @@ See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common problems and s
 **Hubcap Manifest** – Store browser and manifest library API provided by **Hubcap Manifest** ([hubcapmanifest.com](https://hubcapmanifest.com)). Formerly known as Morrenus / Solus.
 
 **RedPaper** – Credit to RedPaper for the Broken Moon MIDI cover, originally arranged by U2 Akiyama and used in Touhou 7.5: Immaterial and Missing Power. Touhou 7.5 and its assets are owned by Team Shanghai Alice and Twilight Frontier. SteaMidra is not affiliated with or endorsed by either party. All trademarks belong to their respective owners.
+
+**Tutorials** – Setup walkthrough by **@yensnc** (https://youtu.be/PQ1FqK8NJ44). ManifestHub API key tutorial by **@novoagain** (https://imgur.com/a/ubLeqer).
 
 README rewrite assisted by **itsphox**.
 

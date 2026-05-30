@@ -124,7 +124,31 @@ class BackupInfo:
 
 
 def _get_backup_dir():
-    """root folder where every appid's snapshots live"""
+    """root folder where every appid's snapshots live.
+
+    Honours the user-selected `cloud_local_backup_dest` setting from the
+    Cloud Saves UI when it points at an existing or creatable folder.
+    Falls back to %APPDATA%/SteaMidra/save_backups/ otherwise. The user
+    sets this through the Local-provider folder picker on the Cloud Saves
+    tab, and the setting persists across sessions.
+    """
+    custom = ""
+    try:
+        from sff.storage.settings import get_setting, Settings
+        custom = (get_setting(Settings.CLOUD_LOCAL_BACKUP_DEST) or "").strip()
+    except Exception:
+        # Settings not loadable yet (early bootstrap) — fall through to default.
+        custom = ""
+    if custom:
+        try:
+            p = Path(custom)
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+        except OSError:
+            # Custom path is unwritable (no permission, drive missing).
+            # Drop back to APPDATA so the legacy code paths keep working
+            # instead of crashing on every backup attempt.
+            pass
     base = Path(os.environ.get("APPDATA", os.path.expanduser("~")))
     backup_dir = base / "SteaMidra" / "save_backups"
     backup_dir.mkdir(parents=True, exist_ok=True)

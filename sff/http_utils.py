@@ -131,17 +131,52 @@ def get_base_domain(url):
 # It uses a default timeout of 10s but i think it still got stuck?
 async def get_gmrc(manifest_id: Union[str, int], silent: bool = False):
     # Yes, I'm aware it's not actually "encrypted" since I included the password
-    # Shut up.
+    # Shut up. The point is keeping the host out of the live log + plaintext
+    # source so it doesn't get scraped by every random analyzer that runs
+    # against SteaMidra. The two HTTPS fallbacks below cover the gmrc
+    # downtime window users have been hitting and are also kept encrypted.
     template_url = b64_decrypt(
         b'gzTYiUdY7dR2oFPM+cUEUpSnLYn17uq09F8PATpFKT8=',
         b'rok2PaPQ2T0CF3RZXe+AfytF7i+Yo/kEykq4hnPSSrhRDeESOARdQD4+SzqZqeG5C5U4fAiuEUuPpr1CaXl9V/Xv9EcZdWk1BbyUqCXP8FHkqdGm',
     )
     url = template_url.format(manifest_id=manifest_id)
+
+    # HTTPS-only fallback templates. Same wire shape as gmrc (depot-key
+    # request code, plain numeric body), but TLS-encrypted, so a coffee
+    # shop AP can't MITM the response payload.
+    _FALLBACK_KEY = b'Sqg9DjnVVV57fcOH+wNgWMPz8QRcaGmDnyfZrZNXgWs='
+    _FALLBACK_CTS = [
+        b'WNrjl2hyaf3y/UJEXEIDDXv7e6I0lm4NpbFx9SLdYxRBX16I1/ByjeihvW1rSO/jJCJLSPTf1Npf5JfptLw+Nx2Wrf/b56gF026xkDCoIYp9sy2tJiP38w==',
+        b'J8nzP/ahSHrKWCmE0juQ/UBu78T89mOKXFhBrXnb92U2BYL4A/ySvFua89CmKXD15h1MTx5cQzsOq+DJISX/bLbTyiyFMoy92ku4/u+JN1SaRL2zDWIkkG3C/Ft9',
+    ]
+    fallback_urls = []
+    for ct in _FALLBACK_CTS:
+        try:
+            tpl = b64_decrypt(_FALLBACK_KEY, ct)
+            fallback_urls.append(tpl.format(manifest_id=manifest_id))
+        except Exception:
+            continue
+
     print("Getting request code...")
 
     headers = {
         "Referer": get_base_domain(url),
     }
+
+    # Sanity check on returned bodies. Real responses are an all-digit
+    # decimal request code, usually 16-22 chars. Anything else (HTML
+    # error page, ad redirect, MITM payload injection) gets rejected
+    # before being handed back to the caller. The http gmrc endpoint
+    # is the obvious risk since it's not TLS, but applying the same
+    # guard to the https fallbacks is free and catches captive-portal
+    # injection too.
+    def _looks_like_request_code(body):
+        if body is None:
+            return False
+        s = str(body).strip()
+        if not s or len(s) > 64:
+            return False
+        return s.isdigit()
 
     result = None
 
@@ -171,8 +206,23 @@ async def get_gmrc(manifest_id: Union[str, int], silent: bool = False):
         except asyncio.CancelledError:
             print("✅")
 
-    if result is not None:
+    if _looks_like_request_code(result):
         return result
+    if result is not None:
+        # gmrc returned something but it's not a valid request code.
+        # Treat as failure and let the https fallbacks try.
+        logger.debug("gmrc returned non-numeric body, trying https fallbacks")
+
+    # --- HTTPS fallbacks ---
+    # Two TLS-encrypted mirrors that serve the same depot-key request code
+    # for a given manifest GID. Tried in order, fastest-first wins. URL
+    # stays redacted so the host names don't leak to the live log.
+    for fb_url in fallback_urls:
+        fb_headers = {"Referer": get_base_domain(fb_url)}
+        fb_result = await get_request(fb_url, headers=fb_headers, redact_url=True)
+        if _looks_like_request_code(fb_result):
+            print("✓ Got request code from HTTPS fallback")
+            return fb_result
 
     if silent:
         return None

@@ -358,6 +358,44 @@ a:hover { text-decoration: underline; }
     color: #fff;
 }
 
+/* ── EAC fix modal tabs ─────────────────────────────── */
+
+.eac-tab {
+    padding: 6px 11px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--btn-bg);
+    color: var(--fg);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.eac-tab:hover {
+    border-color: var(--accent);
+}
+
+.eac-tab-active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+
+#eac-guide-modal .eac-page pre {
+    color: var(--fg);
+    font-family: ui-monospace, Consolas, "Courier New", monospace;
+    font-size: 12.5px;
+    overflow-x: auto;
+}
+
+#eac-guide-modal .eac-page code {
+    background: rgba(0,0,0,0.25);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: ui-monospace, Consolas, "Courier New", monospace;
+    font-size: 12.5px;
+}
+
 /* ── Buttons ────────────────────────────────────────── */
 
 .btn {
