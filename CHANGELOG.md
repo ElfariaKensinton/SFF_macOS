@@ -38,7 +38,7 @@
 
 ### README
 
-- Added a YouTube setup walkthrough by @yensnc and a step-by-step ManifestHub API key tutorial by @novoagain to the README, both credited.
+- Added a YouTube setup walkthrough by @yensnc and a step-by-step API key tutorial by @novoagain to the README, both credited.
 
 ## 6.2.8
 
