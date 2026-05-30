@@ -766,6 +766,18 @@ class SFFMainWindow(QMainWindow):
     # or earn a taskbar entry.
 
     def _install_web_splash(self):
+        # Linux: skip splash overlay entirely. The QLabel sitting on top
+        # of the QWebEngineView interacts badly with Mesa-on-X11 surface
+        # composition and leaves users (Sc0rthyn on Mint, Glitch on Mint)
+        # staring at the splash because the fade-out doesnt fire when the
+        # GPU swap chain is in software fallback. 6.2.3 didn't have a
+        # splash and worked fine — keeping the same default.
+        if sys.platform != "win32":
+            self._web_splash = None
+            self._web_splash_anim = None
+            self._web_splash_effect = None
+            return
+
         bg_hex = theme_background(self._current_theme)
 
         # QtWebEngine paints white before the page is up. setBackgroundColor
@@ -1712,7 +1724,8 @@ class SFFMainWindow(QMainWindow):
             if isinstance(global_on, str):
                 global_on = global_on.lower() in ("true", "1", "yes", "on")
             if not global_on:
-                logger.debug("update-check tick: GLOBAL_UPDATE_CHECK off, skipping")
+                # silenced — fires every 5 minutes and the user already
+                # knows the toggle is off because they set it that way
                 return
             try:
                 interval_min = int(get_setting(_S.UPDATE_CHECK_INTERVAL_MIN) or 60)

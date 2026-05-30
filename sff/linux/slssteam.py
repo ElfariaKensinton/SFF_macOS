@@ -401,12 +401,51 @@ def install_from_github(steam_path: Path, print_fn=print) -> bool:
             capture_output=True, text=True,
         )
         if result.returncode != 0:
+            # Surface the actual 7z output so the user can ship a useful
+            # bug report. Several users hit "Extraction failed" with no
+            # idea why, AV quarantine on .so files turned out to be the
+            # cause for at least one of them. Also retry once after a
+            # short pause in case AV is mid-scan.
+            stdout_tail = (result.stdout or "")[-2048:]
+            stderr_tail = (result.stderr or "")[-2048:]
+            print_fn(
+                Fore.YELLOW
+                + f"7z exit={result.returncode} archive={archive_path} dest={extract_dir}\n"
+                + f"stdout(last 2k): {stdout_tail}\nstderr(last 2k): {stderr_tail}"
+                + Style.RESET_ALL
+            )
             if not (extract_dir / "bin").exists():
-                print_fn(Fore.RED + "Extraction failed and bin/ dir not found." + Style.RESET_ALL)
-                return False
-            print_fn(Fore.YELLOW + "7z exited non-zero but bin/ found — continuing." + Style.RESET_ALL)
+                # Quick retry: AV scanners sometimes hold open the .so files
+                # for a beat right after extraction. Give them 500ms then run
+                # 7z once more before giving up.
+                import time as _time
+                _time.sleep(0.5)
+                try:
+                    retry = subprocess.run(
+                        [seven_zip, "x", str(archive_path), f"-o{extract_dir}", "-y"],
+                        capture_output=True, text=True,
+                    )
+                except Exception as retry_exc:
+                    retry = None
+                    print_fn(Fore.YELLOW + f"7z retry spawn failed: {retry_exc}" + Style.RESET_ALL)
+                if retry is None or retry.returncode != 0 or not (extract_dir / "bin").exists():
+                    print_fn(
+                        Fore.RED
+                        + "Extraction failed and bin/ dir not found.\n"
+                          "If your AV (ClamAV / Windows Defender on WSL) flagged the .so, "
+                          "whitelist ~/.local/share/SLSsteam/ and retry."
+                        + Style.RESET_ALL
+                    )
+                    return False
+                print_fn(Fore.GREEN + "7z retry succeeded after AV-style stall." + Style.RESET_ALL)
+            else:
+                print_fn(Fore.YELLOW + "7z exited non-zero but bin/ found — continuing." + Style.RESET_ALL)
     except Exception as e:
-        print_fn(Fore.RED + f"Extraction error: {e}" + Style.RESET_ALL)
+        # Bare exception log used to be one line. Now print the full traceback
+        # tail too because users pasted "Extraction error: " with nothing
+        # after it. zipfile / 7z subprocess failures need the full stack.
+        import traceback as _tb
+        print_fn(Fore.RED + f"Extraction error: {e}\n{_tb.format_exc()[-2048:]}" + Style.RESET_ALL)
         return False
     finally:
         archive_path.unlink(missing_ok=True)

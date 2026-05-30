@@ -3,7 +3,7 @@
 *Made by Midrag and his brother!*
 ## Educational use only. Use at your own risk.
 
-> ⚠️ **Antivirus Warning:** Before doing anything, add the entire **SteaMidra folder** (especially `sff\dlc_unlockers\resources`) to Windows Defender exclusions — the DLC unlocker tools inside trigger false positives.
+> ⚠️ **Antivirus Warning:** some AVs flag the binary as a generic packed-exe false positive. it's not malware. if your AV keeps quarantining it, add the SteaMidra folder to your AV exclusion list. the source is open at github.com/Midrags/SFF if you want to verify.
 >
 > To add exclusions: **Windows Security → Virus & threat protection → Manage settings → Exclusions → Add or remove exclusions → Add a folder**.
 
@@ -29,7 +29,7 @@ Need help? Chat with us on our Discord server: https://discord.gg/V8aZqnbB84
 - **Multiplayer Fix** — downloads and applies multiplayer patches from **online-fix.me** straight into the game folder. Requires an online-fix.me account.
 - **Fixes & Bypasses** — searches a curated list from the CrakFiles repo on GitHub and applies the chosen fix to the game folder. No API key, no account. Achievement-safe — only adds bypass DLLs, leaves the Steam API intact.
 - **HyperVisor Cracks (HV Auto)** — download HyperVisor bypasses for Denuvo-protected games. Includes VBS.cmd to prepare your system. See the [HyperVisor Guide](docs/HV_GUIDE.md) before use.
-- DLC status check, cracking (gbe_fork), SteamStub DRM removal (Steamless), and DLC Unlockers (CreamInstaller-style: SmokeAPI, CreamAPI, Koaloader, Uplay).
+- DLC status check, cracking (gbe_fork), SteamStub DRM removal (Steamless), and DLC Unlockers (CreamInstaller-style: SmokeAPI, CreamAPI, Uplay).
 - **Multi-language GUI** — English and Portuguese built-in; add more via `sff/locales/`.
 - Parallel downloads, backups, recent files, and settings export/import.
 - **Linux support** — SLSSteam ID management, platform-aware MIDI, and Linux-compatible auto-update.
@@ -42,8 +42,9 @@ Need help? Chat with us on our Discord server: https://discord.gg/V8aZqnbB84
 
 ### Step 1: SteaMidra
 
-Download the latest version from [here](https://github.com/Midrags/SFF/releases/latest).
-You will get a ZIP file (`SteaMidra-x.x.x-windows.zip`). Extract it anywhere — you will see a folder containing `SteaMidra_GUI.exe` and an `_internal/` folder. Place this folder wherever you want (e.g. `C:\SteaMidra\`).
+Download the latest installer from [here](https://github.com/Midrags/SFF/releases/latest) and run it. The installer auto-creates the install folder, sets up file associations, and registers the uninstaller.
+
+If the installer fails or your AV blocks it, grab the ZIP instead — `SteaMidra-x.x.x-windows.zip`. Extract anywhere, run `SteaMidra_GUI.exe` from inside the extracted folder.
 
 **Do not run SteaMidra yet.** Complete Steps 2 and 3 first so all folders exist before first launch.
 

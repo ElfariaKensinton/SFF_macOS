@@ -87,24 +87,19 @@
             var typeTag = dlc.type === 'depot'
                 ? '<span class="dlc-tag">depot</span>'
                 : '<span class="dlc-tag">app id</span>';
-            // Per-row Download button. Only shows for missing app-id-type
-            // DLCs (depots can't be downloaded as standalone games), and
-            // it queues the same fastest-download flow the Store tab uses,
-            // just for the DLC's appid. Hubcap by default; users can pick
-            // a different provider via the bulk buttons in the footer.
-            var dlBtn = '';
-            if (!dlc.in_applist && dlc.type !== 'depot') {
-                dlBtn = '<button class="btn dlc-row-dl" data-appid="' + _escape(dlc.id) + '" data-name="' + _escape(dlc.name) + '" style="padding:2px 10px;font-size:12px;">Download</button>';
-            } else {
-                dlBtn = '';
-            }
+            // Checkbox per DLC. Default: only missing rows are checked
+            // and unlocked rows are pre-skipped. Depots are disabled
+            // because the bulk providers can't ship them as standalone.
+            var disabled = (dlc.type === 'depot') ? 'disabled' : '';
+            var checked = (!dlc.in_applist && dlc.type !== 'depot') ? 'checked' : '';
+            var cb = '<input type="checkbox" class="dlc-row-cb" data-appid="' + _escape(dlc.id) + '" ' + checked + ' ' + disabled + '>';
             return (
                 '<tr>' +
+                '<td>' + cb + '</td>' +
                 '<td>' + status + '</td>' +
                 '<td class="dlc-id">' + _escape(dlc.id) + '</td>' +
                 '<td>' + _escape(dlc.name) + '</td>' +
                 '<td>' + typeTag + keyTag + '</td>' +
-                '<td>' + dlBtn + '</td>' +
                 '</tr>'
             );
         }).join('');
@@ -112,48 +107,38 @@
         body.innerHTML =
             '<table class="dlc-check-table">' +
             '<thead><tr>' +
-            '<th>Status</th><th>App ID</th><th>Name</th><th>Type</th><th></th>' +
+            '<th><input type="checkbox" id="dlc-check-all" checked title="Toggle all"></th>' +
+            '<th>Status</th><th>App ID</th><th>Name</th><th>Type</th>' +
             '</tr></thead>' +
             '<tbody>' + rows + '</tbody>' +
             '</table>';
 
-        // Wire per-row download buttons. Per-row default is now oureveryday
-        // because Hubcap/Ryuu need the FULL game zip path (queues the
-        // parent appid bundle), and a single per-row button can't ask the
-        // user to confirm theyre OK redownloading the whole game just to
-        // unlock a single DLC. The bulk picker exposes Hubcap/Ryuu/Oureveryday
-        // explicitly so the user picks knowingly.
-        body.querySelectorAll('.dlc-row-dl').forEach(function (btn) {
-            btn.addEventListener('click', function () {
-                var appid = this.dataset.appid;
-                var name = this.dataset.name || ('App ' + appid);
-                if (!appid) return;
-                if (!_currentAppId) {
-                    Components.showToast('warning', 'Parent app id missing.');
-                    return;
-                }
-                Components.showToast('info', 'Queued DLC ' + name + ' (oureveryday)...');
-                Bridge.call('download_dlc_oureveryday', String(appid), String(_currentAppId));
+        // Header checkbox toggles every row checkbox at once. Disabled
+        // depot rows stay disabled, the "select all" only flips the
+        // ones the user can act on.
+        var allCb = document.getElementById('dlc-check-all');
+        if (allCb) {
+            allCb.addEventListener('change', function () {
+                body.querySelectorAll('.dlc-row-cb:not(:disabled)').forEach(function (cb) {
+                    cb.checked = allCb.checked;
+                });
             });
-        });
+        }
 
-        // Bulk-download buttons. Provider routing:
-        //   * hubcap / ryuu   -> queue the PARENT game's appid via the
-        //                        normal store flow. Hubcap/Ryuu only know
-        //                        how to ship the full game zip, so we
-        //                        download the parent which already covers
-        //                        every DLC in one shot. Single call, not
-        //                        one per DLC.
-        //   * oureveryday     -> per-DLC manifest+key pull that appends to
-        //                        the parent's existing lua without nuking
-        //                        any keys the user already has. Loops over
-        //                        each missing DLC.
+        // Provider buttons in the footer route the CHECKED rows.
+        //   * hubcap / ryuu  -> single download_game_with_source(parent)
+        //                       call. Both providers only ship the full
+        //                       parent zip so we hand them the parent appid
+        //                       and let them pull every DLC in one go.
+        //   * oureveryday    -> per-checked-DLC manifest+key append against
+        //                       the parent's existing lua. Loops only over
+        //                       what the user actually checked.
+        //   * local          -> opens the manifest-folder picker and runs
+        //                       the same DDMod local-files flow the Store
+        //                       tab uses, scoped to the checked DLC list.
         var bulk = document.getElementById('dlc-check-bulk-actions');
-        var missing = dlcs.filter(function (d) {
-            return !d.in_applist && d.type !== 'depot';
-        });
         if (bulk) {
-            bulk.style.display = missing.length ? 'flex' : 'none';
+            bulk.style.display = 'flex';
             bulk.querySelectorAll('.dlc-bulk-dl').forEach(function (btn) {
                 btn.onclick = function () {
                     var src = this.dataset.source || 'oureveryday';
@@ -161,19 +146,46 @@
                         Components.showToast('warning', 'Parent app id missing.');
                         return;
                     }
+                    var checkedIds = [];
+                    body.querySelectorAll('.dlc-row-cb:checked').forEach(function (cb) {
+                        if (cb.dataset.appid) checkedIds.push(String(cb.dataset.appid));
+                    });
                     if (src === 'hubcap' || src === 'ryuu') {
                         Components.showToast('info',
                             'Queueing parent app (' + _currentAppId + ') through ' + src +
-                            ' — DLCs will come with it.');
+                            ' — DLCs come with the full bundle.');
                         Bridge.call('download_game_with_source',
                             String(_currentAppId), src, '0');
                         return;
                     }
-                    // oureveryday: per-DLC append
-                    Components.showToast('info', 'Queueing ' + missing.length + ' DLC(s) through oureveryday...');
-                    missing.forEach(function (d) {
+                    if (src === 'local') {
+                        if (!checkedIds.length) {
+                            Components.showToast('warning', 'Tick at least one DLC first.');
+                            return;
+                        }
+                        // Local-files path: prompt for a manifest folder
+                        // and run DDMod against the parent app with the
+                        // user's local manifests. DDMod resolves owned
+                        // DLCs from the parent's depot map automatically;
+                        // the checkbox list is informational here.
+                        Bridge.call('open_manifest_folder_dialog').then(function (folder) {
+                            if (!folder) return;
+                            Components.showToast('info',
+                                'Running DDMod (local) against parent ' + _currentAppId + '...');
+                            Bridge.call('download_game_ddmod',
+                                String(_currentAppId), 'local', '', String(folder));
+                        });
+                        return;
+                    }
+                    // oureveryday
+                    if (!checkedIds.length) {
+                        Components.showToast('warning', 'Tick at least one DLC first.');
+                        return;
+                    }
+                    Components.showToast('info', 'Queueing ' + checkedIds.length + ' DLC(s) through oureveryday...');
+                    checkedIds.forEach(function (id) {
                         Bridge.call('download_dlc_oureveryday',
-                            String(d.id), String(_currentAppId));
+                            String(id), String(_currentAppId));
                     });
                 };
             });

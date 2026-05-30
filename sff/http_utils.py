@@ -18,6 +18,7 @@
 
 import asyncio
 import logging
+import os
 import sys
 from contextlib import contextmanager
 from tempfile import TemporaryFile
@@ -44,6 +45,59 @@ else:
 
 
 logger = logging.getLogger(__name__)
+
+
+# httpx supports http/https + socks5 (with httpx-socks). socks4 is NOT
+# supported and raises ValueError("Unknown scheme for proxy URL ...") deep
+# inside its config layer the moment ANY httpx.Client is built while a
+# socks4://, socks5h-without-extras://, or anything else weird is sitting
+# in HTTPS_PROXY / HTTP_PROXY / ALL_PROXY. A VPN user (NekoBox, v2rayN, etc)
+# tripped this on hubcap's get_hubcap call and the whole download died.
+# Sanitise the env once at process start so every later httpx.get path runs
+# direct instead of crashing. The user gets a single WARN line in the log
+# explaining what happened.
+_HTTPX_OK_PROXY_SCHEMES = ("http", "https", "socks5", "socks5h")
+_PROXY_ENV_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                   "https_proxy", "http_proxy", "all_proxy")
+
+
+def _strip_unsupported_proxy_env():
+    for key in _PROXY_ENV_KEYS:
+        raw = os.environ.get(key, "")
+        if not raw:
+            continue
+        scheme = raw.split("://", 1)[0].strip().lower() if "://" in raw else ""
+        if scheme and scheme not in _HTTPX_OK_PROXY_SCHEMES:
+            logger.warning(
+                "Unsupported proxy scheme %r in %s, falling back to direct connection",
+                scheme, key,
+            )
+            os.environ.pop(key, None)
+
+
+_strip_unsupported_proxy_env()
+
+
+def _httpx_call_safe(call, *args, **kwargs):
+    """Run an httpx.* callable, retry once with proxies disabled if the
+    httpx config layer rejects an env-detected proxy URL.
+
+    Catches the very specific ValueError httpx raises during Client/AsyncClient
+    construction when HTTPS_PROXY contains an unsupported scheme (socks4 etc).
+    First call is normal so existing trust_env / mounts still work; retry forces
+    trust_env=False so the env proxy is ignored. Real network errors propagate.
+    """
+    try:
+        return call(*args, **kwargs)
+    except ValueError as e:
+        if "Unknown scheme for proxy URL" not in str(e):
+            raise
+        logger.warning(
+            "httpx rejected proxy env (%s); retrying with direct connection", e
+        )
+        kwargs = dict(kwargs)
+        kwargs["trust_env"] = False
+        return call(*args, **kwargs)
 
 
 @overload
@@ -74,7 +128,16 @@ async def get_request(
 ):
     log_url = "<redacted>" if redact_url else url
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            client_cm = httpx.AsyncClient(timeout=timeout)
+        except ValueError as e:
+            if "Unknown scheme for proxy URL" not in str(e):
+                raise
+            logger.warning(
+                "httpx rejected proxy env (%s); retrying with direct connection", e
+            )
+            client_cm = httpx.AsyncClient(timeout=timeout, trust_env=False)
+        async with client_cm as client:
             logger.debug(f"Making request to {log_url}")
             response = await client.get(url, headers=headers)
         if response.status_code == 200:
@@ -215,11 +278,18 @@ async def get_gmrc(manifest_id: Union[str, int], silent: bool = False):
 
     # --- HTTPS fallbacks ---
     # Two TLS-encrypted mirrors that serve the same depot-key request code
-    # for a given manifest GID. Tried in order, fastest-first wins. URL
-    # stays redacted so the host names don't leak to the live log.
+    # for a given manifest GID. Tried in strict order, one at a time, each
+    # with its own connect+read budget so a slow host can't hold the whole
+    # cascade. fast-fail to the next on any failure.
+    _PER_HOST = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=5.0)
     for fb_url in fallback_urls:
         fb_headers = {"Referer": get_base_domain(fb_url)}
-        fb_result = await get_request(fb_url, headers=fb_headers, redact_url=True)
+        try:
+            fb_result = await get_request(
+                fb_url, headers=fb_headers, redact_url=True, timeout=_PER_HOST,
+            )
+        except Exception:
+            fb_result = None
         if _looks_like_request_code(fb_result):
             print("✓ Got request code from HTTPS fallback")
             return fb_result
@@ -266,14 +336,31 @@ def download_to_tempfile(
 ):
     temp_f = TemporaryFile()
     try:
-        with httpx.stream(
-            "GET",
-            url,
-            headers=headers,
-            params=params,
-            follow_redirects=True,
-            timeout=None,
-        ) as response:
+        try:
+            stream_cm = httpx.stream(
+                "GET",
+                url,
+                headers=headers,
+                params=params,
+                follow_redirects=True,
+                timeout=None,
+            )
+        except ValueError as e:
+            if "Unknown scheme for proxy URL" not in str(e):
+                raise
+            logger.warning(
+                "httpx rejected proxy env (%s); retrying with direct connection", e
+            )
+            stream_cm = httpx.stream(
+                "GET",
+                url,
+                headers=headers,
+                params=params,
+                follow_redirects=True,
+                timeout=None,
+                trust_env=False,
+            )
+        with stream_cm as response:
             try:
                 total = int(response.headers.get("Content-Length", "0"))
             except Exception as e:

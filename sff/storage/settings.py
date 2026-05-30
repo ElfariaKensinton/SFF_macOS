@@ -53,7 +53,8 @@ def load_all_settings():
 
 def get_setting(key):
     # TODO: don't trigger I/O when last used command was also get_setting
-    logger.debug(f"get_setting: {key.clean_name}")
+    # spam control: every UI tick reads dozens of settings, the per-call
+    # log line was burying real errors in the live log panel
     value = load_all_settings().get(key.key_name)
     return keyring_decrypt(value) if (value and key.hidden) else value
 

@@ -190,6 +190,19 @@ class StoreApiClient:
             params["search"] = search
         try:
             resp = self._get_client().get("/library", params=params)
+            # Hubcap library returns 500 on a bunch of cyrillic queries (RU
+            # users hit this constantly typing "рф" in the search field) and
+            # sometimes 503 during their own outages. Both are server-side,
+            # nothing the client can do, and surfacing them as ERROR popups
+            # in the live log scared people. Treat 4xx/5xx the same as an
+            # empty result so the rest of the pipeline (Steam applist etc)
+            # picks up the slack quietly.
+            if resp.status_code in (400, 500, 503):
+                logger.debug(
+                    "hubcap library api %s for offset=%d limit=%d search=%r, skipping",
+                    resp.status_code, offset, limit, search,
+                )
+                return LibraryPage(offset=offset, limit=limit)
             resp.raise_for_status()
             data = resp.json()
             games = []
@@ -212,6 +225,12 @@ class StoreApiClient:
                 offset=offset,
                 limit=limit,
             )
+        except httpx.HTTPStatusError as e:
+            # raise_for_status above re-raises 4xx/5xx that aren't in the
+            # quiet-skip set. Still keep them out of ERROR-level so the live
+            # log doesn't get spammed.
+            logger.debug("hubcap library status err %s: %s", e.response.status_code, e)
+            return LibraryPage(offset=offset, limit=limit)
         except Exception as e:
             logger.error("Failed to get library: %s", e)
             return LibraryPage()
@@ -230,6 +249,16 @@ class StoreApiClient:
             params["appid"] = "true"
         try:
             resp = self._get_client().get("/search", params=params)
+            # Hubcap /search rejects a lot of cyrillic queries with 400 and
+            # has a known 500 cluster too. Both are server-side. Return an
+            # empty list with a single DEBUG line so the user just sees "no
+            # results" instead of a scary [ERRO] popup.
+            if resp.status_code in (400, 500, 503):
+                logger.debug(
+                    "hubcap search api %s for q=%r, skipping",
+                    resp.status_code, query,
+                )
+                return []
             resp.raise_for_status()
             data = resp.json()
             results = []
@@ -247,6 +276,9 @@ class StoreApiClient:
                     platforms=_parse_platforms(item),
                 ))
             return results
+        except httpx.HTTPStatusError as e:
+            logger.debug("hubcap search status err %s: %s", e.response.status_code, e)
+            return []
         except Exception as e:
             logger.error("Search failed: %s", e)
             return []

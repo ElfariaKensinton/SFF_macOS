@@ -1,11 +1,63 @@
 # Changelog
 
-## 6.2.9
+## 6.3.0
+
+### Store / search
+
+- Hubcap library and search calls no longer dump scary [ERRO] popups in the live log when Hubcap returns 400 or 500. The 500 cluster on cyrillic queries (RU users typing "рф" hit it constantly) and the random 503s during Hubcap outages are server-side, the client can't fix them. Now those responses log one debug line and the rest of the pipeline (Steam applist, fallback paths) fills in quietly. Real network failures (DNS, timeouts, connection reset) still surface as ERROR like before.
+
+### Store / download
+
+- SOCKS4 proxy in HTTPS_PROXY no longer crashes the Hubcap download path. httpx supports http, https, and socks5, but socks4 is unsupported and used to bubble up as `ValueError: Unknown scheme for proxy URL`. A VPN user with NekoBox/v2rayN running a socks4 listener tripped this every time. Now the env gets sanitised at process start (one WARN line listing the unsupported scheme) and individual httpx clients fall back to a direct connection if the env still has something weird in it.
+
+### LumaCore — Manifest fetch
+
+- Manifest fetch fallback now tries three providers in order instead of just one. A dead first provider doesn't break manifest resolution anymore. Single-URL config (`[manifest_fetch] url = "..."`) still works for users who want to pin one provider. New `[manifest_fetch] urls = [...]` array form lets you customise the chain.
+
+### Linux
+
+- Modern UI on Linux gets a Chromium GPU fallback flag stack baked in so NVIDIA + Mesa GBM lookup failures no longer leave the page blank. The CPU-render flags (`--disable-gpu --disable-gpu-compositing --disable-features=UseOzonePlatform --disable-software-rasterizer`) only apply when the user hasn't set their own `QTWEBENGINE_CHROMIUM_FLAGS`, so power users keep their setup. Skyflizz hit this on Mint and was switching to Classic UI to recover, baked-in fallback skips that step.
+- SLSsteam install now logs the actual 7z stdout/stderr tail when extraction fails, plus retries once after a 500ms pause for AV-mid-scan stalls. The old "Extraction failed and bin/ dir not found" line told you nothing. The next bug report at least includes the real 7z output so the cause is obvious.
+
+### README
+
+- Setup Step 1 recommends the installer first now and falls back to the ZIP only when AVs / corp policies block the installer. Antivirus warning rewrote to say what it actually is (generic packed-exe false positive, point AV at the source on github) and dropped the koaloader-era language.
 
 ### Linux
 
 - Modern UI on Linux is one flag stack again. 6.2.7 / 6.2.8 tried to detect Wayland vs X11 and pick different Chromium flags per session, but the detection kept misclassifying Cinnamon-Wayland and GNOME-Wayland-with-XWayland users and dropping them into the wrong branch, which is what made the page render grey or not paint for Glitch on Mint. Reverted to the same single line 6.2.3 shipped: `--no-sandbox --ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy`. No more session detection, no software escape hatch env-var, just the flag stack users actually confirmed working back then.
 - Stripped the `WA_OpaquePaintEvent` / `WA_NoSystemBackground` attributes off the QWebEngineView on Linux. They were added in 6.2.6 to fix the Windows drag-flash and they help on Windows, but on Linux they conflict with how Mesa-on-X11 reports the window surface and can leave the page area unpainted on first show. Now Windows-only, Linux gets the default Qt opaque-paint behaviour (which is what 6.2.3 had).
+- Splash overlay no longer installs on Linux. The QLabel sitting on top of the QWebEngineView fades out cleanly on Windows but on Mesa-X11 the swap chain composition leaves it visible because the loadFinished fade-out timer never gets the surface ready signal it expects. Sc0rthyn hit a stuck splash on Mint. 6.2.3 didn't have a splash and rendered fine, so Linux gets the 6.2.3 default again, no overlay, just the page paints when the renderer is ready.
+
+### DLC check
+
+- DLC modal got checkboxes plus a Local files button. Every missing DLC is ticked by default, depots are disabled because they aren't standalone, and the column header has a select-all toggle. Hubcap and Ryuu still queue the parent game's full bundle (single click, all DLCs come with it). Oureveryday loops over the checked DLCs only and appends keys to the parent lua. Local files opens the manifest folder picker and runs DDMod against the parent like the Store tab does.
+- DLC check now also reads `config.vdf` depot keys, the depotcache `<id>_<gid>.manifest` filename pattern, and on Windows the `HKCU\\Software\\Valve\\Steam\\Apps\\<id>\\Installed=1` registry flag. Six sources in total before a DLC counts as missing. The 30s Steam-API ceiling is 45s now and on a hard timeout the modal still renders from the on-disk app-info cache so people stuck behind a flaky CM can still see the list. c was hitting this every time.
+- DLC check Download buttons split by source now. Hubcap and Ryuu route to the parent game's full bundle (same as the regular Store download), since both of them only ship the parent zip and trying to pull a standalone DLC through them kept failing. Oureveryday now does the right thing for per-DLC clicks: pulls just the DLC's depot manifest through the gmrc / ManifestHub / GitHub cascade, looks the depot key up in the bundled key DB, and APPENDS to the existing `<parent>.lua` instead of overwriting it. So DLC keys you add later don't wipe out the keys the parent download already wrote. If the parent lua doesn't exist yet, oureveryday seeds one with `addappid(<parent>)` plus the new DLC lines. Lawbymike and Kinge both hit the overwrite case.
+
+### Manifest downloads
+
+- Oureveryday cascade is strictly sequential, one host at a time, with its own connect+read budget per host. Order: gmrc primary, two HTTPS gmrc mirrors, ManifestHub API, GitHub raw mirror. Slow hosts can't hold up the chain anymore. Some users were getting the cascade wedged after the two new mirrors landed because all three were racing in parallel.
+
+### In-place updater (Windows frozen build)
+
+- Updater bat reverted to the 6.2.5 shape because the 6.2.6/7/8 /MIR rewrite kept wedging on locked `_internal\` DLLs and leaving users on the old build (Arxalor confirmed 6.2.5 was the last one that updated cleanly). Old shape: 3s wait, taskkill, wipe `_internal\`, robocopy /E /IS /IT, relaunch. Simple beats clever when the clever one doesn't ship.
+- Check for Updates now forces a visible "Update Available" popup as soon as the version compare fires. Some users on 6.2.5 / 6.2.8 said they clicked the menu item, the log said a newer version was found, and nothing else happened. The follow-up download confirm prompt was getting eaten by the worker-thread routing on certain setups. The popup runs straight on the GUI thread now.
+
+### Live log
+
+- Stripped the `get_setting:` debug line that fired on every settings read, the `update-check tick: GLOBAL_UPDATE_CHECK off, skipping` line that fired every 5 minutes, and the per-tile `get_game_update_state` line that fired for every game in the library on every refresh. The live log was unreadable under the spam and debug.log was filling up with thousands of repeats per minute. Real errors stay.
+- The `search_games: filtered Hubcap appid=...` lines are gated behind `SFF_VERBOSE_FILTER=1` now. Default is silent. Search would dump thousands of those per tab switch on big catalogs and bury everything else.
+
+### System tray
+
+- Tray icon resource path now resolves through PyInstaller's `_MEIPASS` and the exe directory before falling back to cwd. Some users were getting a tray entry with no actual icon because Start menu / taskbar pin shortcuts launch the exe with a different cwd than the install directory. The icon also tries `sff.ico` (lowercase) so the freeze-built name matches.
+
+### README
+
+- Added a YouTube setup walkthrough by @yensnc and a step-by-step API key tutorial by @novoagain to the README, both credited.
+
+## 6.2.9
 
 ### Library tab
 
@@ -17,7 +69,8 @@
 
 ### DLC check
 
-- DLC check Download buttons split by source now. Hubcap and Ryuu route to the parent game's full bundle (same as the regular Store download), since both of them only ship the parent zip and trying to pull a standalone DLC through them kept failing. Oureveryday now does the right thing for per-DLC clicks: pulls just the DLC's depot manifest through the gmrc / ManifestHub / GitHub cascade, looks the depot key up in the bundled key DB, and APPENDS to the existing `<parent>.lua` instead of overwriting it. So DLC keys you add later don't wipe out the keys the parent download already wrote. If the parent lua doesn't exist yet, oureveryday seeds one with `addappid(<parent>)` plus the new DLC lines. Lawbymike and Kinge both hit the overwrite case.
+- DLC check now reads three on-disk sources before flagging a DLC as missing: SLSSteam's local applist, the parent's `<parent>.lua` under stplug-in, and the parent's `appmanifest_<id>.acf` MountedDepots block. Steam's own UI uses the same files. Batman Arkham Knight reporting "0 of 24 unlocked" while every DLC was actually installed was the Steam web check timing out and the local fallback never running. Three sources mean a single network hiccup can't make the modal lie to you.
+- DLC check Steam-side query no longer hangs forever on a flaky CM. The 'This operation would block forever' gevent error from SteamKit is now caught with a 30s ceiling and the check falls through to the store + local checks instead of getting wedged.
 
 ### Cloud Saves
 
@@ -31,14 +84,6 @@
 ### Steam-option download
 
 - The Steam-option download (the one that grabs the lua + manifests, not DDMod) no longer freezes at 10% forever. The Steam app-info call inside the lua-build step had no timeout, so a flaky Steam CM left the worker wedged at "Downloading Lua" with the bar stuck. Hard 30s ceiling now. On timeout the user gets a clear error telling them the CM is unreachable and to retry or switch source instead of staring at a frozen bar.
-
-### In-place updater (Windows frozen build)
-
-- Updater no longer hangs forever when the running EXE refuses to release file locks. The 6.2.6 / 6.2.7 bats waited 30s for the process to exit and then tried to robocopy regardless, so a half-alive PyInstaller exe still holding a file would wedge robocopy. Now after 30s the bat issues `taskkill /F /PID` to force the exit, sleeps 2s for the locks to drop, then proceeds. Vikram and Arxalor both hit this on 6.2.6 and 6.2.7 respectively. Plus the bat now verifies the new exe exists on disk before relaunching, so a robocopy that reported success but somehow lost the exe (antivirus quarantine, weird /XF rule) surfaces as a clean failure in `tmp_updater.log` instead of silently leaving the user on the old build.
-
-### README
-
-- Added a YouTube setup walkthrough by @yensnc and a step-by-step API key tutorial by @novoagain to the README, both credited.
 
 ## 6.2.8
 

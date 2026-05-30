@@ -1125,6 +1125,22 @@ class UI:
             print(Fore.GREEN + "Version check only: no newer release." + Style.RESET_ALL)
             return MainReturnCode.LOOP_NO_PROMPT
         print(Fore.YELLOW + "A newer version is available." + Style.RESET_ALL)
+        # users on 6.2.5/6.2.8 reported clicking Check for Updates and
+        # nothing happened in the GUI. force a visible confirm dialog
+        # here so the worker-thread prompt_confirm cant get swallowed.
+        try:
+            from PyQt6.QtWidgets import QApplication, QMessageBox
+            from sff.gui.gui_prompts import _on_gui_thread as _gui_invoke
+            if QApplication.instance() is not None:
+                def _show_avail():
+                    QMessageBox.information(
+                        None,
+                        "Update Available",
+                        f"A newer version ({remote_version}) is available.\nYou are on {VERSION}.\n\nProceed to download?",
+                    )
+                _gui_invoke(_show_avail)
+        except Exception:
+            pass
         release_url = resp.get("html_url") or RELEASE_PAGE_URL
         is_frozen = getattr(sys, "frozen", False)
         assets = resp.get("assets") or []
@@ -1246,129 +1262,28 @@ class UI:
                 inner.rmdir()
             exe_name = Path(sys.executable).name
             convert = subprocess.list2cmdline
-            updater_log = app_dir / "tmp_updater.log"
-            current_pid = os.getpid()
+            internal_dir = str(app_dir / "_internal")
 
-            # The 6.2.4 / 6.2.5 updater used robocopy /E /IS /IT, which only
-            # ADDS files. With no /MIR or /PURGE the old _internal\ contents
-            # stayed on disk alongside the new ones; combined with the
-            # 3-second timeout being too short for Windows to release file
-            # locks on _internal\python*.dll and the headless cmd window
-            # swallowing every error code, users ended up running a half-
-            # patched 6.2.4 install after the "update" returned. The new
-            # script:
-            #   1. waits for SteaMidra's PID to actually exit before touching
-            #      anything (polling tasklist with a 30s ceiling so a stuck
-            #      shutdown doesn't deadlock the bat),
-            #   2. uses /MIR so robocopy purges stale files (old _internal\
-            #      contents, retired DLLs, etc.) while /XD and /XF protect
-            #      user-data folders + files that live next to the EXE so
-            #      the user's saved_lua\, settings.bin, and friends survive
-            #      the mirror; tmp_updater.* and update.zip are excluded so
-            #      the running bat doesn't delete itself mid-copy,
-            #   3. captures robocopy's exit code and writes it into
-            #      tmp_updater.log next to the EXE so a failed update is
-            #      visible after the fact even though the cmd window is
-            #      headless,
-            #   4. only relaunches the EXE when robocopy reports success
-            #      (exit code <8). Anything >=8 leaves the install alone
-            #      and writes a one-line marker the next manual launch
-            #      surfaces in the GUI.
+            # back to the 6.2.5 shape because the 6.2.6/7/8 /MIR rewrite
+            # wedged on locked _internal\ DLLs and left users stuck. this
+            # one wipes _internal\ then robocopy /E /IS /IT, same as the
+            # version Arxalor confirmed working. simple = ships.
             updater_bat = app_dir / "tmp_updater.bat"
             updater_bat.write_text(
                 "@echo off\n"
-                "setlocal enabledelayedexpansion\n"
-                "set LOG=" + convert([str(updater_log)]) + "\n"
-                "echo [updater] start %DATE% %TIME% > %LOG%\n"
-                "echo [updater] pid=" + str(current_pid) + " >> %LOG%\n"
-                # Wait up to 30 seconds for the running EXE to exit. Each
-                # iteration sleeps 1 second so the loop tops out at ~30s
-                # even on a slow shutdown. tasklist /FI returns the header
-                # when the PID is gone, so a successful exit produces no
-                # data line and the FIND below fails -> we break.
-                # If the process is still alive after 30s we taskkill /F
-                # it. Earlier bats did not, which is what wedged Vikram
-                # and Arxalor on 6.2.6 / 6.2.7: the PyInstaller exe held
-                # file locks well past the polite shutdown, robocopy then
-                # hit a locked file and stalled forever inside %LOG%.
-                "set /a tries=0\n"
-                ":waitloop\n"
-                "set /a tries+=1\n"
-                "tasklist /FI \"PID eq " + str(current_pid) + "\" /NH 2>nul | find \"" + str(current_pid) + "\" >nul\n"
-                "if errorlevel 1 goto exited\n"
-                "if !tries! GEQ 30 (\n"
-                "  echo [updater] WARN: pid still alive after 30s, force-killing >> %LOG%\n"
-                "  taskkill /F /PID " + str(current_pid) + " >> %LOG% 2>&1\n"
-                "  timeout /t 2 /nobreak >nul\n"
-                "  goto exited\n"
+                "timeout /t 3 /nobreak >nul\n"
+                f"taskkill /F /PID {os.getpid()} >nul 2>&1\n"
+                "rmdir /s /q " + convert([internal_dir]) + " >nul 2>&1\n"
+                "robocopy " + convert([str(tmp_update), str(app_dir)]) + " /E /IS /IT >nul 2>&1\n"
+                "if %errorlevel% GEQ 8 (\n"
+                "  echo Robocopy error! Update may be incomplete. Check your SteaMidra folder.\n"
+                "  pause\n"
+                "  goto :end\n"
                 ")\n"
-                "timeout /t 1 /nobreak >nul\n"
-                "goto waitloop\n"
-                ":exited\n"
-                "echo [updater] pid clear after !tries! polls >> %LOG%\n"
-                # /MIR mirrors the new build onto app_dir, /XD excludes
-                # everything we don't want clobbered (.git for source
-                # checkouts, the user's lumacore + manifest folders so an
-                # update doesn't wipe their library data). /XF keeps the
-                # bat itself + the log alive while it runs.
-                # /XD protects user-data DIRECTORIES from /MIR's purge:
-                #   - .git              (source-tree checkouts)
-                #   - lumacore          (DLLs + per-build pattern caches)
-                #   - manifests, manifest_backup, downloaded_files
-                #                       (game manifest library + staging)
-                #   - saved_lua         (the user's actual lua collection)
-                #   - backups           (SteaMidra's own backup folder)
-                #   - webengine_profile (store browser login cookies)
-                # /XF protects user-data FILES that live next to the EXE:
-                #   - settings.bin              (encrypted prefs)
-                #   - recent_files.json         (recent files list)
-                #   - analytics.json            (usage history)
-                #   - workshop_tracker.json     (workshop subscriptions)
-                #   - all_games.txt             (downloaded once, large)
-                # plus the bat's own working files (tmp_updater.*, update.zip).
-                # debug.log + crash.log + api_cache.json + lumacore_diag.txt
-                # are intentionally NOT excluded so a fresh build starts with
-                # clean diagnostics; api cache + lumacore diag rebuild on
-                # first launch.
-                "robocopy " + convert([str(tmp_update), str(app_dir)])
-                + " /MIR /R:2 /W:1"
-                + " /XD .git lumacore manifest_backup downloaded_files manifests"
-                + " saved_lua backups webengine_profile"
-                + " /XF tmp_updater.bat tmp_updater.log update.zip"
-                + " settings.bin recent_files.json analytics.json"
-                + " workshop_tracker.json all_games.txt"
-                + " >> %LOG% 2>&1\n"
-                "set RC=%errorlevel%\n"
-                "echo [updater] robocopy exit=%RC% >> %LOG%\n"
-                "if %RC% GEQ 8 (\n"
-                "  echo [updater] FAIL: robocopy reported a fatal error. Install left in place. >> %LOG%\n"
-                "  goto cleanup\n"
-                ")\n"
-                # Verify the new exe actually exists on disk before relaunch.
-                # If robocopy reported success but for some reason the exe
-                # is missing (an /XF rule went wrong, antivirus quarantined
-                # it, etc.), surface that as a clear failure instead of
-                # silently skipping the relaunch.
-                "if not exist " + convert([str(app_dir / exe_name)]) + " (\n"
-                "  echo [updater] FAIL: new EXE missing after robocopy. Install incomplete. >> %LOG%\n"
-                "  goto cleanup\n"
-                ")\n"
-                "echo [updater] launching new EXE >> %LOG%\n"
+                "rmdir /s /q " + convert([str(tmp_update)]) + " >nul 2>&1\n"
+                "del /q " + convert([str(update_zip)]) + " >nul 2>&1\n"
                 "start \"\" " + convert([str(app_dir / exe_name)]) + "\n"
-                ":cleanup\n"
-                # Clean up the staging dir + the downloaded zip on every exit
-                # path, success OR failure. Earlier versions only cleaned up
-                # on the success path, so a failed update left both
-                # tmp_update\ and update.zip lying in the install folder
-                # until the next manual cleanup. Users hitting this saw
-                # what looked like "another SteaMidra inside SteaMidra"
-                # under tmp_update\ for as long as the bat had been there.
-                # /S /Q on rmdir is silent, and del 2>nul swallows the
-                # not-found case so neither command can re-introduce a
-                # log line that confuses triage.
-                "rmdir /s /q " + convert([str(tmp_update)]) + " >> %LOG% 2>&1\n"
-                "del /q " + convert([str(update_zip)]) + " >> %LOG% 2>&1\n"
-                "echo [updater] done %DATE% %TIME% >> %LOG%\n"
+                ":end\n"
                 "(goto) 2>nul & del \"%~f0\"\n",
                 encoding="utf-8",
             )

@@ -311,6 +311,16 @@ class Settings(Enum):
         False,
         str,
     )
+    # JSON object {appid: bool}. True means SteaMidra has dropped
+    # 00_LetUpdate_override.lua into that game's stplug-in directory and
+    # the per-game "Show update available for this game" toggle is on.
+    # Managed by the per-game context menu in main_window.py.
+    GAME_UPDATE_OVERRIDE = SettingItem(
+        "game_update_override",
+        "Per-game LetUpdate override flags (managed automatically)",
+        False,
+        str,
+    )
 
     @property
     def key_name(self):

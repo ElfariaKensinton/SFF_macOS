@@ -427,6 +427,15 @@ class ManifestDownloader:
         mh_result = self._try_manifesthub(depot_id, manifest_id)
         if mh_result is not None:
             return mh_result
+        # Last sequential step: github raw mirror. Same source the hubcap
+        # combined path races; here it's a strict fallback so we only hit
+        # it when manifesthub is blank too. one host at a time, fast-fail.
+        try:
+            gh_result = self._try_github_manifest_bytes(app_id, depot_id, manifest_id)
+            if gh_result is not None:
+                return gh_result
+        except Exception as e:
+            logger.debug("oureveryday github fallback failed: %s", e)
         return None
 
     def resolve_gmrc(self, manifest_id):
