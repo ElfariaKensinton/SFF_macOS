@@ -21,7 +21,33 @@ import os
 import sys
 from pathlib import Path
 
-from PyQt6.QtGui import QIcon
+# guard the PyQt6 import so a hollow build (CI accident) shows a useful
+# message instead of just dumping ModuleNotFoundError to a console window
+# that's already gone. happened once with the v6.3.1 workflow build —
+# never again.
+try:
+    from PyQt6.QtGui import QIcon
+except ImportError as _qt_err:
+    _msg = (
+        "SteaMidra failed to start because PyQt6 is missing from the install.\n\n"
+        "This usually means the EXE you downloaded is incomplete (a CI build "
+        "shipped without the GUI runtime). Re-download the latest release from:\n\n"
+        "https://github.com/Midrags/SFF/releases/latest\n\n"
+        "If the problem persists after a fresh install, ping the maintainer.\n\n"
+        f"Original error: {_qt_err}"
+    )
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, _msg, "SteaMidra — incomplete install", 0x10)
+        except Exception:
+            pass
+    else:
+        try:
+            sys.stderr.write(_msg + "\n")
+        except Exception:
+            pass
+    sys.exit(1)
 
 
 class _NullWriter:
