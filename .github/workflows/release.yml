@@ -1,0 +1,100 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3.12 python3.12-venv python3.12-dev wget \
+            libfuse2 libatomic1 libnss3 libnspr4 libxkbfile1 \
+            libxkbcommon-x11-0 libxcb-cursor0 libxcb-xkb1 libxcb-image0 \
+            libxcb-keysyms1 libxcb-util1 libxcb-render-util0 libxcb-icccm4 \
+            libxcb-shape0 libasound2t64
+
+      - name: Build Linux AppImage (exact same as your local command)
+        run: bash build_linux_appimage.sh --fresh
+
+      - name: Create Linux zip (exact files you zip)
+        run: |
+          VERSION=$(grep '^VERSION =' sff/strings.py | cut -d'"' -f2)
+          echo "Building Linux zip for version: $VERSION"
+          zip -j "SteaMidra-${VERSION}-linux.zip" \
+            SteaMidra-${VERSION}-x86_64.AppImage \
+            steamidra_install.sh \
+            SFF.png
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: SteaMidra-*-linux.zip
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install NSIS (required for build_installer.bat)
+        uses: negrutiu/nsis-install@v2
+
+      - name: Run full build_installer.bat (PyInstaller + NSIS Setup.exe)
+        shell: cmd
+        run: |
+          python -m venv .venv
+          call .venv\Scripts\activate.bat
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+          call build_installer.bat
+
+      - name: Create portable Windows zip (exact same as your manual command)
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path "sff\strings.py" -Pattern '^VERSION = "(.+)"').Matches.Groups[1].Value
+          echo "Building Windows portable zip for version: $version"
+          Compress-Archive -Force -Path "dist\SteaMidra_GUI" -DestinationPath "SteaMidra-${version}-windows.zip"
+
+      - name: Upload Windows artifacts (both portable zip + NSIS Setup.exe)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            SteaMidra-*-windows.zip
+            SteaMidra-*-Setup.exe
+
+  release:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create GitHub Release with your release-note.md
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            linux-release/SteaMidra-*-linux.zip
+            windows-release/SteaMidra-*-windows.zip
+            windows-release/SteaMidra-*-Setup.exe
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body_path: release-note.md   # ← uses your file if it exists at the tag
