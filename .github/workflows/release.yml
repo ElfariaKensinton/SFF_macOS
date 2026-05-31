@@ -1,21 +1,17 @@
 name: Build & Release
-
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
-
 permissions:
   contents: write
-
 jobs:
   build-linux:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -24,10 +20,8 @@ jobs:
             libxkbcommon-x11-0 libxcb-cursor0 libxcb-xkb1 libxcb-image0 \
             libxcb-keysyms1 libxcb-util1 libxcb-render-util0 libxcb-icccm4 \
             libxcb-shape0 libasound2t64
-
       - name: Build Linux AppImage
         run: bash build_linux_appimage.sh --fresh
-
       - name: Create Linux zip
         run: |
           VERSION=$(grep '^VERSION =' sff/strings.py | cut -d'"' -f2)
@@ -36,27 +30,22 @@ jobs:
             SteaMidra-${VERSION}-x86_64.AppImage \
             steamidra_install.sh \
             SFF.png
-
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-release
           path: SteaMidra-*-linux.zip
-
   build-windows:
     runs-on: windows-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Install NSIS
         uses: negrutiu/nsis-install@v2
-
       - name: Run full build_installer.bat
         shell: cmd
         run: |
@@ -66,20 +55,18 @@ jobs:
           python -m pip install -r requirements.txt || exit /b 1
           python -m pip install steam==1.4.4 --no-deps || exit /b 1
           python -m pip install pyinstaller || exit /b 1
-          python -c "import PyQt6.QtCore, PyQt6.QtWebEngineCore, prompt_toolkit, selenium, keyring, nacl, cryptography, googleapiclient, zendriver, bs4, win10toast; print('all imports OK')" || exit /b 1
+          python -c "import PyQt6.QtCore, PyQt6.QtWebEngineCore, prompt_toolkit, selenium, keyring, nacl, cryptography, googleapiclient, zendriver, bs4; print('all imports OK')" || exit /b 1
           call build_installer.bat
           if not exist "dist\SteaMidra_GUI\_internal\PyQt6\Qt6\bin\Qt6Core.dll" (
             echo ERROR: Qt6Core.dll missing from _internal — PyInstaller produced a hollow build.
             exit /b 1
           )
-
       - name: Create portable Windows zip
         shell: pwsh
         run: |
           $version = (Select-String -Path "sff\strings.py" -Pattern '^VERSION = "(.+)"').Matches.Groups[1].Value
           echo "Building Windows portable zip for version: $version"
           Compress-Archive -Force -Path "dist\SteaMidra_GUI" -DestinationPath "SteaMidra-${version}-windows.zip"
-
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -87,7 +74,6 @@ jobs:
           path: |
             SteaMidra-*-windows.zip
             SteaMidra-*-Setup.exe
-
   release:
     needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
@@ -95,10 +81,8 @@ jobs:
     steps:
       - name: Checkout code (needed for release-note.md)
         uses: actions/checkout@v4
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
