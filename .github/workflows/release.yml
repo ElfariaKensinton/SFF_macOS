@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-linux:
     runs-on: ubuntu-24.04
@@ -54,7 +57,7 @@ jobs:
       - name: Install NSIS
         uses: negrutiu/nsis-install@v2
 
-      - name: Run full build_installer.bat (exact same as your local process)
+      - name: Run full build_installer.bat
         shell: cmd
         run: |
           python -m venv .venv
@@ -85,6 +88,9 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
+      - name: Checkout code (needed for release-note.md)
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
 
@@ -97,5 +103,4 @@ jobs:
             windows-release/SteaMidra-*-Setup.exe
           draft: false
           prerelease: false
-          generate_release_notes: true
           body_path: release-note.md
