@@ -22,10 +22,10 @@ jobs:
             libxcb-keysyms1 libxcb-util1 libxcb-render-util0 libxcb-icccm4 \
             libxcb-shape0 libasound2t64
 
-      - name: Build Linux AppImage (exact same as your local command)
+      - name: Build Linux AppImage
         run: bash build_linux_appimage.sh --fresh
 
-      - name: Create Linux zip (exact files you zip)
+      - name: Create Linux zip
         run: |
           VERSION=$(grep '^VERSION =' sff/strings.py | cut -d'"' -f2)
           echo "Building Linux zip for version: $VERSION"
@@ -51,27 +51,28 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install NSIS (required for build_installer.bat)
+      - name: Install NSIS
         uses: negrutiu/nsis-install@v2
 
-      - name: Run full build_installer.bat (PyInstaller + NSIS Setup.exe)
+      - name: Run full build_installer.bat (exact same as your local process)
         shell: cmd
         run: |
           python -m venv .venv
           call .venv\Scripts\activate.bat
           pip install --upgrade pip
           pip install -r requirements.txt
+          pip install steam==1.4.4 --no-deps
           pip install pyinstaller
           call build_installer.bat
 
-      - name: Create portable Windows zip (exact same as your manual command)
+      - name: Create portable Windows zip
         shell: pwsh
         run: |
           $version = (Select-String -Path "sff\strings.py" -Pattern '^VERSION = "(.+)"').Matches.Groups[1].Value
           echo "Building Windows portable zip for version: $version"
           Compress-Archive -Force -Path "dist\SteaMidra_GUI" -DestinationPath "SteaMidra-${version}-windows.zip"
 
-      - name: Upload Windows artifacts (both portable zip + NSIS Setup.exe)
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-release
@@ -87,7 +88,7 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
 
-      - name: Create GitHub Release with your release-note.md
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -97,4 +98,4 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-          body_path: release-note.md   # ← uses your file if it exists at the tag
+          body_path: release-note.md
