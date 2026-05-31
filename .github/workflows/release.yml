@@ -62,11 +62,16 @@ jobs:
         run: |
           python -m venv .venv
           call .venv\Scripts\activate.bat
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install steam==1.4.4 --no-deps
-          pip install pyinstaller
+          python -m pip install --upgrade pip || exit /b 1
+          python -m pip install -r requirements.txt || exit /b 1
+          python -m pip install steam==1.4.4 --no-deps || exit /b 1
+          python -m pip install pyinstaller || exit /b 1
+          python -c "import PyQt6.QtCore, PyQt6.QtWebEngineCore, prompt_toolkit, selenium, keyring, nacl, cryptography, googleapiclient, zendriver, bs4, win10toast; print('all imports OK')" || exit /b 1
           call build_installer.bat
+          if not exist "dist\SteaMidra_GUI\_internal\PyQt6\Qt6\bin\Qt6Core.dll" (
+            echo ERROR: Qt6Core.dll missing from _internal — PyInstaller produced a hollow build.
+            exit /b 1
+          )
 
       - name: Create portable Windows zip
         shell: pwsh
