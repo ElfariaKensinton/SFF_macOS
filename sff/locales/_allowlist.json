@@ -1,0 +1,39 @@
+{
+  "value_tokens": [
+    "SteaMidra",
+    "Steam",
+    "LumaCore",
+    "GitHub",
+    "Discord",
+    "JSON",
+    "ACF",
+    "DLL",
+    "URL",
+    "ID",
+    "OK",
+    "...",
+    "CreamAPI, SmokeAPI",
+    "SteamAutoCrack",
+    "UserGameStats",
+    "Google Drive",
+    "Dropbox",
+    "rclone",
+    "Ludusavi",
+    "App ID",
+    "App ID:",
+    "Steam ID:",
+    "Steam32 ID:",
+    "RPG",
+    "DLC",
+    "4. DLC"
+  ],
+  "value_patterns": [
+    "^\\s*$",
+    "^[\\p{P}\\p{S}\\s]+$",
+    "^%[sd]$",
+    "^%\\d+$",
+    "^\\{\\d+\\}$",
+    "^\\{[a-zA-Z_][a-zA-Z0-9_]*\\}$"
+  ],
+  "per_key": []
+}

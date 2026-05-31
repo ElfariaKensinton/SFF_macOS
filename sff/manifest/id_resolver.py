@@ -125,6 +125,25 @@ class ManualManifestStrategy(IManifestStrategy):
                 + Style.RESET_ALL
             )
             return ""
+        # GUI mode: don't loop the user through 100 separate "Depot N: "
+        # prompts. Ivanchick reported clicking OK/Cancel on every depot and
+        # the next one would just pop up. The auto strategies ABOVE this
+        # already extracted what they could; whatever's left has no public
+        # gid in the steam appinfo and asking the user to type a manifest
+        # GID for it is fantasy. Skip silently and let the caller handle
+        # the missing gid (manifest fetch will skip the depot too).
+        try:
+            from sff.prompts import _gui_backend
+            if _gui_backend is not None:
+                print(
+                    Fore.YELLOW
+                    + f"Depot {depot_id}: no manifest GID in steam appinfo, "
+                    "skipping (GUI mode does not prompt)."
+                    + Style.RESET_ALL
+                )
+                return ""
+        except Exception:
+            pass
         if ctx.auto:
             print(
                 "All auto methods failed. Type the manifest ID manually here, "

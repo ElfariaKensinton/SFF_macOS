@@ -185,12 +185,13 @@ def open_workshop_browser(app_id, parent=None):
 
     def start_download():
         from sff.manifest.workshop_dl import parse_workshop_item_id
+        from sff.utils import sff_data_dir
         current_url = url_bar.text().strip()
         item_id = parse_workshop_item_id(current_url)
         if not item_id:
             status_label.setText("No item ID found in the current URL")
             return
-        out_dir = Path.cwd() / "downloaded_files" / "workshop" / item_id
+        out_dir = sff_data_dir() / "downloaded_files" / "workshop" / item_id
         status_label.setText(f"Downloading item {item_id}...")
         dl_btn.setEnabled(False)
         worker = _DlWorker(item_id, str(app_id) if app_id else "0", out_dir)
@@ -323,7 +324,8 @@ def open_workshop_browser(app_id, parent=None):
         bypass_results.clear()
         bypass_btn.setEnabled(False)
         bypass_status.setText("Resolving items and downloading...")
-        out_dir = Path.cwd() / "downloaded_files" / "workshop"
+        from sff.utils import sff_data_dir
+        out_dir = sff_data_dir() / "downloaded_files" / "workshop"
         worker = _BypassWorker(raw, api_key, out_dir)
         _bypass_thread[0] = worker
 

@@ -90,3 +90,6 @@ zendriver>=0.15.0
 google-auth>=2.29.0
 google-auth-oauthlib>=1.2.0
 google-api-python-client>=2.126.0
+pyinstaller>=6.6
+# Linux AppImage build (build_linux_appimage.sh) needs PyInstaller too;
+# without it the workflow runner can't produce the AppImage payload.

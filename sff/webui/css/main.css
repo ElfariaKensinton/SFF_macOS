@@ -1604,12 +1604,12 @@ input:focus, select:focus {
 
 /* ── Platform ───────────────────────────────────────── */
 
-.platform-win { display: none; }
+body:not(.platform-win32) .platform-win { display: none; }
 body.platform-win32 .platform-win { display: flex; }
 body.platform-win32 .settings-section.platform-win { display: block; }
 body.platform-linux .platform-win { display: none; }
 
-.platform-linux { display: none; }
+body:not(.platform-linux) .platform-linux { display: none; }
 body.platform-linux .platform-linux { display: flex; }
 body.platform-linux .settings-section.platform-linux { display: block; }
 body.platform-win32 .platform-linux { display: none; }

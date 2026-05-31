@@ -112,6 +112,43 @@ if _LINUX_CHROMIUM_FALLBACK_APPLIED:
     logger.info("Linux: applying Chromium GPU fallback flags")
 
 
+# Yiso's case: Hubcap and DepotDownloaderMod both fall over silently when
+# .NET 9 isn't on the box. The installer offers to grab it but if the user
+# unchecked that box (or geo-blocking killed the download mid-setup) the
+# app comes up looking fine and only breaks when they try to install a
+# game. Probe at launch, fire ensure_dotnet_9 in the background if it's
+# missing, and let the rest of the app boot in parallel. The launcher
+# never blocks on this; ensure_dotnet_9 already retries with a sane
+# timeout and logs progress to the file logger above.
+def _kick_dotnet_check():
+    try:
+        from sff.dotnet_utils import get_dotnet_path, ensure_dotnet_9
+        if get_dotnet_path():
+            return
+        # Not present. Run the installer on a worker thread so the GUI
+        # event loop can come up while the download runs. The print_fn
+        # routes everything into the standard logger so support logs
+        # capture the install attempt.
+        def _bg():
+            class _LogPrinter:
+                def __call__(self, msg):
+                    try:
+                        logger.info("[dotnet9-bootstrap] %s", str(msg))
+                    except Exception:
+                        pass
+            try:
+                ensure_dotnet_9(print_fn=_LogPrinter())
+            except Exception:
+                logger.exception("dotnet9 background bootstrap raised")
+        import threading
+        threading.Thread(target=_bg, name="dotnet9-bootstrap", daemon=True).start()
+    except Exception:
+        # Bootstrap is best-effort. A failure here must not stop the GUI.
+        logger.exception("dotnet9 launch-time check raised before kicking")
+
+_kick_dotnet_check()
+
+
 def get_steam_path_gui():
     path_str = get_setting(Settings.STEAM_PATH)
     if path_str:

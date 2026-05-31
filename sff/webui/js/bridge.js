@@ -162,6 +162,8 @@ window.Bridge = (function() {
             extract_vdf_keys: function(cb) { if (cb) cb('[]'); },
             open_workshop: function() {},
             workshop_auto_import: function() {},
+            download_workshop_item: function() {},
+            workshop_bypass_download: function() {},
             fix_game: function() {},
             revert_game: function() {},
             get_fix_game_list: function(cb) { if (cb) cb('[]'); },

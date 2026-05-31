@@ -289,6 +289,12 @@ start YourGame-Shipping.exe</pre>
                         <span class="action-title">DLC Check</span>
                         <span class="action-desc">Check available DLCs</span>
                     </button>
+                </div>
+            </div>
+
+            <div class="section-group">
+                <h2 class="section-title">DLC Unlockers</h2>
+                <div class="action-grid">
                     <button class="action-card" data-action="dlc_unlockers" data-tooltip="Install or manage CreamAPI / SmokeAPI DLC unlocker DLLs">
                         <svg class="action-icon" viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
                         <span class="action-title">DLC Unlockers</span>
@@ -1627,6 +1633,33 @@ start YourGame-Shipping.exe</pre>
         </div>
     </div>
 
+    <!-- Workshop Item download modal (Home tab) -->
+    <div id="workshop-item-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content" style="max-width:540px;">
+            <div class="modal-header">
+                <h2>Download Workshop Item</h2>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-top:0;opacity:0.85;font-size:13px;">Paste a Steam Workshop URL or just the item ID. Tries SteamWebAPI direct, then GGNetwork mirror, then SteamCMD anonymous, then SteamCMD with your saved Steam credentials if you set them in Settings.</p>
+                <div class="input-group" style="margin-bottom:10px;">
+                    <label style="font-size:12px;font-weight:600;opacity:0.8;">App ID (game the item belongs to):</label>
+                    <input type="text" id="workshop-item-appid" placeholder="e.g. 1167630" style="width:100%;">
+                </div>
+                <div class="input-group">
+                    <label style="font-size:12px;font-weight:600;opacity:0.8;">Workshop URL or item ID:</label>
+                    <input type="text" id="workshop-item-url" placeholder="https://steamcommunity.com/sharedfiles/filedetails/?id=..." style="width:100%;">
+                </div>
+                <div id="workshop-item-status" style="margin-top:10px;font-size:12px;opacity:0.75;"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="workshop-item-download" class="btn btn-primary">Download</button>
+                <button class="btn modal-cancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Auto LC Setup Modal -->
     <div id="lc-setup-modal" class="modal hidden">
         <div class="modal-overlay"></div>
@@ -1650,7 +1683,21 @@ start YourGame-Shipping.exe</pre>
                 </div>
                 <div class="input-group" style="margin-bottom:14px;">
                     <label style="font-size:12px;font-weight:600;opacity:0.7;">STEAM PATH</label>
-                    <input type="text" id="lc-steam-path" placeholder="Auto-detected" style="margin-top:6px;width:100%;">
+                    <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+                        <input type="text" id="lc-steam-path" placeholder="Auto-detected" style="flex:1;">
+                        <button id="lc-steam-path-browse" class="btn btn-sm" type="button">Browse</button>
+                    </div>
+                </div>
+                <div class="input-group" style="margin-bottom:14px;">
+                    <label style="font-size:12px;font-weight:600;opacity:0.7;">BUILD</label>
+                    <div style="display:flex;gap:14px;align-items:center;margin-top:6px;flex-wrap:wrap;">
+                        <label class="dl-source-option" data-tooltip="Production build, smaller DLL, normal log volume. Default for everyone.">
+                            <input type="radio" name="lc-variant" value="release" checked> Release
+                        </label>
+                        <label class="dl-source-option" data-tooltip="Verbose-logging build. Use this when sending support logs to the maintainer; bigger DLL, full per-call traces.">
+                            <input type="radio" name="lc-variant" value="debug"> Debug
+                        </label>
+                    </div>
                 </div>
                 <div id="lc-setup-status" style="font-size:12px;opacity:0.75;min-height:18px;"></div>
             </div>

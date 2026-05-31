@@ -1,5 +1,60 @@
 # Changelog
 
+## 6.3.1
+
+### Home page
+
+- DLC Unlocker card moved to its own row at the bottom of Home so DLC Check is the headline DLC tool again. The unlocker is still one click away when you actually need CreamAPI / SmokeAPI.
+- Auto LC Setup now has Release / Debug radio buttons. Release is the default for everyone; flip to Debug when the maintainer asks for verbose logs from `<Steam>\lumacore\*.log` to debug a launch issue. The toggle pulls the matching asset from the LumaCore release on github.
+- Workshop Item card on Home actually does something now. Click it, paste a workshop URL or item ID plus the App ID, and the 4-method cascade (SteamWebAPI direct, GGNetwork mirror, SteamCMD anonymous, SteamCMD signed-in) runs in the background. The result lands under your SteaMidra data dir, not next to the EXE, so the AppImage and frozen Windows builds don't write to a read-only mount.
+
+### Store / download
+
+- DLC Check no longer pop-up-spams "Depot N: enter manifest ID" when the auto strategies miss a depot. Ivanchick was hitting OK / Cancel through dozens of prompts; the GUI path now skips the manual fallback silently and lets the missing depot drop out of the manifest list. CLI users still get the prompt because they can actually answer it.
+- Hubcap surfaces a clean "app is not in the Hubcap database" line when the API returns the `Page Not Found` HTML page. Used to dump the raw HTML into the live log; now you get a one-line answer plus a hint to try Ryuu or oureveryday.
+
+### Build / CI
+
+- Added pyinstaller to both requirements.txt and requirements-linux.txt so the github workflow runner can produce the EXE / AppImage from a clean `pip install -r` without an extra step.
+
+### Installer (Windows)
+
+- The .NET 9 and VC++ Redistributable steps used to silently fail when the user had no internet or an AV firewall blocked the powershell download. Svenhoz hit a confusing error mid-install on a clean box. Now both steps detect the failure, print one human line in the install log explaining what happened, and keep going. The .NET 9 step also skips the re-download when SteaMidra already installed it under `%LOCALAPPDATA%\Microsoft\dotnet\` from a previous launch, which saves the runner 30 MB on a reinstall. SteaMidra still offers .NET 9 again at first launch if the system install is missing.
+- No more terminal flashes when SteaMidra runs subprocesses on Windows. Every time you ran SteamAutoCrack, removed SteamStub, fixed a game with Goldberg, or backed up a save the frozen build briefly popped a black console window. PR from @0xBadCod3 adds the Windows `CREATE_NO_WINDOW` flag to every subprocess we spawn, so all of those now run silent. Linux is untouched, the flag is gated behind `sys.platform == "win32"`.
+
+### LumaCore — security
+
+- The `lcHttpGet` lua binding used to let any .lua dropped into stplug-in hit any URL on the internet. A malicious .lua could pair that with the addappid / setStat read surface and silently exfil whatever it found to whatever host it wanted. The binding now only reaches the hosts SteaMidra's official flows actually need (manifesthub, raw.githubusercontent.com, jsdelivr cdn, gitflic, github api). Anything else gets a 403 / empty body without the network ever being hit. Power users running a private mirror can extend the list through `[lua] http_allowlist = ["my.host.example"]` in the LumaCore config.
+- The pattern fetcher now verifies an RSA-PSS-SHA256 signature on every TOML it pulls before letting the bytes drive any hook install. The public key is hardcoded into LumaCore so a hostile mirror or someone serving a forged TOML cannot pass the gate without obtaining the maintainer's private key. Default is permissive (logs a warning on missing or bad sig but accepts the body) so the rollout doesn't brick anyone before signed TOMLs are actually published. Flip `[pattern_fetch] require_signed = true` to make rejection fatal once sigs are in place. Bad signatures are always fatal regardless of the flag because that's the actual tampering signal.
+
+### LumaCore — hot-reload
+
+- Drop a fresh .lua into stplug-in while Steam is running and LumaCore picks it up on the spot. Delete one and the depots, tickets, and manifest overrides that file published get retracted on the spot too. Used to need a Steam restart for both. The bulk-delete freeze that hit when 160 .lua files came and went in one shot is gone, the watcher now recovers from the kernel buffer overflow instead of silently dying.
+
+### LumaCore — setup
+
+- Auto LC Setup got a Browse button next to the Steam path. Yiso had two Steam folders on disk and the auto-detect picked the wrong one, the button lets you pin the right one in seconds. Saving the pick also updates the same `steam_path` setting the rest of the app reads, so Cloud Saves and the Library tab stay in sync.
+
+### Settings
+
+- New "Show in-Steam 'Update available' prompts on installed games" toggle in Settings. Flip it on and SteaMidra drops a tiny override .lua into stplug-in so games render the Update prompt the way DarkH2o was doing manually. Flip it off and the file gets cleaned up. LumaCore picks up the change without a Steam restart.
+
+### Boot
+
+- SteaMidra checks for .NET 9 the moment it launches and grabs it in the background if it's missing. Yiso's case had Hubcap and DepotDownloader silently fail because the installer skipped .NET 9 and there was no second try; now the bootstrap kicks on every run, so the next time you go to download a game the runtime is already there.
+
+### Store / download
+
+- Hubcap and Ryuu now cover depotless DLCs the same way Oureveryday does. Some games have DLCs that ship as their own appid with no depots and just piggyback on the main game's manifest. Those used to stay locked when you pulled a Hubcap or Ryuu .lua, now they unlock alongside the rest. Best effort: if Steam appinfo hiccups the .lua stays exactly as the provider wrote it.
+
+### Translations
+
+- Filled in the strings that were still showing in English on non-English locales. The settings dropdown languages (PT, DE, ES, FR, IT, PL, CS, ID) now render their library / store / log labels in the right language instead of falling back to the English source. The other locales were already complete on the value side. There's a maintainer audit script that runs alongside the test suite now so this kind of drift gets caught before release.
+
+### Linux
+
+- Modern UI on Linux renders properly now. The platform-only hide rules in main.css were too greedy and were eating the whole page when the body's platform class wasn't set the way the rule expected. Pirat tracked it down to two lines and the swap he tested cleared the white screen.
+
 ## 6.3.0
 
 ### Store / search

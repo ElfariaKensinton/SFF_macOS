@@ -256,11 +256,17 @@ def _reset_lumacore_files(steam_path: Path, callback: Optional[Callable[[str], N
                 _progress(f"Could not remove {path_label}: {exc}", callback)
 
 
-def _fetch_release_asset() -> Optional[tuple[str, str]]:
+def _fetch_release_asset(variant: str = "release") -> Optional[tuple[str, str]]:
     """Return (download_url, filename) for the best asset in the latest GitHub release.
 
-    Priority: release.zip → release.rar → first .zip asset found.
+    *variant* picks which build to grab. "release" (default) prefers
+    `release.zip` / `release.rar`, "debug" prefers `debug.zip` / `debug.rar`.
+    Falls back to the first .zip whose name starts with the requested
+    variant, then to the first .zip asset overall.
     """
+    variant_lower = (variant or "release").strip().lower()
+    if variant_lower not in ("release", "debug"):
+        variant_lower = "release"
     try:
         resp = httpx.get(
             _LUMACORE_RELEASE_API,
@@ -271,11 +277,21 @@ def _fetch_release_asset() -> Optional[tuple[str, str]]:
         resp.raise_for_status()
         assets = resp.json().get("assets", [])
 
-        for priority_name in ("release.zip", "release.rar"):
+        primary_names = (f"{variant_lower}.zip", f"{variant_lower}.rar")
+        for priority_name in primary_names:
             for asset in assets:
                 if asset.get("name", "").lower() == priority_name:
                     return asset["browser_download_url"], asset["name"]
 
+        # Loose match: any zip whose filename starts with the variant
+        # token. Catches things like "release-v8.zip".
+        for asset in assets:
+            name_lower = asset.get("name", "").lower()
+            if name_lower.endswith(".zip") and name_lower.startswith(variant_lower):
+                return asset["browser_download_url"], asset["name"]
+
+        # Final fallback: any zip. Only triggers when the maintainer
+        # forgot to upload the requested variant.
         for asset in assets:
             if asset.get("name", "").lower().endswith(".zip"):
                 return asset["browser_download_url"], asset["name"]
@@ -335,9 +351,15 @@ def _extract_rar(archive: Path, steam_path: Path,
 def install_lumacore(
     steam_path: Path,
     progress_callback: Optional[Callable[[str], None]] = None,
+    variant: str = "release",
 ) -> tuple[bool, str]:
     """Full LumaCore setup: kill Steam, GL cleanup (once), remove old LC files, download latest
     release from GitHub, extract and install DLLs to *steam_path*.
+
+    *variant* picks the asset flavour. "release" (default) pulls the
+    user-facing build; "debug" pulls the verbose-logging build that
+    writes to <steam>\\lumacore\\*.log. Pass through from the WebUI
+    Auto LC Setup picker.
 
     Returns (success, message).
     """
@@ -385,7 +407,7 @@ def install_lumacore(
 
     _reset_lumacore_files(steam_path, progress_callback)
 
-    asset = _fetch_release_asset()
+    asset = _fetch_release_asset(variant=variant)
     if asset is None:
         msg = "Could not reach GitHub releases. Check your internet connection."
         logger.error(msg)

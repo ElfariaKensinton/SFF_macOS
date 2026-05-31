@@ -1569,6 +1569,21 @@ class SFFMainWindow(QMainWindow):
             set_language(get_setting(Settings.LANGUAGE))
         elif s == Settings.SAVE_WATCHER_INTERVAL:
             self._start_save_watcher()
+        elif s == Settings.SHOW_UPDATE_PROMPTS:
+            # Apply the toggle to disk on the spot. LumaCore's hot-reload
+            # watcher picks the .lua up without a Steam restart so the
+            # next time the user looks at their library the prompt state
+            # matches the toggle.
+            try:
+                from sff.update_prompt_override import apply_setting
+                from sff.storage.settings import get_setting
+                from sff.steam_path import validate_steam_path
+                raw = get_setting(Settings.STEAM_PATH)
+                steam_path = Path(raw) if raw else None
+                if steam_path is not None and validate_steam_path(steam_path):
+                    apply_setting(steam_path, bool(get_setting(Settings.SHOW_UPDATE_PROMPTS)))
+            except Exception:
+                logger.exception("SHOW_UPDATE_PROMPTS apply_setting raised")
 
     # ── Tray / close-to-tray ────────────────────────────────────
 

@@ -4,7 +4,7 @@
 !define APPNAME    "SteaMidra"
 !define COMPANY    "Midrags"
 !ifndef VERSION
-  !define VERSION  "6.3.0"
+  !define VERSION  "6.3.1"
 !endif
 !define EXENAME    "SteaMidra_GUI.exe"
 !define PUBLISHER  "Midrags"
@@ -100,7 +100,16 @@ SectionEnd
 Section ".NET 9 Runtime (required for downloads)" SEC_DOTNET
     FindFirst $0 $1 "$PROGRAMFILES64\dotnet\shared\Microsoft.NETCore.App\9.*"
     FindClose $0
-    StrCmp $1 "" dotnet_get dotnet_ok
+    StrCmp $1 "" check_user_dotnet dotnet_ok
+
+    check_user_dotnet:
+        ; Per-user install at %LOCALAPPDATA%\Microsoft\dotnet — SteaMidra
+        ; itself drops .NET 9 here on first launch when the system-wide
+        ; install is missing. If we already see it there, skip the
+        ; re-download so the installer doesn't waste 30 MB.
+        FindFirst $0 $1 "$LOCALAPPDATA\Microsoft\dotnet\shared\Microsoft.NETCore.App\9.*"
+        FindClose $0
+        StrCmp $1 "" dotnet_get dotnet_ok
 
     dotnet_ok:
         DetailPrint ".NET 9 Runtime is already installed - skipping."
@@ -108,9 +117,22 @@ Section ".NET 9 Runtime (required for downloads)" SEC_DOTNET
 
     dotnet_get:
         DetailPrint "Downloading .NET 9 Runtime (x64)..."
+        ClearErrors
         nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri ''https://aka.ms/dotnet/9.0/dotnet-runtime-win-x64.exe'' -OutFile ''$TEMP\dotnet9-installer.exe'' -UseBasicParsing"'
-        ExecWait '"$TEMP\dotnet9-installer.exe" /install /quiet /norestart'
+        Pop $0
+        IfFileExists "$TEMP\dotnet9-installer.exe" 0 dotnet_dl_failed
+        ExecWait '"$TEMP\dotnet9-installer.exe" /install /quiet /norestart' $0
         Delete "$TEMP\dotnet9-installer.exe"
+        IntCmp $0 0 dotnet_end dotnet_install_failed dotnet_install_failed
+
+    dotnet_dl_failed:
+        DetailPrint "Could not download .NET 9 Runtime (no internet, AV block, or firewall)."
+        DetailPrint "Skipping. SteaMidra will offer to install it again on first launch."
+        Goto dotnet_end
+
+    dotnet_install_failed:
+        DetailPrint ".NET 9 Runtime installer returned exit code $0 (skipping)."
+        DetailPrint "SteaMidra will offer to install it again on first launch."
 
     dotnet_end:
 SectionEnd
@@ -130,9 +152,15 @@ Section "Visual C++ 2022 Redistributable" SEC_VCREDIST
 
     vcx64_get:
         DetailPrint "Downloading Visual C++ 2022 Redistributable (x64)..."
+        ClearErrors
         nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri ''https://aka.ms/vs/17/release/vc_redist.x64.exe'' -OutFile ''$TEMP\vcredist_x64.exe'' -UseBasicParsing"'
-        ExecWait '"$TEMP\vcredist_x64.exe" /install /quiet /norestart'
+        IfFileExists "$TEMP\vcredist_x64.exe" 0 vcx64_dl_failed
+        ExecWait '"$TEMP\vcredist_x64.exe" /install /quiet /norestart' $0
         Delete "$TEMP\vcredist_x64.exe"
+        Goto vcx64_end
+
+    vcx64_dl_failed:
+        DetailPrint "Could not download VC++ 2022 x64 (no internet, AV block, or firewall). Skipping."
 
     vcx64_end:
     ; x86
@@ -146,9 +174,15 @@ Section "Visual C++ 2022 Redistributable" SEC_VCREDIST
 
     vcx86_get:
         DetailPrint "Downloading Visual C++ 2022 Redistributable (x86)..."
+        ClearErrors
         nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri ''https://aka.ms/vs/17/release/vc_redist.x86.exe'' -OutFile ''$TEMP\vcredist_x86.exe'' -UseBasicParsing"'
-        ExecWait '"$TEMP\vcredist_x86.exe" /install /quiet /norestart'
+        IfFileExists "$TEMP\vcredist_x86.exe" 0 vcx86_dl_failed
+        ExecWait '"$TEMP\vcredist_x86.exe" /install /quiet /norestart' $0
         Delete "$TEMP\vcredist_x86.exe"
+        Goto vcx86_end
+
+    vcx86_dl_failed:
+        DetailPrint "Could not download VC++ 2022 x86 (no internet, AV block, or firewall). Skipping."
 
     vcx86_end:
     SetRegView 64

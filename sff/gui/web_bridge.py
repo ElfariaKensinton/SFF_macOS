@@ -2007,7 +2007,8 @@ class WebBridge(QObject):
                 item_id = parse_workshop_item_id(item_url)
                 if not item_id:
                     return {"success": False, "error": f"Could not parse item ID from: {item_url}"}
-                out_dir = Path.cwd() / "downloaded_files" / "workshop" / item_id
+                from sff.utils import sff_data_dir
+                out_dir = sff_data_dir() / "downloaded_files" / "workshop" / item_id
                 user = get_setting(Settings.STEAM_USER) or "anonymous"
                 pwd = get_setting(Settings.STEAM_PASS) or ""
                 result = _dl(item_id, app_id, out_dir, steam_username=user, steam_password=pwd)
@@ -2130,7 +2131,8 @@ class WebBridge(QObject):
                 if not api_key:
                     api_key = _DEFAULT_KEY
 
-                out_dir = Path.cwd() / "downloaded_files" / "workshop"
+                from sff.utils import sff_data_dir
+                out_dir = sff_data_dir() / "downloaded_files" / "workshop"
 
                 def _emit_progress(payload):
                     try:
@@ -2703,15 +2705,24 @@ class WebBridge(QObject):
         self._run_async(_do, on_done=_on_done)
 
     @pyqtSlot(str)
-    def install_lumacore(self, steam_path_str):
-        """Copy LumaCore DLLs into the Steam folder and clean up legacy injection files."""
+    @pyqtSlot(str, str)
+    def install_lumacore(self, steam_path_str, variant=""):
+        """Copy LumaCore DLLs into the Steam folder and clean up legacy injection files.
+
+        *variant* picks the build flavour ('release' default or 'debug').
+        The Auto LC Setup modal radio buttons send 'debug' when the user
+        wants the verbose-logging build for support sessions.
+        """
         def _do():
             from pathlib import Path
             from sff.lumacore_setup import install_lumacore
             steam_path = Path(steam_path_str) if steam_path_str else self._ui.steam_path
             def _progress(msg):
                 self.lc_progress.emit(msg)
-            success, message = install_lumacore(steam_path, _progress)
+            picked = (variant or "release").strip().lower()
+            if picked not in ("release", "debug"):
+                picked = "release"
+            success, message = install_lumacore(steam_path, _progress, variant=picked)
             return success, message
 
         def _on_done(result):
@@ -3122,6 +3133,37 @@ class WebBridge(QObject):
     def set_active_library(self, path):
         """Sets the library path for the next download."""
         self._active_library = path
+
+    @pyqtSlot(str, result=str)
+    def browse_steam_path(self, _unused=""):
+        """Folder picker for the Steam install root. Validates the pick and
+        returns the chosen path on success, '' on cancel or invalid pick.
+        Updates `self._steam_path` so every other slot picks up the new
+        path immediately, then returns it so the frontend can persist it
+        through `set_setting('steam_path')` for next launch."""
+        from sff.steam_path import validate_steam_path
+
+        parent = self.parent()
+        picked = QFileDialog.getExistingDirectory(parent, "Select Steam install folder")
+        if not picked:
+            return ""
+        p = Path(picked)
+        if not validate_steam_path(p):
+            # Invalid pick. Surface a hint by returning '' so the frontend
+            # status line stays untouched. The user can pick again.
+            logger.warning("browse_steam_path: %s is not a valid Steam install root", p)
+            return ""
+        resolved = p.resolve()
+        # Update in-memory cache so get_installed_games / get_game_list /
+        # everything else that reads self._steam_path uses the new value
+        # without needing a process restart. Also drop the games cache
+        # so the next list call re-walks the new install.
+        self._steam_path = resolved
+        try:
+            self._installed_games_cache = None
+        except Exception:
+            pass
+        return str(resolved)
 
     @pyqtSlot(result=str)
     def open_file_dialog(self):
@@ -4106,6 +4148,7 @@ class WebBridge(QObject):
         """Returns JSON array of installed games from ALL Steam library folders."""
         try:
             if not self._steam_path:
+                logger.warning("get_installed_games: self._steam_path is None, returning []")
                 return "[]"
             # Cache the full disk walk for a few seconds. Going to the Library
             # tab fires get_installed_games + load_library + lure-fix sweep
@@ -4135,6 +4178,7 @@ class WebBridge(QObject):
                             libs.append(candidate)
             games = []
             seen = set()
+            skipped_missing_dir = 0
             for lib in libs:
                 steamapps = lib / "steamapps"
                 if not steamapps.exists():
@@ -4159,6 +4203,7 @@ class WebBridge(QObject):
                         if installdir:
                             game_path = steamapps / "common" / installdir
                             if not game_path.exists():
+                                skipped_missing_dir += 1
                                 continue
                         seen.add(app_id)
                         games.append({
@@ -4167,13 +4212,21 @@ class WebBridge(QObject):
                             "installed": True,
                             "path": str(steamapps / "common" / installdir) if installdir else "",
                         })
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("get_installed_games: skipped %s: %s", acf.name, e)
                         continue
             games.sort(key=lambda g: g.get("name", "").lower())
+            if skipped_missing_dir:
+                logger.info(
+                    "get_installed_games: %d game(s) skipped because their install folder "
+                    "is missing on disk (ACF present, %s/common/<installdir> gone). "
+                    "Hit Refresh after restoring the folder.",
+                    skipped_missing_dir, "<lib>/steamapps")
             payload = json.dumps(games)
             self._installed_games_cache = (_now, payload)
             return payload
         except Exception:
+            logger.exception("get_installed_games: scan failed")
             return "[]"
 
     @pyqtSlot(result=str)

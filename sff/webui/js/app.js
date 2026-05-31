@@ -137,6 +137,18 @@ window.App = (function() {
                         var wsBtn = document.getElementById('action-workshop-import');
                         if (wsBtn) { wsBtn.disabled = false; wsBtn.classList.remove('is-busy'); }
                     }
+                    if (result.task === 'workshop_download') {
+                        var wsiBtn = document.getElementById('workshop-item-download');
+                        if (wsiBtn) wsiBtn.disabled = false;
+                        var wsiStatus = document.getElementById('workshop-item-status');
+                        if (result.success) {
+                            if (wsiStatus) wsiStatus.textContent = 'Saved to: ' + (result.path || '');
+                            Components.showToast('success', 'Workshop item downloaded (' + (result.message || 'ok') + ')');
+                        } else {
+                            if (wsiStatus) wsiStatus.textContent = result.message || 'Download failed.';
+                            Components.showToast('error', result.message || 'Workshop download failed.');
+                        }
+                    }
                     if (result.task === 'api_key_connected') {
                         Store.onApiKeyAvailable('');
                     }
@@ -819,6 +831,29 @@ window.App = (function() {
             });
         }
 
+        // Workshop Item modal — Home tab quick download
+        var wsiDl = document.getElementById('workshop-item-download');
+        if (wsiDl) {
+            wsiDl.addEventListener('click', function() {
+                var appField = document.getElementById('workshop-item-appid');
+                var urlField = document.getElementById('workshop-item-url');
+                var statusEl = document.getElementById('workshop-item-status');
+                var appId = appField ? appField.value.trim() : '';
+                var itemUrl = urlField ? urlField.value.trim() : '';
+                if (!appId || !/^\d+$/.test(appId)) {
+                    if (statusEl) statusEl.textContent = 'Enter a numeric App ID first.';
+                    return;
+                }
+                if (!itemUrl) {
+                    if (statusEl) statusEl.textContent = 'Paste a Workshop URL or item ID.';
+                    return;
+                }
+                wsiDl.disabled = true;
+                if (statusEl) statusEl.textContent = 'Downloading... (cascade can take a couple minutes)';
+                Bridge.call('download_workshop_item', JSON.stringify({ app_id: appId, item_url: itemUrl }));
+            });
+        }
+
         var umToggleBtn = document.getElementById('um-toggle-all');
         if (umToggleBtn) {
             umToggleBtn.addEventListener('click', function() {
@@ -1310,6 +1345,20 @@ window.App = (function() {
             return;
         }
 
+        // Single workshop item download — opens the URL/ID prompt then runs the
+        // 4-method cascade (SteamWebAPI -> GGNetwork -> SteamCMD anon -> SteamCMD auth).
+        if (action === 'workshop') {
+            var preAppId = _getSelectedGameId() || '';
+            var appField = document.getElementById('workshop-item-appid');
+            var urlField = document.getElementById('workshop-item-url');
+            var statusEl = document.getElementById('workshop-item-status');
+            if (appField) appField.value = preAppId;
+            if (urlField) urlField.value = '';
+            if (statusEl) statusEl.textContent = '';
+            Components.showModal('workshop-item-modal');
+            return;
+        }
+
         // Show game-picker dialog before running update_manifests
         if (action === 'update_manifests') {
             var listEl = document.getElementById('um-game-list');
@@ -1551,10 +1600,13 @@ window.App = (function() {
         if (runBtn) {
             runBtn.addEventListener('click', function() {
                 var steamPath = (document.getElementById('lc-steam-path') || {}).value || '';
+                var variant = 'release';
+                var picked = document.querySelector('input[name="lc-variant"]:checked');
+                if (picked && picked.value) variant = picked.value;
                 var statusEl = document.getElementById('lc-setup-status');
-                if (statusEl) statusEl.textContent = 'Installing LumaCore...';
+                if (statusEl) statusEl.textContent = 'Installing LumaCore (' + variant + ')...';
                 runBtn.disabled = true;
-                Bridge.call('install_lumacore', steamPath);
+                Bridge.call('install_lumacore', steamPath, variant);
             });
         }
 
@@ -1579,6 +1631,25 @@ window.App = (function() {
         if (refreshBtn) {
             refreshBtn.addEventListener('click', function() {
                 _refreshLcVersionInfo(true);
+            });
+        }
+
+        // Browse button: lets the user pin the Steam folder when auto-detect
+        // landed on the wrong install (multiple Steams on disk, registry
+        // pointing somewhere stale, etc). Persists the choice through the
+        // same `steam_path` setting the rest of the app reads.
+        var browseBtn = document.getElementById('lc-steam-path-browse');
+        if (browseBtn) {
+            browseBtn.addEventListener('click', function() {
+                Bridge.callWithCallback('browse_steam_path', '', function(picked) {
+                    if (!picked) return;
+                    var pathInp = document.getElementById('lc-steam-path');
+                    if (pathInp) pathInp.value = picked;
+                    Bridge.call('set_setting', 'steam_path', picked);
+                    var statusEl = document.getElementById('lc-setup-status');
+                    if (statusEl) statusEl.textContent = 'Steam path saved.';
+                    _refreshLcVersionInfo(true);
+                });
             });
         }
 

@@ -286,6 +286,17 @@ class Settings(Enum):
         False,
         str,
     )
+    # DarkH2o pattern. When ON, SteaMidra drops a tiny override .lua into
+    # <Steam>\config\stplug-in\ that wraps setManifestid so games render
+    # the "Update available" prompt instead of silently swallowing the
+    # newer manifest id Steam pushes. The .lua file does not move on its
+    # own; the toggle controls when it lands and when it gets cleaned up.
+    SHOW_UPDATE_PROMPTS = SettingItem(
+        "show_update_prompts",
+        "Show in-Steam 'Update available' prompts on installed games",
+        False,
+        bool,
+    )
     # 6.2.5: per-game and global update-available toggle. The
     # interval is stored as a string so the existing settings UI
     # text path handles edits the same way SAVE_WATCHER_INTERVAL

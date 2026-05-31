@@ -321,11 +321,34 @@ def get_hubcap(dest, app_id, depotcache = None):
                 )
                 lua_bytes = read_lua_from_zip(io.BytesIO(data), decode=False, depotcache=depotcache)
                 if lua_bytes is None:
-                    # Try to decode server response for a useful error message
+                    # Try to decode server response for a useful error message.
+                    # Hubcap sometimes returns an HTML 404 page (or Cloudflare
+                    # interstitial) wrapped in HTTP 200. Detect that shape
+                    # specifically so users get a clear "not on Hubcap" line
+                    # instead of a wall of HTML in the log.
                     try:
                         decoded = data.decode("utf-8", errors="replace")
                     except Exception:
                         decoded = repr(data[:200])
+                    stripped = decoded.lstrip().lower()
+                    looks_html = stripped.startswith("<!doctype") or stripped.startswith("<html")
+                    if looks_html:
+                        if "page not found" in decoded.lower() or "page-not-found" in decoded.lower():
+                            print(
+                                Fore.RED
+                                + f"Hubcap: app {app_id} is not in the Hubcap database. "
+                                "Try Ryuu or oureveryday for this game."
+                                + Style.RESET_ALL
+                            )
+                        else:
+                            print(
+                                Fore.RED
+                                + "Hubcap returned an HTML page instead of a Lua zip "
+                                "(rate limit, Cloudflare challenge, or service down). "
+                                "Try again in a minute or pick a different provider."
+                                + Style.RESET_ALL
+                            )
+                        break
                     try:
                         parsed = json.loads(decoded)
                         print(
@@ -344,6 +367,16 @@ def get_hubcap(dest, app_id, depotcache = None):
             with lua_path.open("wb") as f:
                 f.write(lua_bytes)
             _update_fallback_depotkeys(lua_bytes)
+            try:
+                from sff.lua.dlc_appid_enricher import append_depotless_dlcs
+                appended = append_depotless_dlcs(lua_path, app_id)
+                if appended:
+                    logger.debug(
+                        "hubcap: appended %d depotless dlc line(s) for %s",
+                        appended, app_id,
+                    )
+            except Exception as e:
+                logger.debug("hubcap: dlc enricher raised for %s: %s", app_id, e)
             return lua_path
         return None
 
@@ -462,6 +495,16 @@ def get_ryuu(dest, app_id, depotcache=None, request_update=None):
         with lua_path.open("wb") as f:
             f.write(lua_bytes)
         _update_fallback_depotkeys(lua_bytes)
+        try:
+            from sff.lua.dlc_appid_enricher import append_depotless_dlcs
+            appended = append_depotless_dlcs(lua_path, app_id)
+            if appended:
+                logger.debug(
+                    "ryuu: appended %d depotless dlc line(s) for %s",
+                    appended, app_id,
+                )
+        except Exception as e:
+            logger.debug("ryuu: dlc enricher raised for %s: %s", app_id, e)
         print(Fore.GREEN + f"[OK] Ryuu: Downloaded Lua for {app_id}" + Style.RESET_ALL)
         return lua_path
     return None

@@ -262,3 +262,10 @@ google-auth-oauthlib>=1.2.0
     # Google Drive API — InstalledAppFlow for desktop OAuth
 google-api-python-client>=2.126.0
     # Google Drive API — googleapiclient.discovery
+pyinstaller>=6.6
+    # PyInstaller — used by build_simple.bat / build_simple_gui.bat / .spec files
+    # to package SteaMidra into a single EXE for Windows. CI workflows on
+    # github (build_installer.bat) need this on the runner; flagging it
+    # here so the runner image's pip install -r requirements.txt grabs it
+    # alongside everything else. Pin >=6.6 so the steam==1.4.4 + selenium
+    # urllib3 conflict doesn't drag a too-old PyInstaller in.
