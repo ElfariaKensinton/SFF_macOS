@@ -24,6 +24,5 @@ GBE Token Generator, VDF Key Extractor, Capcom Save Fix.
 
 from sff.tools.gbe_token_generator import GBETokenGenerator
 from sff.tools.vdf_key_extractor import VdfKeyExtractor
-from sff.tools.capcom_save_fix import CapcomSaveFix
 
-__all__ = ["GBETokenGenerator", "VdfKeyExtractor", "CapcomSaveFix"]
+__all__ = ["GBETokenGenerator", "VdfKeyExtractor"]
