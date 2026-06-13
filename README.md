@@ -151,9 +151,11 @@ See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common problems and s
 
 **Made by Midrag and his brother.**
 
-SteaMidra uses, integrates with, downloads, or is compatible with several third-party projects and community tools. Third-party tools, binaries, unlockers, emulators, assets, APIs, and services remain owned by their original authors and keep their original licenses/terms. They are not relicensed as SteaMidra code.
+SteaMidra uses, integrates with, downloads, is compatible with, or was originally influenced by several third-party projects and community tools. Third-party tools, binaries, unlockers, emulators, assets, APIs, services, and earlier project bases remain owned by their original authors and keep their original licenses/terms. They are not relicensed as SteaMidra code.
 
 SteaMidra’s GPL license applies to SteaMidra’s own source code only. It does not claim ownership over third-party components.
+
+**SMD / Steam Manifest Downloader** – SteaMidra originally started from an early SMD base/fork. Credit to **Kur0 / the SMD project and contributors** for the original project structure, early workflow, and inspiration. Since then, SteaMidra has been heavily reworked and expanded with its own workflows, LumaCore integration, GUI/web UI, Store/search features, online fix handling, DLC unlocker handling, fixes/bypasses, backups, library scanner, Linux-related work, updater changes, and many other modules. Any remaining SMD-derived parts remain credited to their original authors/contributors and are not claimed as original SteaMidra code.
 
 **LumaCore** – Windows DLL hook library bundled with SteaMidra. Injects into Steam at startup via a `dwmapi.dll` proxy, reads Lua files from `Steam/config/stplug-in/`, and patches Steam's in-memory license tables so games appear owned without AppList files or Steam restarts.
 
