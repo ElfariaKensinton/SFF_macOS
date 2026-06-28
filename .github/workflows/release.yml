@@ -43,7 +43,9 @@ jobs:
           PY
       - name: Verify Google Drive support
         run: |
-          python3 -m pip install google-auth google-auth-oauthlib google-api-python-client
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.txt
+          python3 -m pip install steam==1.4.4 --no-deps
           python3 - <<'PY'
           import sff._gc
           from sff.google_drive import is_available
