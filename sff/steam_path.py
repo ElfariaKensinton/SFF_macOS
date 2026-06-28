@@ -90,6 +90,11 @@ def _linux_probe() -> Path | None:
     return None
 
 
+class LinuxFinder:
+    def find(self) -> Path | None:
+        return _linux_probe()
+
+
 def _manual_probe() -> Path | None:
     print("Couldn't find your Steam path.")
     return prompt_dir(
