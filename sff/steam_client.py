@@ -47,57 +47,71 @@ _MAX_APP_INFO_RETRIES = 3
 _GEVENT_LOCK = threading.Lock()
 
 
+def _steam_transient_errors():
+    import socket
+    try:
+        from steam.exceptions import SteamError  # type: ignore
+    except Exception:
+        SteamError = ()  # type: ignore[assignment]
+
+    errors = (
+        gevent.Timeout,
+        socket.timeout,
+        ConnectionResetError,
+        ConnectionAbortedError,
+        ConnectionError,
+        EOFError,
+        OSError,
+    )
+    return errors + ((SteamError,) if SteamError else ())  # type: ignore[operator]
+
+
+def _ensure_client_session(client):
+    if client.logged_on:
+        return
+    print("Logging in anonymously...", end="", flush=True)
+    client.anonymous_login()
+    print(" Done!")
+
+
+def _reopen_client_session(client):
+    try:
+        client.anonymous_login()
+    except Exception:
+        pass
+
+
+def _empty_product_info():
+    return ProductInfo({"apps": {}, "packages": {}})
+
+
+def _request_app_info(client, app_ids):
+    print("Getting app info...")
+    logger.debug(f"Getting info for {', '.join([str(x) for x in app_ids])}")
+    start = time.time()
+    info = client.get_product_info(app_ids)  # pyright: ignore[reportUnknownMemberType]
+    if info is None:
+        raise gevent.Timeout(None, "get_product_info returned None")
+    logger.debug(f"Product info request took: {time.time() - start}s")
+    return ProductInfo(info)
+
+
 def _get_product_info(client, app_ids):
     if len(app_ids) == 0:
         raise ValueError("app_ids cannot be empty.")
     with _GEVENT_LOCK:
-        if not client.logged_on:
-            print("Logging in anonymously...", end="", flush=True)
-            client.anonymous_login()
-            print(" Done!")
+        _ensure_client_session(client)
         last_error: Exception | None = None
-        # Steam can drop the WebSocket mid-fetch with anything from
-        # gevent.Timeout to socket.timeout, ConnectionResetError, EOFError,
-        # or steam.client's own SteamError. Treat them all as the same
-        # transient failure and retry instead of letting the exception
-        # bubble up and crash the worker thread.
-        import socket
-        try:
-            from steam.exceptions import SteamError  # type: ignore
-        except Exception:
-            SteamError = ()  # type: ignore[assignment]
-        transient = (
-            gevent.Timeout,
-            socket.timeout,
-            ConnectionResetError,
-            ConnectionAbortedError,
-            ConnectionError,
-            EOFError,
-            OSError,
-        )
-        if SteamError:
-            transient = transient + (SteamError,)  # type: ignore[assignment]
+        transient = _steam_transient_errors()
         for attempt in range(1, _MAX_APP_INFO_RETRIES + 1):
             try:
-                print("Getting app info...")
-                logger.debug(f"Getting info for {', '.join([str(x) for x in app_ids])}")
-                start = time.time()
-                info = client.get_product_info(  # pyright: ignore[reportUnknownMemberType]
-                    app_ids
-                )
-                if info is None:
-                    raise gevent.Timeout(None, "get_product_info returned None")
-                logger.debug(f"Product info request took: {time.time() - start}s")
-                return ProductInfo(info)
+                return _request_app_info(client, app_ids)
             except transient as e:
                 last_error = e
                 logger.debug(f"App info attempt {attempt} hit {type(e).__name__}: {e}")
                 if attempt < _MAX_APP_INFO_RETRIES:
                     print(f"Request timed out. Trying again ({attempt}/{_MAX_APP_INFO_RETRIES})...")
-                    try:
-                        client.anonymous_login()
-                    except Exception:
-                        pass
+                    _reopen_client_session(client)
                     time.sleep(2)
                     continue
                 print(
@@ -107,11 +121,11 @@ def _get_product_info(client, app_ids):
                 # Return an empty ProductInfo instead of raising so the
                 # caller's worker thread doesn't crash. The bridge will
                 # surface "no game info" via its existing empty-result path.
-                return ProductInfo({"apps": {}, "packages": {}})
+                return _empty_product_info()
         # All retries exhausted without an exception we recognised.
         if last_error is not None:
             logger.warning(f"App info gave up after {_MAX_APP_INFO_RETRIES} attempts: {last_error}")
-        return ProductInfo({"apps": {}, "packages": {}})
+        return _empty_product_info()
 
 
 class SteamInfoProvider:
@@ -121,26 +135,35 @@ class SteamInfoProvider:
         self._cache: dict[int, Any] = {}
         self._persistent_cache = get_cache()
 
+    def _cache_key(self, app_id):
+        return f"app_info_{app_id}"
+
+    def _load_cached_app(self, app_id) -> bool:
+        cached_data = self._persistent_cache.get(self._cache_key(app_id))
+        if cached_data is None:
+            return False
+        self._cache[app_id] = cached_data
+        logger.debug(f"Loaded app {app_id} from persistent cache")
+        return True
+
+    def _store_app_payloads(self, apps):
+        for app_id, app_data in apps.items():
+            self._cache[app_id] = app_data
+            self._persistent_cache.set(self._cache_key(app_id), app_data)
+
     def get_app_info(self, app_ids):
         missing = []
         for app_id in app_ids:
-            if app_id not in self._cache:
-                cache_key = f"app_info_{app_id}"
-                cached_data = self._persistent_cache.get(cache_key)
-                if cached_data is not None:
-                    self._cache[app_id] = cached_data
-                    logger.debug(f"Loaded app {app_id} from persistent cache")
-                else:
-                    missing.append(app_id)
+            if app_id in self._cache:
+                continue
+            if not self._load_cached_app(app_id):
+                missing.append(app_id)
         if missing:
             info = _get_product_info(self.client, missing)
             apps = info.get("apps", {})
             valid_ids = set(apps.keys())
             invalid_ids = set(missing) - valid_ids
-            for app_id, app_data in apps.items():
-                self._cache[app_id] = app_data
-                cache_key = f"app_info_{app_id}"
-                self._persistent_cache.set(cache_key, app_data)
+            self._store_app_payloads(apps)
             for app_id in invalid_ids:
                 self._cache[app_id] = False
         else:

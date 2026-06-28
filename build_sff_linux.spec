@@ -216,7 +216,6 @@ a = Analysis(
         'sff.tools',
         'sff.tools.gbe_token_generator',
         'sff.tools.vdf_key_extractor',
-        'sff.tools.capcom_save_fix',
         # Misc
         'psutil',
         'keyring',

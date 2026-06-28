@@ -40,7 +40,7 @@ from sff.download_manager import DownloadManager
 from sff.game_specific import ACFInfo, GameHandler
 from sff.http_utils import download_to_path, get_game_name
 from sff.library_scanner import LibraryScanner
-from sff.lua.manager import LuaManager
+from sff.lua.manager import LuaManager, write_manifest_pins_to_lua
 from sff.lua.writer import ACFWriter, ConfigVDFWriter
 from sff.manifest.downloader import ManifestDownloader
 from sff.midi import MidiPlayer, _find_c_files
@@ -103,20 +103,15 @@ else:
 
 
 def music_toggle_decorator(func):  # type: ignore
-    """
-    A decorator that mutes/unmutes channels before/after a method call.
-    The wrapper will receive the class instance as its first argument.
-    """
-
     @functools.wraps(func)  # type: ignore
     def wrapper(self: "UI", *args, **kwargs):  # type: ignore
-        if self.midi_player:
-            self.midi_player.set_range(0, 5, 0)
+        player = self.midi_player if hasattr(self, "midi_player") else None
+        if player is not None:
+            player.set_range(0, 5, 0)
         result = func(self, *args, **kwargs)  # type: ignore
-        if self.midi_player:
-            self.midi_player.set_range(0, 5, 1)
+        if player is not None:
+            player.set_range(0, 5, 1)
         return result  # type: ignore
-
     return wrapper  # type: ignore
 
 
@@ -251,10 +246,11 @@ class UI:
             self.midi_player = None
 
     def kill_midi_player(self):
-        if self.midi_player:
-            self.midi_player.stop()
+        player = getattr(self, "midi_player", None)
+        if player is not None:
+            player.stop()
             del self.midi_player
-            self.midi_player = None  # prolly does nothing but whatever
+            self.midi_player = None
 
     @music_toggle_decorator
     def edit_settings_menu(self):
@@ -692,7 +688,6 @@ class UI:
                 return MainReturnCode.LOOP_NO_PROMPT
         lua_manager = LuaManager(self.os_type)
         downloader = ManifestDownloader(self._steam_provider(), self.steam_path)
-        steam_proc = None
         parsed_lua = lua_manager.fetch_lua()
         if parsed_lua is None:
             return MainReturnCode.LOOP_NO_PROMPT
@@ -751,10 +746,6 @@ class UI:
                     zip_folder(dst, target_zip)
                     for file in map(lambda x: dst / x.name, manifests):
                         file.unlink(missing_ok=True)
-        if steam_proc:
-            auto_launch = steam_proc.prompt_launch_or_restart()
-        else:
-            auto_launch = False
         print(Fore.GREEN + "\nSuccess! ", end="")
         if move_files and dst:
             if do_zip and target_zip:
@@ -786,7 +777,6 @@ class UI:
         downloader = ManifestDownloader(provider, self.steam_path)
         config = ConfigVDFWriter(self.steam_path)
         acf = ACFWriter(lib_path)
-        steam_proc = None
         parsed_lua = lua_manager.fetch_lua(
             LuaChoice.ADD_LUA if file else None, override_path=file
         )
@@ -900,10 +890,6 @@ class UI:
             "Processing Complete",
             f"Successfully processed {parsed_lua.app_id}"
         )
-        if steam_proc:
-            auto_launch = steam_proc.prompt_launch_or_restart()
-        else:
-            auto_launch = False
         if sys.platform != "win32":
             print(
                 Fore.GREEN
@@ -964,7 +950,6 @@ class UI:
             _maybe_prompt_manifest_pins(parsed_lua)
         config = ConfigVDFWriter(self.steam_path)
         acf = ACFWriter(lib_path)
-        steam_proc = None
         if parsed_lua.path:
             self.recent_files_manager.add(parsed_lua.path)
         self.analytics_tracker.record_feature_usage("process_from_store")
@@ -1077,8 +1062,6 @@ class UI:
             "Download Complete",
             f"Successfully installed {parsed_lua.app_id}",
         )
-        if steam_proc:
-            steam_proc.prompt_launch_or_restart()
         if download_ok:
             print(
                 Fore.GREEN
@@ -1438,6 +1421,7 @@ class UI:
                 if parsed_lua is None:
                     print(Fore.RED + f"✗ Failed to parse saved lua for {acf.name}, skipping" + Style.RESET_ALL)
                     continue
+                parsed_lua.manifest_overrides = {}
                 # Refresh the stplug-in copy in case a saved_lua/ rev
                 # changed since the original install.
                 install_lua_to_steam(
@@ -1468,9 +1452,14 @@ class UI:
                     acf_writer = ACFWriter(lib)
                     acf_writer.patch_acf_depot_manifests(acf_file, new_manifest_map)
                     acf_writer._patch_acf_error_state(acf_file)
+                    saved_lua_file = lua_manager.saved_lua / f"{parsed_lua.app_id}.lua"
+                    pinned_count = write_manifest_pins_to_lua(saved_lua_file, new_manifest_map)
+                    if pinned_count:
+                        install_lua_to_steam(self.steam_path, str(parsed_lua.app_id), saved_lua_file)
                     print(
                         Fore.GREEN
                         + f"  Patched ACF with {len(new_manifest_map)} depot(s)"
+                        + (f" and wrote {pinned_count} Lua pin(s)" if pinned_count else "")
                         + Style.RESET_ALL
                     )
 
@@ -1510,6 +1499,7 @@ class UI:
                 parsed = parse_lua_contents(contents, lua_file)
                 if parsed is None:
                     continue
+                parsed.manifest_overrides = {}
                 # Quick prefilter: if every depot in the lua already has a
                 # manifest in depotcache, don't waste a Steam fetch.
                 pin_map = getattr(parsed, "manifest_overrides", {}) or {}
@@ -1538,9 +1528,25 @@ class UI:
                 use_parallel = get_setting(Settings.USE_PARALLEL_DOWNLOADS)
                 try:
                     if use_parallel:
-                        downloader.download_manifests_parallel(parsed, auto_manifest=True)
+                        manifest_paths = downloader.download_manifests_parallel(parsed, auto_manifest=True)
                     else:
-                        downloader.download_manifests(parsed, auto_manifest=True)
+                        manifest_paths = downloader.download_manifests(parsed, auto_manifest=True)
+                    new_manifest_map = {}
+                    for mp in (manifest_paths or []):
+                        stem = Path(mp).stem
+                        parts = stem.split("_")
+                        if len(parts) == 2 and all(p.isdigit() for p in parts):
+                            new_manifest_map[parts[0]] = parts[1]
+                    if new_manifest_map:
+                        pinned_count = write_manifest_pins_to_lua(lua_file, new_manifest_map)
+                        saved_lua_file = lua_manager.saved_lua / f"{parsed.app_id}.lua"
+                        if saved_lua_file.exists():
+                            write_manifest_pins_to_lua(saved_lua_file, new_manifest_map)
+                        print(
+                            Fore.GREEN
+                            + f"  Wrote {pinned_count} Lua manifest pin(s)"
+                            + Style.RESET_ALL
+                        )
                 except Exception as e:
                     logger.warning("Pass 2: download failed for %s: %s", lua_file.name, e)
                     print(

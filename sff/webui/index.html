@@ -101,10 +101,17 @@
                 <button class="action-card compact platform-win" data-action="multiplayer" data-tooltip="Apply online-fix.me multiplayer patches. Try this if LC Online Fix didn't work for the game.">
                     <svg class="action-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
                     <span class="action-title">Multiplayer Fix</span>
+                    <span class="action-desc warn-achievements">Version-specific files</span>
                 </button>
                 <button class="action-card compact platform-win" data-action="auto_lc_setup" data-tooltip="Copy LumaCore DLLs to your Steam folder and remove old GreenLuma files (Windows only)">
                     <svg class="action-icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
                     <span class="action-title">Auto LC Setup</span>
+                </button>
+            </div>
+            <div class="home-quick-row platform-linux">
+                <button class="action-card compact platform-linux" data-action="linux_setup" data-tooltip="Rerun Linux setup: install/update SLSsteam and ensure .NET 9 is available">
+                    <svg class="action-icon" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
+                    <span class="action-title">Linux Setup</span>
                 </button>
             </div>
 
@@ -137,6 +144,9 @@
                 <div id="outside-mode-row" class="outside-game-row" style="display:none;margin-top:8px">
                     <input type="text" id="outside-path-display" class="outside-path-input" readonly placeholder="No folder selected" data-tooltip="Game folder path">
                     <button id="outside-path-browse" class="btn" data-tooltip="Browse for game folder">Browse</button>
+                    <label class="outside-name-label" data-tooltip="Game name used for Multiplayer Fix and outside-Steam actions">Game name:
+                        <input type="text" id="outside-game-name" class="outside-name-input" placeholder="Required for Multiplayer Fix">
+                    </label>
                     <label class="outside-appid-label" data-tooltip="Optional — leave blank if unknown">App ID:
                         <input type="text" id="outside-appid" class="outside-appid-input" placeholder="Optional">
                     </label>
@@ -320,13 +330,18 @@ start YourGame-Shipping.exe</pre>
                 <div class="action-grid">
                     <button class="action-card" id="bulk-import-folder" data-action="folder_scan" data-tooltip="Pick a folder; SteaMidra walks it recursively and imports every valid .lua / .manifest file in one batch.">
                         <svg class="action-icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
-                        <span class="action-title" data-i18n="Select Folder">Select Folder</span>
+                        <span class="action-title" data-i18n="Choose Folder">Choose Folder</span>
                         <span class="action-desc">Folder scan + bulk import</span>
                     </button>
+                    <button class="action-card" id="bulk-import-archive" data-action="archive_scan" data-tooltip="Pick a .lua, .zip, .rar, .7z, or .manifest file and import it through the bulk queue.">
+                        <svg class="action-icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        <span class="action-title">Select Manifest Archive</span>
+                        <span class="action-desc">Lua/archive import</span>
+                    </button>
                 </div>
-                <div id="drop-zone" class="bulk-drop-zone hidden" data-tooltip="Drag .lua and .manifest files here to bulk import them">
+                <div id="drop-zone" class="bulk-drop-zone hidden" data-tooltip="Drag .lua, .zip, .rar, .7z, and .manifest files here to bulk import them">
                     <span class="bulk-drop-zone-icon" aria-hidden="true">⤓</span>
-                    <span class="bulk-drop-zone-text">Drop .lua / .manifest files here</span>
+                    <span class="bulk-drop-zone-text">Drop .lua / archive / .manifest files here</span>
                 </div>
                 <div id="aggregate-progress" class="bulk-aggregate-progress hidden">
                     <div class="bulk-aggregate-header">
@@ -366,12 +381,49 @@ start YourGame-Shipping.exe</pre>
                         <span class="action-title">Update All Games</span>
                         <span class="action-desc">Refresh all installed games</span>
                     </button>
+                    <button class="action-card" data-action="let_updates" data-tooltip="Toggle the helper Lua that lets Steam show update prompts for pinned manifest games">
+                        <svg class="action-icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 11-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>
+                        <span class="action-title">Let Updates</span>
+                        <span class="action-desc">Toggle Steam update prompts</span>
+                    </button>
                 </div>
+            </div>
+
+            <div class="section-group">
+                <h2 class="section-title">Provider</h2>
+                <p class="setting-hint">Share only clean depot IDs, 64-character keys, names, kind, and parent info. Lua files, Steam config, paths, accounts, logs, tokens, cookies, credentials, manifests, and personal files are never uploaded.</p>
+                <div class="action-grid small">
+                    <button class="action-card compact" data-action="provider_preview" data-tooltip="Preview how many clean local keys can be contributed">
+                        <svg class="action-icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        <span class="action-title">View Provider Details</span>
+                    </button>
+                    <button class="action-card compact" data-action="provider_submit" data-tooltip="Submit clean local depot keys to the public provider">
+                        <svg class="action-icon" viewBox="0 0 24 24"><path d="M12 19V5"/><polyline points="5 12 12 5 19 12"/><path d="M5 19h14"/></svg>
+                        <span class="action-title">Contribute Keys</span>
+                    </button>
+                    <button class="action-card compact" data-action="provider_update" data-tooltip="Download the latest provider cache">
+                        <svg class="action-icon" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+                        <span class="action-title">Update Provider</span>
+                    </button>
+                </div>
+                <label class="setting-checkbox" style="margin-top:10px;">
+                    <input type="checkbox" id="home-provider-contribute">
+                    <span>Contribute clean keys every 24 hours</span>
+                </label>
+                <label class="setting-checkbox" style="margin-top:8px;" data-tooltip="Optional: asks Steam for appinfo before submitting so missing depot names and parent info can be filled. This may slow submission on large key sets.">
+                    <input type="checkbox" id="home-provider-enrich">
+                    <span>Fill missing metadata with Steam appinfo before submit</span>
+                </label>
+                <p id="home-provider-status" class="setting-hint" style="margin-top:8px;"></p>
             </div>
 
             <div class="section-group">
                 <h2 class="section-title">Quick Tools</h2>
                 <div class="action-grid small">
+                    <button class="action-card compact platform-linux" data-action="linux_setup" data-tooltip="Set up or update Linux tools: SLSsteam and .NET 9">
+                        <svg class="action-icon" viewBox="0 0 24 24"><path d="M12 2v20"/><path d="M5 9h14"/><path d="M5 15h14"/><path d="M17 3a9 9 0 010 18"/><path d="M7 3a9 9 0 000 18"/></svg>
+                        <span class="action-title">Set Up Linux Tools</span>
+                    </button>
                     <button class="action-card compact" data-action="workshop" data-tooltip="Download a Steam Workshop mod by entering its Workshop ID">
                         <svg class="action-icon" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
                         <span class="action-title">Workshop Item</span>
@@ -459,10 +511,12 @@ start YourGame-Shipping.exe</pre>
                         </div>
                         <div class="custom-select-dropdown hidden"></div>
                     </div>
+                    <button id="store-update-list-btn" class="btn btn-sm" data-tooltip="Download latest game list and metadata from all sources">Update List</button>
                     <div class="view-toggle">
                         <button id="view-grid" class="btn btn-icon active" data-tooltip="Grid view with cover images"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></button>
                         <button id="view-list" class="btn btn-icon" data-tooltip="Compact list view"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></button>
                         <button id="store-toggle-images" class="btn btn-icon" data-tooltip="Toggle game cover images (hide/show)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></button>
+                        <button id="store-toggle-nsfw" class="btn btn-icon active" data-tooltip="Toggle NSFW content visibility"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19M14.12 14.12a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
                     </div>
                 </div>
             </div>
@@ -479,8 +533,8 @@ start YourGame-Shipping.exe</pre>
                 <button class="genre-chip" data-genre="puzzle">Puzzle</button>
                 <button class="genre-chip" data-genre="horror">Horror</button>
                 <button class="genre-chip" data-genre="fighting">Fighting</button>
-                <button class="genre-chip" data-genre="platformer">Platformer</button>
-                <button class="genre-chip" data-genre="vr">VR</button>
+                <button class="genre-chip" data-genre="indie">Indie</button>
+                <button class="genre-chip" data-genre="casual">Casual</button>
             </div>
             <div id="store-connect-banner" class="connect-banner">
                 <p>Enter your Hubcap API key to see manifest availability.</p>
@@ -877,7 +931,7 @@ start YourGame-Shipping.exe</pre>
                         <input type="text" id="cloud-backup-dest" placeholder="Browse to a folder on your PC..." data-tooltip="The folder Local-provider backups will be saved to. Each game gets its own subfolder named like 'Game Name [AppID]\remote'.">
                         <button id="cloud-backup-browse" class="btn">Browse</button>
                     </div>
-                    <small style="opacity:0.55;">Defaults to <code>%APPDATA%\SteaMidra\save_backups\</code> if you leave this blank, but the per-game backup goes wherever you point this.</small>
+                    <small style="opacity:0.55;">Defaults to <code>&lt;SteaMidra folder&gt;\save_backups\</code> if you leave this blank, but the per-game backup goes wherever you point this.</small>
                 </div>
             </div>
 
@@ -1235,6 +1289,10 @@ start YourGame-Shipping.exe</pre>
                         <input type="checkbox" id="setting-store-show-software" checked>
                         <span data-i18n="Show software in Store">Show software in Store</span>
                     </label>
+                    <label class="checkbox-option" data-tooltip="When ON, games tagged as NSFW in the games.json metadata are hidden from the Store page. Toggle the NSFW button in the Store tab to override.">
+                        <input type="checkbox" id="setting-block-nsfw" checked>
+                        <span data-i18n="Block NSFW content in Store">Block NSFW content in Store</span>
+                    </label>
                 </div>
             </div>
 
@@ -1297,10 +1355,10 @@ start YourGame-Shipping.exe</pre>
                 <div class="dl-source-picker">
                     <span class="dl-source-label">Download source:</span>
                     <label class="dl-source-option">
-                        <input type="radio" name="dl-source" value="hubcap" checked> Hubcap
+                        <input type="radio" name="dl-source" value="oureveryday" checked> OurEveryday
                     </label>
                     <label class="dl-source-option">
-                        <input type="radio" name="dl-source" value="oureveryday"> OurEveryday
+                        <input type="radio" name="dl-source" value="hubcap"> Hubcap
                     </label>
                     <label class="dl-source-option">
                         <input type="radio" name="dl-source" value="ryuu"> Ryuu
@@ -1317,7 +1375,7 @@ start YourGame-Shipping.exe</pre>
                 </div>
                 <div id="dl-local-row" style="display:none; margin-top:8px; padding-left:4px; display:none;">
                     <div style="display:flex; gap:8px; align-items:center;">
-                        <input type="text" id="dl-local-lua-path" readonly placeholder="Select a .lua or .zip file..." style="flex:1; font-size:12px;">
+                        <input type="text" id="dl-local-lua-path" readonly placeholder="Select a .lua, .zip, .rar, or .7z file..." style="flex:1; font-size:12px;">
                         <button id="dl-local-lua-browse" class="btn btn-sm">Browse</button>
                     </div>
                 </div>
@@ -1328,6 +1386,23 @@ start YourGame-Shipping.exe</pre>
                         <button id="dl-manifest-folder-browse" class="btn btn-sm">Browse</button>
                     </div>
                 </div>
+                <div style="margin-top:8px; padding-left:4px;">
+                    <div style="font-size:11px; opacity:0.7; margin-bottom:4px;">Depot OS:</div>
+                    <select id="dl-target-os" style="width:100%; font-size:12px;">
+                        <option value="">Auto</option>
+                        <option value="windows">Windows</option>
+                        <option value="linux">Linux</option>
+                        <option value="all">All depots</option>
+                    </select>
+                </div>
+                <div style="margin-top:8px; padding-left:4px;">
+                    <div style="font-size:11px; opacity:0.7; margin-bottom:4px;">DDMod download location:</div>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <input type="text" id="dl-ddmod-dest-path" readonly placeholder="Choose where DDMod should download..." style="flex:1; font-size:12px;">
+                        <button id="dl-ddmod-dest-browse" class="btn btn-sm">Browse</button>
+                        <button id="dl-ddmod-dest-clear" class="btn btn-sm">Clear</button>
+                    </div>
+                </div>
                 <button id="dl-fastest" class="download-option" data-tooltip="Adds the game to Steam's library. Open Steam to download. No depot pull is performed by SteaMidra.">
                     <svg class="dl-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                     <div class="dl-info">
@@ -1335,11 +1410,11 @@ start YourGame-Shipping.exe</pre>
                         <span class="dl-desc" id="dl-fastest-desc" data-i18n="Adds the game to Steam's library. Open Steam to download.">Adds the game to Steam's library. Open Steam to download.</span>
                     </div>
                 </button>
-                <button id="dl-older" class="download-option" data-tooltip="Uses DepotDownloaderMod to download a specific older version of the game">
+                <button id="dl-older" class="download-option" data-tooltip="Download a specific older version of the game — choose between DepotDownloaderMod or Steam (Native)">
                     <svg class="dl-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
                     <div class="dl-info">
-                        <span class="dl-title">Download older version</span>
-                        <span class="dl-desc">Uses DepotDownloaderMod to download a specific older version (requires .NET 9)</span>
+                        <span class="dl-title">Download Older Version</span>
+                        <span class="dl-desc">Pick a specific older version via DDMod or Steam (Native).</span>
                     </div>
                 </button>
                 <button id="dl-ddmod" class="download-option" data-tooltip="Download directly using DepotDownloaderMod with depot keys from the selected source (requires .NET 9)">
@@ -1387,6 +1462,37 @@ start YourGame-Shipping.exe</pre>
         </div>
     </div>
 
+    <!-- Older Version Method Choice Modal -->
+    <div id="older-method-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Download Older Version</h2>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom:14px;opacity:0.85;">Choose how to download the older version.</p>
+                <button id="older-method-ddmod" class="download-option" data-tooltip="Download game files directly using DepotDownloaderMod (requires .NET 9)">
+                    <svg class="dl-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    <div class="dl-info">
+                        <span class="dl-title">DepotDownloaderMod</span>
+                        <span class="dl-desc">Downloads game files directly using DDMod. Works on all platforms.</span>
+                    </div>
+                </button>
+                <button id="older-method-steam" class="download-option" data-tooltip="Uses Steam to download — faster for large games">
+                    <svg class="dl-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                    <div class="dl-info">
+                        <span class="dl-title">Steam (Native)</span>
+                        <span class="dl-desc">Steam downloads the older version natively. Set manifest IDs, Steam handles the rest. Windows only.</span>
+                    </div>
+                </button>
+            </div>
+            <div class="modal-footer">
+                <button class="btn modal-cancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Steam Home Download Modal -->
     <div id="steam-home-modal" class="modal hidden">
         <div class="modal-overlay"></div>
@@ -1406,10 +1512,10 @@ start YourGame-Shipping.exe</pre>
                 <div class="dl-source-picker" style="margin-bottom:10px;">
                     <span class="dl-source-label">Lua source:</span>
                     <label class="dl-source-option">
-                        <input type="radio" name="steam-home-source" value="hubcap" checked> Hubcap
+                        <input type="radio" name="steam-home-source" value="oureveryday" checked> OurEveryday
                     </label>
                     <label class="dl-source-option">
-                        <input type="radio" name="steam-home-source" value="oureveryday"> OurEveryday
+                        <input type="radio" name="steam-home-source" value="hubcap"> Hubcap
                     </label>
                     <label class="dl-source-option">
                         <input type="radio" name="steam-home-source" value="ryuu"> Ryuu
@@ -1428,7 +1534,7 @@ start YourGame-Shipping.exe</pre>
                 </div>
                 <div id="steam-home-local-row" style="display:none; margin-bottom:10px;">
                     <div style="display:flex; gap:8px; align-items:center;">
-                        <input type="text" id="steam-home-local-path" readonly placeholder="Select a .lua or .zip file..." style="flex:1; font-size:12px;">
+                        <input type="text" id="steam-home-local-path" readonly placeholder="Select a .lua, .zip, .rar, or .7z file..." style="flex:1; font-size:12px;">
                         <button id="steam-home-local-browse" class="btn btn-sm">Browse</button>
                     </div>
                 </div>
@@ -1493,10 +1599,10 @@ start YourGame-Shipping.exe</pre>
                 <div class="dl-source-picker" style="margin-bottom:10px;">
                     <span class="dl-source-label">Lua source:</span>
                     <label class="dl-source-option">
-                        <input type="radio" name="ddmod-home-source" value="hubcap" checked> Hubcap
+                        <input type="radio" name="ddmod-home-source" value="oureveryday" checked> OurEveryday
                     </label>
                     <label class="dl-source-option">
-                        <input type="radio" name="ddmod-home-source" value="oureveryday"> OurEveryday
+                        <input type="radio" name="ddmod-home-source" value="hubcap"> Hubcap
                     </label>
                     <label class="dl-source-option">
                         <input type="radio" name="ddmod-home-source" value="ryuu"> Ryuu
@@ -1510,7 +1616,7 @@ start YourGame-Shipping.exe</pre>
                 </div>
                 <div id="ddmod-home-local-row" style="display:none; margin-bottom:10px;">
                     <div style="display:flex; gap:8px; align-items:center;">
-                        <input type="text" id="ddmod-home-local-path" readonly placeholder="Select a .lua or .zip file..." style="flex:1; font-size:12px;">
+                        <input type="text" id="ddmod-home-local-path" readonly placeholder="Select a .lua, .zip, .rar, or .7z file..." style="flex:1; font-size:12px;">
                         <button id="ddmod-home-local-browse" class="btn btn-sm">Browse</button>
                     </div>
                 </div>
@@ -1525,6 +1631,23 @@ start YourGame-Shipping.exe</pre>
                     <select id="ddmod-home-recent-select" style="width:100%; font-size:13px;">
                         <option value="">-- select a recent file --</option>
                     </select>
+                </div>
+                <div style="margin-bottom:10px;">
+                    <div style="font-size:11px; opacity:0.7; margin-bottom:4px;">Depot OS:</div>
+                    <select id="ddmod-home-target-os" style="width:100%; font-size:13px;">
+                        <option value="">Auto</option>
+                        <option value="windows">Windows</option>
+                        <option value="linux">Linux</option>
+                        <option value="all">All depots</option>
+                    </select>
+                </div>
+                <div style="margin-bottom:10px;">
+                    <div style="font-size:11px; opacity:0.7; margin-bottom:4px;">Download location:</div>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <input type="text" id="ddmod-home-dest-path" readonly placeholder="Choose where DDMod should download..." style="flex:1; font-size:12px;">
+                        <button id="ddmod-home-dest-browse" class="btn btn-sm">Browse</button>
+                        <button id="ddmod-home-dest-clear" class="btn btn-sm">Clear</button>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -1550,9 +1673,15 @@ start YourGame-Shipping.exe</pre>
                         <tbody id="version-tbody"></tbody>
                     </table>
                 </div>
+                <div style="margin-top:12px;border-top:1px solid var(--border,rgba(255,255,255,0.12));padding-top:10px;">
+                    <label style="font-size:12px;font-weight:600;opacity:0.8;">Manual Depot / Manifest IDs</label>
+                    <textarea id="version-manual-input" rows="4" placeholder="One per line, for example:&#10;939851=2233225956230312354&#10;939852 45510479311498930" style="width:100%;box-sizing:border-box;margin-top:6px;font-family:monospace;font-size:12px;"></textarea>
+                    <div style="font-size:11px;opacity:0.65;margin-top:4px;">Use this when the history list is empty or SteamDB blocks the request. Format: depot ID, then manifest GID.</div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button id="version-download" class="btn btn-primary" disabled>Download Selected</button>
+                <button id="version-manual-download" class="btn">Download Manual IDs</button>
                 <button class="btn modal-cancel">Cancel</button>
             </div>
         </div>
@@ -1596,6 +1725,38 @@ start YourGame-Shipping.exe</pre>
             </div>
             <div class="modal-footer">
                 <button id="update-manifests-run" class="btn btn-primary">Update Selected</button>
+                <button class="btn modal-cancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Per-game Let Updates Modal -->
+    <div id="let-updates-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Let Games Update</h2>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom:10px;opacity:0.85;">
+                    Select games that should update through Steam. SteaMidra writes the global
+                    <code>00_LetUpdate_override.lua</code> so new games update by default, and keeps unchecked games pinned.
+                    It also comments <code>setManifestid</code> lines for checked game Lua files.
+                </p>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <span style="font-size:12px;opacity:0.6;" id="lu-count">Loading...</span>
+                    <button id="lu-toggle-all" class="btn btn-sm" style="font-size:12px;padding:3px 10px;">Deselect All</button>
+                </div>
+                <div id="lu-helper-status" style="font-size:12px;opacity:0.7;margin-bottom:8px;">Helper status: checking...</div>
+                <div id="lu-game-list" style="max-height:320px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px 10px;background:var(--bg-secondary, var(--bg));">
+                    <span style="opacity:0.5;font-size:13px;">Loading games...</span>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="let-updates-add-helper" class="btn">Add Helper Lua</button>
+                <button id="let-updates-remove-helper" class="btn">Remove Helper Lua</button>
+                <button id="let-updates-save" class="btn btn-primary">Save Selection</button>
                 <button class="btn modal-cancel">Cancel</button>
             </div>
         </div>
@@ -1669,7 +1830,7 @@ start YourGame-Shipping.exe</pre>
                 <button class="modal-close">&times;</button>
             </div>
             <div class="modal-body">
-                <p style="margin-bottom:14px;opacity:0.85;font-size:13px;">Downloads the latest <code>LumaCore</code> release from GitHub, removes all GreenLuma files (first run only), cleans up old LumaCore DLLs, then installs <code>dwmapi.dll</code> and <code>LumaCore.dll</code> into your Steam directory.</p>
+                <p style="margin-bottom:14px;opacity:0.85;font-size:13px;">Downloads the latest <code>LumaCore</code> release from GitHub, removes all GreenLuma files (first run only), cleans up old LumaCore DLLs, then installs <code>dwmapi.dll</code>, <code>xinput1_4.dll</code>, and <code>LumaCore.dll</code> into your Steam directory.</p>
                 <div id="lc-version-row" style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-bottom:14px;font-size:12px;opacity:0.85;">
                     <span><strong>Installed:</strong> <span id="lc-version-installed">—</span></span>
                     <span><strong>Latest:</strong> <span id="lc-version-latest">—</span></span>
@@ -1680,6 +1841,14 @@ start YourGame-Shipping.exe</pre>
                         <strong>A new LumaCore version is available.</strong>
                         Click <em>Install LumaCore</em> below to download and apply it. Steam will close automatically.
                     </div>
+                </div>
+                <div id="lc-steam-updates-warning" class="hint-banner" style="border-left-color:#ef4444;margin-bottom:12px;background:rgba(239,68,68,0.08);">
+                    <div class="hint-text" style="font-size:12px;">
+                        <strong style="color:#fca5a5;">Recommended before using LumaCore:</strong>
+                        block Steam client auto-updates so a Steam update does not replace the patched launch files.
+                        You can unblock it later from the Steam Updates tile.
+                    </div>
+                    <button id="lc-block-steam-updates" class="btn btn-sm" type="button">Block Steam updates</button>
                 </div>
                 <div class="input-group" style="margin-bottom:14px;">
                     <label style="font-size:12px;font-weight:600;opacity:0.7;">STEAM PATH</label>

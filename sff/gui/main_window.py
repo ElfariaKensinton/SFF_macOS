@@ -20,7 +20,7 @@ import re
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QEasingCurve, QEvent, QObject, QPropertyAnimation, QThread, QTimer, QUrl, Qt, pyqtSignal
+from PyQt6.QtCore import QByteArray, QEasingCurve, QEvent, QObject, QPropertyAnimation, QThread, QTimer, QUrl, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPixmap, QTextCursor
 from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtWebEngineCore import QWebEngineSettings
@@ -190,7 +190,14 @@ class SFFMainWindow(QMainWindow):
         self._worker_thread = None
         self.setWindowTitle("SteaMidra")
         self.setMinimumSize(960, 700)
-        self.resize(1020, 780)
+        geom = get_setting(_S.WINDOW_GEOMETRY)
+        if geom:
+            try:
+                self.restoreGeometry(QByteArray.fromHex(str(geom).encode()))
+            except Exception:
+                self.resize(1020, 780)
+        else:
+            self.resize(1020, 780)
         from sff.gui.gui_prompts import update_parent
         update_parent(self)
         central = QWidget()
@@ -205,6 +212,22 @@ class SFFMainWindow(QMainWindow):
         toggle_bar.addStretch()
         toggle_bar.addWidget(self._web_ui_toggle)
         root_layout.addLayout(toggle_bar)
+
+        # ── LumaCore status banner (hidden until a poll finds missing TOML) ──
+        self._lumacore_banner = QLabel()
+        self._lumacore_banner.setObjectName("LumaCoreStatusBanner")
+        self._lumacore_banner.setVisible(False)
+        self._lumacore_banner.setWordWrap(True)
+        self._lumacore_banner.setStyleSheet(
+            "QLabel#LumaCoreStatusBanner {"
+            " background-color: #5c3c0e;"
+            " color: #f0d080;"
+            " padding: 6px 12px;"
+            " font-size: 12px;"
+            " border-bottom: 1px solid #7a5018;"
+            "}"
+        )
+        root_layout.addWidget(self._lumacore_banner)
 
         # ── Classic tab UI (hidden by default — new UI is primary) ──
         self.tabs = QTabWidget()
@@ -244,8 +267,22 @@ class SFFMainWindow(QMainWindow):
             QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
         )
         self._install_web_splash()
-        self._web_ui_active = True
+        saved_ui_mode = get_setting(_S.USE_MODERN_UI)
+        self._web_ui_active = True if saved_ui_mode is None else bool(saved_ui_mode)
         self._web_ui_loaded = False
+
+        # LumaCore status banner poller. Reads <steam>\lumacore\status.json
+        # every 2 s and shows a banner when the TOML pattern file is missing
+        # for either steamclient or steamui. Parented to self so the timer
+        # is cleaned up when the window closes.
+        try:
+            from sff.lumacore.status_banner import StatusBannerPoller
+            self._status_poller = StatusBannerPoller(steam_path, parent=self)
+            self._status_poller.unavailable.connect(self._show_lumacore_banner)
+            self._status_poller.cleared.connect(self._hide_lumacore_banner)
+        except Exception:
+            self._status_poller = None
+            logger.exception("Failed to create LumaCore status banner poller")
 
         # Manifest preservation watcher. The staging dir under
         # <sff_data>/manifests/ already holds every manifest SteaMidra has
@@ -502,6 +539,38 @@ class SFFMainWindow(QMainWindow):
             tools_row2.addStretch()
             tools_layout.addLayout(tools_row2)
         layout.addWidget(tools_group)
+
+        if sys.platform == "win32":
+            lc_group = QGroupBox(T("LumaCore Setup"))
+            lc_layout = QVBoxLayout(lc_group)
+            lc_row1 = QHBoxLayout()
+            lc_row1.setSpacing(4)
+            lc_install_btn = QPushButton(T("Install / Update LumaCore"))
+            lc_install_btn.setToolTip(
+                T("Download the latest LumaCore release and install it into the Steam folder.")
+            )
+            lc_install_btn.clicked.connect(self._install_lumacore_gui)
+            lc_row1.addWidget(lc_install_btn)
+            lc_deact_btn = QPushButton(T("Deactivate LumaCore"))
+            lc_deact_btn.setToolTip(T("Close Steam and remove the LumaCore DLLs."))
+            lc_deact_btn.clicked.connect(self._deactivate_lumacore_gui)
+            lc_row1.addWidget(lc_deact_btn)
+            lc_ver_btn = QPushButton(T("Check Version"))
+            lc_ver_btn.setToolTip(T("Compare the installed LumaCore version with the latest release."))
+            lc_ver_btn.clicked.connect(self._check_lumacore_version_gui)
+            lc_row1.addWidget(lc_ver_btn)
+            lc_row1.addStretch()
+            lc_layout.addLayout(lc_row1)
+            lc_row2 = QHBoxLayout()
+            lc_row2.setSpacing(4)
+            lc_onlinefix_btn = QPushButton(T("LC Online Fix (selected game)"))
+            lc_onlinefix_btn.setToolTip(T("Toggle the -onlinefix launch flag for the selected game."))
+            lc_onlinefix_btn.clicked.connect(self._toggle_online_fix_gui)
+            lc_row2.addWidget(lc_onlinefix_btn)
+            lc_row2.addStretch()
+            lc_layout.addLayout(lc_row2)
+            layout.addWidget(lc_group)
+
         # ── Log ──────────────────────────────────────────────────
         log_group = QGroupBox(T("Log"))
         log_layout = QVBoxLayout(log_group)
@@ -548,10 +617,18 @@ class SFFMainWindow(QMainWindow):
         self._set_theme(self._current_theme, save=_should_save)
         self._on_source_changed()
         self._refresh_game_list()
-        # Start with new web UI by default — hide menu bar
-        menubar.setVisible(False)
-        self._load_web_ui()
-        self._web_ui_loaded = True
+        if self._web_ui_active:
+            menubar.setVisible(False)
+            self.tabs.setVisible(False)
+            self._web_view.setVisible(True)
+            self._load_web_ui()
+            self._web_ui_loaded = True
+            self._web_ui_toggle.setText(T("Switch to Classic UI"))
+        else:
+            menubar.setVisible(True)
+            self.tabs.setVisible(True)
+            self._web_view.setVisible(False)
+            self._web_ui_toggle.setText(T("Switch to New UI"))
         self._tray = None
         self._tray_hide_notified = False
         self._save_watcher_timer = QTimer(self)
@@ -724,6 +801,9 @@ class SFFMainWindow(QMainWindow):
     def _toggle_web_ui(self):
         """Toggle between classic tab UI and new web-based UI."""
         self._web_ui_active = not self._web_ui_active
+        from sff.storage.settings import set_setting
+        from sff.structs import Settings as _S
+        set_setting(_S.USE_MODERN_UI, self._web_ui_active)
 
         if self._web_ui_active:
             # Load web UI on first use
@@ -829,6 +909,9 @@ class SFFMainWindow(QMainWindow):
     def _on_web_view_load_finished(self, ok: bool):
         if not ok:
             return
+        self.dismiss_splash()
+
+    def dismiss_splash(self):
         splash = getattr(self, "_web_splash", None)
         if splash is None or not splash.isVisible():
             return
@@ -865,6 +948,21 @@ class SFFMainWindow(QMainWindow):
                 splash.resize(self._web_view.size())
         return super().eventFilter(obj, event)
 
+    # ── LumaCore status banner ───────────────────────────────────
+
+    def _show_lumacore_banner(self, text: str):
+        banner = getattr(self, "_lumacore_banner", None)
+        if banner is None:
+            return
+        banner.setText(text)
+        banner.setVisible(True)
+
+    def _hide_lumacore_banner(self):
+        banner = getattr(self, "_lumacore_banner", None)
+        if banner is None:
+            return
+        banner.setVisible(False)
+
     # ── Worker management ────────────────────────────────────────
 
     def _start_worker(self, func, label: str = "action", on_done=None):
@@ -888,6 +986,7 @@ class SFFMainWindow(QMainWindow):
         old_stderr = sys.stderr
         sys.stdout = self._stream_emitter  # type: ignore[assignment]
         sys.stderr = self._stream_emitter  # type: ignore[assignment]
+        worker_error = {"message": ""}
         self._worker = GenericWorker(func)
         self._worker_thread = QThread()
         self._worker.moveToThread(self._worker_thread)
@@ -913,9 +1012,13 @@ class SFFMainWindow(QMainWindow):
             self._worker = None
             self._append_log(f"--- Done: {label} ---\n")
             if on_done:
+                self._last_worker_error = worker_error.get("message", "")
                 on_done()
+        def _on_error(msg):
+            worker_error["message"] = str(msg or "")
+            self._append_log(f"Error: {msg}\n")
         self._worker.finished.connect(_on_finish)
-        self._worker.error.connect(lambda msg: self._append_log(f"Error: {msg}\n"))
+        self._worker.error.connect(_on_error)
         self._worker_thread.started.connect(self._worker.run)
         self._worker_thread.start()
 
@@ -1142,7 +1245,9 @@ class SFFMainWindow(QMainWindow):
         game_path = acf.path
         app_id = acf.app_id or "0"
         def _job():
-            run_steamauto(game_path, app_id, mode=mode, print_func=print)
+            code = run_steamauto(game_path, app_id, mode=mode, print_func=print)
+            if code != 0:
+                raise RuntimeError(f"SteamAutoCrack ({mode}) failed with exit code {code}")
         self._start_worker(_job, label=f"SteamAutoCrack ({mode})")
 
     def _run_steam_auto_with_acf(self, acf, mode: str | None = None):
@@ -1166,13 +1271,23 @@ class SFFMainWindow(QMainWindow):
         self._skip_next_achievement_warn = False
         game_path = acf.path
         app_id = acf.app_id or "0"
+        result_box: dict = {"code": None}
         def _job():
-            run_steamauto(game_path, app_id, mode=mode, print_func=print)
+            result_box["code"] = run_steamauto(game_path, app_id, mode=mode, print_func=print)
         def _done():
             if hasattr(self, '_web_bridge') and self._web_bridge:
+                worker_error = getattr(self, "_last_worker_error", "")
+                code = result_box.get("code")
+                success = (not worker_error) and code == 0
+                if worker_error:
+                    message = f"SteamAutoCrack ({mode}) failed: {worker_error}"
+                elif code == 0:
+                    message = f"SteamAutoCrack ({mode}) completed"
+                else:
+                    message = f"SteamAutoCrack ({mode}) failed with exit code {code}"
                 self._web_bridge.task_finished.emit(json.dumps({
-                    "task": "steam_auto", "success": True,
-                    "message": f"SteamAutoCrack ({mode}) completed"
+                    "task": "steam_auto", "success": success,
+                    "message": message,
                 }))
         self._start_worker(_job, label=f"SteamAutoCrack ({mode})", on_done=_done)
 
@@ -1599,13 +1714,18 @@ class SFFMainWindow(QMainWindow):
         self.close()
 
     def closeEvent(self, event):
+        from sff.storage.settings import set_setting
+        from sff.structs import Settings as _S
+        try:
+            set_setting(_S.WINDOW_GEOMETRY, self.saveGeometry().toHex().data().decode())
+        except Exception:
+            pass
         # Read live so Settings toggles take effect without restart.
         # Default ON: X button hides to tray. The user can flip the
         # CLOSE_TO_TRAY checkbox in Settings to make X quit instead.
         # Treat missing / empty / explicit-True values as ON; only
         # "False" / "false" / "0" disable tray behaviour.
         from sff.storage.settings import get_setting
-        from sff.structs import Settings as _S
         try:
             raw = get_setting(_S.CLOSE_TO_TRAY)
         except Exception:
@@ -1942,3 +2062,99 @@ class SFFMainWindow(QMainWindow):
                 T("Dump Achievement Diagnostic"),
                 str(exc),
             )
+
+    # ── LumaCore Setup helpers ────────────────────────────────────
+
+    def _install_lumacore_gui(self):
+        reply = QMessageBox.question(
+            self,
+            T("Install / Update LumaCore"),
+            T("Steam will be closed and LumaCore will be installed into your Steam folder.\n\nContinue?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        steam_path = self.steam_path
+        if not steam_path or not Path(steam_path).is_dir():
+            QMessageBox.warning(self, T("LumaCore Setup"), T("Steam path not found or invalid."))
+            return
+
+        def _job():
+            from sff.lumacore_setup import install_lumacore
+            install_lumacore(Path(steam_path), progress_callback=print)
+
+        self._start_worker(_job, label="Install LumaCore")
+
+    def _deactivate_lumacore_gui(self):
+        reply = QMessageBox.warning(
+            self,
+            T("Deactivate LumaCore"),
+            T("Steam will be closed and the LumaCore DLLs will be removed.\n\nContinue?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        steam_path = self.steam_path
+        if not steam_path or not Path(steam_path).is_dir():
+            QMessageBox.warning(self, T("LumaCore Setup"), T("Steam path not found or invalid."))
+            return
+
+        def _job():
+            from sff.lumacore_setup import deactivate_lumacore
+            deactivate_lumacore(Path(steam_path), progress_callback=print)
+
+        self._start_worker(_job, label="Deactivate LumaCore")
+
+    def _check_lumacore_version_gui(self):
+        steam_path = self.steam_path
+        if not steam_path or not Path(steam_path).is_dir():
+            QMessageBox.warning(self, T("LumaCore Version"), T("Steam path not found or invalid."))
+            return
+        result_box: dict = {}
+
+        def _job():
+            from sff.lumacore_setup import check_for_lumacore_update
+            result_box["result"] = check_for_lumacore_update(Path(steam_path), force=True)
+
+        def _show():
+            result = result_box.get("result")
+            if not isinstance(result, dict):
+                QMessageBox.warning(self, T("LumaCore Version"), T("Version check failed."))
+                return
+            installed = result.get("installed") or T("not installed")
+            latest = result.get("latest") or T("unknown")
+            if result.get("update_available", False):
+                msg = T(f"Update available!\n\nInstalled: {installed}\nLatest: {latest}")
+            else:
+                msg = T(f"LumaCore is up to date.\n\nInstalled: {installed}\nLatest: {latest}")
+            QMessageBox.information(self, T("LumaCore Version"), msg)
+
+        self._start_worker(_job, label="Check LumaCore Version", on_done=_show)
+
+    def _toggle_online_fix_gui(self):
+        acf = self._get_selected_acf()
+        if acf is None:
+            QMessageBox.warning(
+                self,
+                T("LC Online Fix"),
+                T("Select a Steam game from the list first."),
+            )
+            return
+        app_id = str(getattr(acf, "app_id", "") or "")
+        if not app_id:
+            QMessageBox.warning(self, T("LC Online Fix"), T("Could not determine the game's App ID."))
+            return
+        steam_path = self.steam_path
+        if not steam_path or not Path(steam_path).is_dir():
+            QMessageBox.warning(self, T("LC Online Fix"), T("Steam path not found or invalid."))
+            return
+
+        def _job():
+            from sff.launch_options import toggle_online_fix
+            ok, msg = toggle_online_fix(Path(steam_path), app_id)
+            print(msg)
+            return ok
+
+        self._start_worker(_job, label=f"LC Online Fix ({app_id})")

@@ -40,6 +40,94 @@ PROTOBUF_SIGNATURE_MAGIC = 0x1B81B817
 PROTOBUF_ENDOFMANIFEST_MAGIC = 0x32C415AB
 
 
+def _stream_from_manifest_bytes(data: bytes):
+    return read_nth_file_from_zip_bytes(0, data) or io.BytesIO(data)
+
+
+def _read_manifest_section(stream, expected_magic: int):
+    header = stream.read(8)
+    if len(header) != 8:
+        raise ValueError("Manifest section header is incomplete")
+
+    magic, size = struct.unpack("<II", header)
+    if magic != expected_magic:
+        raise ValueError(f"Bad manifest section magic: {hex(magic)}")
+    return stream.read(size)
+
+
+def _payload_and_metadata(stream):
+    payload_bytes = _read_manifest_section(stream, PROTOBUF_PAYLOAD_MAGIC)
+    metadata_bytes = _read_manifest_section(stream, PROTOBUF_METADATA_MAGIC)
+    return payload_bytes, metadata_bytes
+
+
+def _parse_payload(payload_bytes: bytes):
+    payload = ContentManifestPayload()
+    payload.ParseFromString(payload_bytes)
+    return payload
+
+
+def _parse_metadata(metadata_bytes: bytes):
+    metadata = ContentManifestMetadata()
+    metadata.ParseFromString(metadata_bytes)
+    return metadata
+
+
+def _print_mapping(mapping, nth: int) -> None:
+    print(f"\n---\nName: {mapping.filename}\n"
+          f"Size: {mapping.size}\n"
+          f"Flags: {mapping.flags}\n"
+          f"SHA filename: {mapping.sha_filename.hex()}\n"
+          f"SHA content: {mapping.sha_content.hex()}\n"
+          f"Chunk count: {len(mapping.chunks)}\n"
+          "---\n")
+    for chunk_index, chunk in enumerate(mapping.chunks):
+        print(f"Chunk #{chunk_index + 1}")
+        print(f"SHA: {chunk.sha.hex()}\n"
+              f"CRC: {hex(chunk.crc)[2:]}\n"
+              f"Offset: {chunk.offset}\n"
+              f"CB Original: {chunk.cb_original}\n"
+              f"CB Compressed: {chunk.cb_compressed}")
+
+
+def _print_metadata(metadata: ContentManifestMetadata) -> None:
+    print("METADATA")
+    print(f"\n---\nDepot ID: {metadata.depot_id}\n"
+          f"Manifest ID: {metadata.gid_manifest}\n"
+          f"Creation Time: {metadata.creation_time}\n"
+          f"Encrypted: {metadata.filenames_encrypted}\n"
+          f"CB Disk Original: {metadata.cb_disk_original}\n"
+          f"CB Disk Compressed: {metadata.cb_disk_compressed}\n"
+          f"Unique Chunks: {metadata.unique_chunks}\n"
+          f"CRC (Encrypted): {hex(metadata.crc_encrypted)[2:]}\n"
+          f"CRC (Clear): {hex(metadata.crc_clear)[2:]}\n"
+          "---\n")
+
+
+def _decrypted_file_mapping(mapping, key_bytes: bytes):
+    copied = ContentManifestPayload.FileMapping()
+    copied.CopyFrom(mapping)
+    copied.filename = decrypt_filename(mapping.filename, key_bytes)
+    if mapping.linktarget:
+        copied.linktarget = decrypt_filename(mapping.linktarget, key_bytes)
+    return copied
+
+
+def _payload_crc(payload_bytes: bytes) -> int:
+    return zlib.crc32(struct.pack("<I", len(payload_bytes)) + payload_bytes) & 0xFFFFFFFF
+
+
+def _write_decrypted_manifest(output_filepath: Path, payload_bytes: bytes, metadata_bytes: bytes) -> None:
+    output_filepath.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_filepath, "wb") as f:
+        f.write(struct.pack("<II", PROTOBUF_PAYLOAD_MAGIC, len(payload_bytes)))
+        f.write(payload_bytes)
+        f.write(struct.pack("<II", PROTOBUF_METADATA_MAGIC, len(metadata_bytes)))
+        f.write(metadata_bytes)
+        f.write(struct.pack("<II", PROTOBUF_SIGNATURE_MAGIC, 0))
+        f.write(struct.pack("<I", PROTOBUF_ENDOFMANIFEST_MAGIC))
+
+
 def decrypt_filename(b64_encrypted_name, key_bytes):
     try:
         decoded_data = base64.b64decode(b64_encrypted_name)
@@ -62,56 +150,18 @@ def decrypt_filename(b64_encrypted_name, key_bytes):
 def view_manifest(manifest_file):
     stream = io.BytesIO(manifest_file)
 
-    magic, payload_length = struct.unpack("<II", stream.read(8))
-    if magic != PROTOBUF_PAYLOAD_MAGIC:
-        raise ValueError("Bad payload magic")
-    payload_bytes = stream.read(payload_length)
-
-    magic, metadata_length = struct.unpack("<II", stream.read(8))
-    if magic != PROTOBUF_METADATA_MAGIC:
-        raise ValueError("Bad metadata magic")
-    metadata_bytes = stream.read(metadata_length)
-
-    magic, metadata_length = struct.unpack("<II", stream.read(8))
-    if magic != PROTOBUF_SIGNATURE_MAGIC:
-        raise ValueError("Bad signature magic")
-    signature_bytes = stream.read(metadata_length)
-
-    original_payload = ContentManifestPayload()
-    original_payload.ParseFromString(payload_bytes)
+    payload_bytes, metadata_bytes = _payload_and_metadata(stream)
+    signature_bytes = _read_manifest_section(stream, PROTOBUF_SIGNATURE_MAGIC)
+    original_payload = _parse_payload(payload_bytes)
 
     print(f"{len(original_payload.mappings)} file mappings found.")
 
     print("PAYLOAD")
-    for mapping in original_payload.mappings:
-        print(f"\n---\nName: {mapping.filename}\n"
-              f"Size: {mapping.size}\n"
-              f"Flags: {mapping.flags}\n"
-              f"SHA filename: {mapping.sha_filename.hex()}\n"
-              f"SHA content: {mapping.sha_content.hex()}\n"
-              f"Chunk count: {len(mapping.chunks)}\n"
-              "---\n")
-        for nth, chunk in enumerate(mapping.chunks):
-            print(f"Chunk #{nth+1}")
-            print(f"SHA: {chunk.sha.hex()}\n"
-                  f"CRC: {hex(chunk.crc)[2:]}\n"
-                  f"Offset: {chunk.offset}\n"
-                  f"CB Original: {chunk.cb_original}\n"
-                  f"CB Compressed: {chunk.cb_compressed}")
-    # Update and re-serialize the metadata
-    metadata = ContentManifestMetadata()
-    metadata.ParseFromString(metadata_bytes)
-    print("METADATA")
-    print(f"\n---\nDepot ID: {metadata.depot_id}\n"
-          f"Manifest ID: {metadata.gid_manifest}\n"
-          f"Creation Time: {metadata.creation_time}\n"
-          f"Encrypted: {metadata.filenames_encrypted}\n"
-          f"CB Disk Original: {metadata.cb_disk_original}\n"
-          f"CB Disk Compressed: {metadata.cb_disk_compressed}\n"
-          f"Unique Chunks: {metadata.unique_chunks}\n"
-          f"CRC (Encrypted): {hex(metadata.crc_encrypted)[2:]}\n"
-          f"CRC (Clear): {hex(metadata.crc_clear)[2:]}\n"
-          "---\n")
+    for nth, mapping in enumerate(original_payload.mappings):
+        _print_mapping(mapping, nth)
+
+    metadata = _parse_metadata(metadata_bytes)
+    _print_metadata(metadata)
     signature = ContentManifestSignature()
     signature.ParseFromString(signature_bytes)
     print(
@@ -122,24 +172,9 @@ def view_manifest(manifest_file):
 def decrypt_and_save_manifest(
     encrypted_file: bytes, output_filepath: Path, dec_key: str
 ):
-    # Check if it's a ZIP file, then extract the first file
-    if x := read_nth_file_from_zip_bytes(0, encrypted_file):
-        stream = x
-    else:
-        stream = io.BytesIO(encrypted_file)
-
-    magic, payload_length = struct.unpack("<II", stream.read(8))
-    if magic != PROTOBUF_PAYLOAD_MAGIC:
-        raise ValueError("Bad payload magic")
-    payload_bytes = stream.read(payload_length)
-
-    magic, metadata_length = struct.unpack("<II", stream.read(8))
-    if magic != PROTOBUF_METADATA_MAGIC:
-        raise ValueError("Bad metadata magic")
-    metadata_bytes = stream.read(metadata_length)
-
-    original_payload = ContentManifestPayload()
-    original_payload.ParseFromString(payload_bytes)
+    stream = _stream_from_manifest_bytes(encrypted_file)
+    payload_bytes, metadata_bytes = _payload_and_metadata(stream)
+    original_payload = _parse_payload(payload_bytes)
 
     print(
         f"Decrypting {len(original_payload.mappings)} file mappings... ",
@@ -148,42 +183,25 @@ def decrypt_and_save_manifest(
     )
 
     key_bytes = bytes.fromhex(dec_key)
-    new_mappings = []
-    for mapping in original_payload.mappings:
-        new_mapping = ContentManifestPayload.FileMapping()
-        new_mapping.CopyFrom(mapping)
-        # Decrypt filename and linktarget if they exist
-        new_mapping.filename = decrypt_filename(mapping.filename, key_bytes)
-        if mapping.linktarget:
-            new_mapping.linktarget = decrypt_filename(mapping.linktarget, key_bytes)
-        new_mappings.append(new_mapping)
+    new_mappings = [
+        _decrypted_file_mapping(mapping, key_bytes)
+        for mapping in original_payload.mappings
+    ]
     print("Done!")
 
     fixed_payload = ContentManifestPayload()
     fixed_payload.mappings.extend(new_mappings)
 
     fixed_payload_bytes = fixed_payload.SerializeToString()
-    length_bytes = struct.pack("<I", len(fixed_payload_bytes))
-    data_to_checksum = length_bytes + fixed_payload_bytes
-    new_crc = zlib.crc32(data_to_checksum) & 0xFFFFFFFF
+    new_crc = _payload_crc(fixed_payload_bytes)
     print(f"Recalculated CRC-32 checksum of decrypted data: {hex(new_crc)[2:]}")
 
-    metadata = ContentManifestMetadata()
-    metadata.ParseFromString(metadata_bytes)
+    metadata = _parse_metadata(metadata_bytes)
     metadata.crc_clear = new_crc
     metadata.filenames_encrypted = False  # Mark the filenames as decrypted
     fixed_metadata_bytes = metadata.SerializeToString()
 
-    # Some users don't have a depotcache folder (e.g. new installation)
-    output_filepath.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(output_filepath, "wb") as f:
-        f.write(struct.pack("<II", PROTOBUF_PAYLOAD_MAGIC, len(fixed_payload_bytes)))
-        f.write(fixed_payload_bytes)
-        f.write(struct.pack("<II", PROTOBUF_METADATA_MAGIC, len(fixed_metadata_bytes)))
-        f.write(fixed_metadata_bytes)
-        f.write(struct.pack("<II", PROTOBUF_SIGNATURE_MAGIC, 0))
-        f.write(struct.pack("<I", PROTOBUF_ENDOFMANIFEST_MAGIC))
+    _write_decrypted_manifest(output_filepath, fixed_payload_bytes, fixed_metadata_bytes)
     print(
         Fore.BLUE
         + f"Manifest created at: {output_filepath.resolve()}"

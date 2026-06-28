@@ -705,13 +705,14 @@ window.CloudSaves = (function() {
     // ── Google Drive helpers ───────────────────────────────────────
 
     function _checkGdriveStatus() {
-        try {
-            var result = Bridge.callSync('gdrive_status');
-            if (result) {
-                var status = JSON.parse(result);
-                _setGdriveStatus(status.connected, status.email || '');
-            }
-        } catch(e) {}
+        Bridge.call('gdrive_status', function(result) {
+            try {
+                if (result) {
+                    var status = JSON.parse(result);
+                    _setGdriveStatus(status.connected, status.email || '');
+                }
+            } catch(e) {}
+        });
     }
 
     function _setGdriveStatus(connected, email) {

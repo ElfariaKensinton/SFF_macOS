@@ -144,7 +144,7 @@ window.Settings = (function() {
             'setting-hubcap-save': { input: 'setting-hubcap-key', key: 'morrenus_key', label: 'Hubcap API key', useConnect: true },
             'setting-steam-web-api-save': { input: 'setting-steam-web-api-key', key: 'steam_web_api_key', label: 'Steam Web API Key' },
             'setting-manifesthub-save': { input: 'setting-manifesthub-key', key: 'manifesthub_api_key', label: 'ManifestHub API Key' },
-            'setting-ryuu-save': { input: 'setting-ryuu-key', key: 'ryuu_key', label: 'Ryuu API Key' },
+            'setting-ryuu-save': { input: 'setting-ryuu-key', label: 'Ryuu API Key', useRyuuConnect: true },
         };
         Object.keys(apiSaveMap).forEach(function(btnId) {
             var btn = document.getElementById(btnId);
@@ -156,6 +156,8 @@ window.Settings = (function() {
                     if (!val) { Components.showToast('warning', 'Please enter a value'); return; }
                     if (cfg.useConnect) {
                         Bridge.call('connect_store', val);
+                    } else if (cfg.useRyuuConnect) {
+                        Bridge.call('save_ryuu_key', val);
                     } else {
                         Bridge.call('set_setting', cfg.key, val);
                     }
@@ -403,6 +405,7 @@ window.Settings = (function() {
             'setting-close-to-tray': 'close_to_tray',
             'setting-manifest-preserve': 'manifest_preserve',
             'setting-store-show-software': 'store_show_software',
+            'setting-block-nsfw': 'store_block_nsfw',
         };
         Object.keys(checkboxes).forEach(function(id) {
             var el = document.getElementById(id);
@@ -552,6 +555,13 @@ window.Settings = (function() {
                     (storeShowSoftware === '' || storeShowSoftware === undefined)
                         ? 'True'
                         : storeShowSoftware
+                );
+                var blockNsfw = settings.store_block_nsfw;
+                _setCheckbox(
+                    'setting-block-nsfw',
+                    (blockNsfw === '' || blockNsfw === undefined)
+                        ? 'True'
+                        : blockNsfw
                 );
                 // Theme
                 if (settings.theme) _applyTheme(settings.theme);

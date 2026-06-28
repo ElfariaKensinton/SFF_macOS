@@ -1,4 +1,4 @@
- # SteaMidra - Steam game setup and manifest tool (SFF)
+# SteaMidra - Steam game setup and manifest tool (SFF)
 # Copyright (c) 2025-2026 Midrag (https://github.com/Midrags)
 #
 # This file is part of SteaMidra.
@@ -36,12 +36,8 @@ if sys.platform == "win32":
     import msvcrt
 else:
     class msvcrt:
-        @staticmethod
-        def kbhit():
-            return False
-        @staticmethod
-        def getch():
-            return None
+        kbhit = staticmethod(lambda: False)
+        getch = staticmethod(lambda: None)
 
 
 logger = logging.getLogger(__name__)
@@ -160,34 +156,38 @@ async def get_request(
 
 
 def get_request_raw(url):
-    resp = None
     while True:
         try:
-            resp = httpx.get(url, timeout=None)
+            return httpx.get(url, timeout=None).content
         except httpx.HTTPError as e:
             print(f"Network error: {repr(e)}")
-            if prompt_confirm("Try again?"):
-                continue
-        break
-    if resp:
-        return resp.content
+            if not prompt_confirm("Try again?"):
+                return None
 
 
 async def _wait_for_enter():
-    print(
-        "If it takes too long, press Enter to cancel the request "
-        "and input manually..."
-    )
+    print("If it takes too long, press Enter to cancel the request and input manually...")
+    hit = msvcrt.kbhit
+    read = msvcrt.getch
     while True:
-        if msvcrt.kbhit() and msvcrt.getch() == b"\r":
+        ready = hit() and read() == b"\r"
+        if ready:
             return
         await asyncio.sleep(0.05)
 
 
 def get_base_domain(url):
-    parsed_url = urlparse(url)
-    base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-    return base_url
+    p = urlparse(url)
+    domain = p.netloc
+    scheme = p.scheme
+    return scheme + "://" + domain
+
+
+def _request_code_body(body) -> bool:
+    if body is None:
+        return False
+    text = str(body).strip()
+    return bool(text) and len(text) <= 64 and text.isdigit()
 
 
 # Lowkey don't remember why i wrote it like this.
@@ -199,23 +199,22 @@ async def get_gmrc(manifest_id: Union[str, int], silent: bool = False):
     # against SteaMidra. The two HTTPS fallbacks below cover the gmrc
     # downtime window users have been hitting and are also kept encrypted.
     template_url = b64_decrypt(
-        b'gzTYiUdY7dR2oFPM+cUEUpSnLYn17uq09F8PATpFKT8=',
-        b'rok2PaPQ2T0CF3RZXe+AfytF7i+Yo/kEykq4hnPSSrhRDeESOARdQD4+SzqZqeG5C5U4fAiuEUuPpr1CaXl9V/Xv9EcZdWk1BbyUqCXP8FHkqdGm',
+        b'tkRhMNucVUvrymrfjAL8I0riINm/U76wgUJnmsjiaUs=',
+        b'4R66BAMzqmlqisU/9Wwi5bSG2D/zWVuron4mRuw5gCFi+jPxwvqgHOvThx5BpLJAK23I5KABAm7tXlweO3lkEQk5OXrJUjH8zNnyKNv+tYDQE9/8teSpvA==',
     )
     url = template_url.format(manifest_id=manifest_id)
 
-    # HTTPS-only fallback templates. Same wire shape as gmrc (depot-key
-    # request code, plain numeric body), but TLS-encrypted, so a coffee
-    # shop AP can't MITM the response payload.
-    _FALLBACK_KEY = b'Sqg9DjnVVV57fcOH+wNgWMPz8QRcaGmDnyfZrZNXgWs='
-    _FALLBACK_CTS = [
-        b'WNrjl2hyaf3y/UJEXEIDDXv7e6I0lm4NpbFx9SLdYxRBX16I1/ByjeihvW1rSO/jJCJLSPTf1Npf5JfptLw+Nx2Wrf/b56gF026xkDCoIYp9sy2tJiP38w==',
-        b'J8nzP/ahSHrKWCmE0juQ/UBu78T89mOKXFhBrXnb92U2BYL4A/ySvFua89CmKXD15h1MTx5cQzsOq+DJISX/bLbTyiyFMoy92ku4/u+JN1SaRL2zDWIkkG3C/Ft9',
+    # HTTPS-first fallback templates. Same wire shape (depot-key
+    # request code, plain numeric body), but TLS-encrypted.
+    _MIRROR_KEY = b'tkRhMNucVUvrymrfjAL8I0riINm/U76wgUJnmsjiaUs='
+    _MIRROR_CTS = [
+        b'0Iz+VYuhGtWcKNnwgz026jSlg+p0ai0b1KY6L0CwJjmoe21VRiepEcazuLa24PBss94RPXUyHxyctWq/Jr7geYIG3w9slfT0Xr9l7qosHZs6haacF3uzEgllSgVz',
+        b'c2M+yi0x92v30LgEcOPF6L2xtohj1jzyQM22KTVMz+G6l9ibkeD5PY+AbMJCxj6DM+fJ5ZmFSPxTgOQfx8lMHv3VMrOjL+mmpMIJm+te1o4sKPYg',
     ]
     fallback_urls = []
-    for ct in _FALLBACK_CTS:
+    for ct in _MIRROR_CTS:
         try:
-            tpl = b64_decrypt(_FALLBACK_KEY, ct)
+            tpl = b64_decrypt(_MIRROR_KEY, ct)
             fallback_urls.append(tpl.format(manifest_id=manifest_id))
         except Exception:
             continue
@@ -233,14 +232,6 @@ async def get_gmrc(manifest_id: Union[str, int], silent: bool = False):
     # is the obvious risk since it's not TLS, but applying the same
     # guard to the https fallbacks is free and catches captive-portal
     # injection too.
-    def _looks_like_request_code(body):
-        if body is None:
-            return False
-        s = str(body).strip()
-        if not s or len(s) > 64:
-            return False
-        return s.isdigit()
-
     result = None
 
     # --- Primary endpoint ---
@@ -269,7 +260,7 @@ async def get_gmrc(manifest_id: Union[str, int], silent: bool = False):
         except asyncio.CancelledError:
             print("✅")
 
-    if _looks_like_request_code(result):
+    if _request_code_body(result):
         return result
     if result is not None:
         # gmrc returned something but it's not a valid request code.
@@ -290,7 +281,7 @@ async def get_gmrc(manifest_id: Union[str, int], silent: bool = False):
             )
         except Exception:
             fb_result = None
-        if _looks_like_request_code(fb_result):
+        if _request_code_body(fb_result):
             print("✓ Got request code from HTTPS fallback")
             return fb_result
 

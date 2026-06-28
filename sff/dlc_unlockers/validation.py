@@ -35,7 +35,8 @@ def validate_game_directory(game_dir):
 
     # Check read permissions
     try:
-        os.access(game_dir, os.R_OK)
+        if not os.access(game_dir, os.R_OK):
+            return False, f"Directory is not readable: {game_dir}"
     except Exception as e:
         return False, f"Cannot read game directory: {e}"
 

@@ -1,5 +1,119 @@
 # Changelog
 
+## 6.3.2
+
+### Provider / Lua
+
+- Added the provider cache/update/contribution path, grouped Lua output, and parser support for optional `setManifestid` size arguments.
+- Added safer Google Drive release credential generation and stopped Drive API backups from creating duplicate `steamidra_meta.json` files inside game save folders.
+- Added LumaCore backup proxy build plumbing for `xinput1_4.dll` and continued hot-reload hardening.
+- Local archive imports now stay local. Picking a `.lua`, `.zip`, `.rar`, or `.7z` no longer falls through to Hubcap, Ryuu, Oureveryday, or DDMod unless the user picked an actual download path.
+- Linux depot downloads now expose Auto, Windows, Linux, and All depots so Steam Deck users can pull native Linux builds instead of being forced through Windows depots.
+- Multiplayer Fix overhauled. The old automatic download flow is gone, it now searches online-fix.me for the game and opens the result in your browser. First-time users see a popup explaining the change with links to the site and Discord. The old code is backed up, not deleted.
+- Library Update and Update All Games ignore old Lua manifest pins when refreshing to the latest Steam CM build. If the saved Lua is missing, Library Update now patches the ACF from public Steam CM data instead of dying at "No saved .lua".
+- LumaCore now records Steam IPC pipe handshakes against the real process PID, creation time, image name, and appid. This gives launcher-heavy games a steadier per-pipe identity for ticket and stats handlers without relying only on one global launch appid.
+
+### LumaCore — Denuvo DRM support
+
+- Denuvo-protected games now work through the family sharing bypass. LumaCore auto-detects Denuvo in running game processes via three methods (OEP pattern, protected blob scan, and legacy section string check), opens an authorization window for the first N handshakes, and serves spoofed owner SteamIDs during that window.
+- The main game executable is always scanned regardless of size. Older Denuvo titles like Sniper Elite 4 and Sonic Forces used to fall under the 80 MB detection floor and silently slip through, they now get caught.
+- An eticket safety net kicks in when detection misses a real Denuvo build but an EncryptedAppTicket exists for the app. Auth engages anyway instead of giving up.
+- New Lua bindings: `forcedenuvo(appId)` forces Denuvo auth when detection misses, and `addprocess(exeName, appId)` maps process names to AppIds for games that don't set SteamAppId in their environment block.
+
+### LumaCore — EOS multiplayer bridge
+
+- LumaCorePayload.dll injected into online-fix games bridges Epic Online Services for multiplayer lobbies. Auto-creates device IDs, strips presence flags on lobby creation, and self-propagates to child processes via CreateProcess hooks. No config needed beyond the `-onlinefix` launch flag.
+
+### LumaCore — on-demand e-ticket minting
+
+- New `seteticketurl(url)` Lua binding. Set a URL template with `{appid}` and LumaCore issues an HTTP POST to fetch a fresh EncryptedAppTicket at launch. Denuvo games that nonce-bind their tickets get a minted ticket instead of hitting the pre-baked one.
+
+### LumaCore — proxy cooperation
+
+- xinput1_4.dll now ships alongside dwmapi.dll as a backup injection gate. Both proxies check if LumaCore.dll is already loaded before calling LoadLibraryA, so they cooperate through the OS loader lock instead of racing. If dwmapi fires first, xinput1_4 skips.
+
+### LumaCore — new Lua bindings
+
+- `lcHttpPost(url, body)` — HTTP POST to allowlist-gated hosts.
+- `fetchManifestCode(gid)` and `fetchManifestCodeEx(appId, depotId, gid)` — call registered manifest code functions from Lua.
+- `getCachedAppTicket(appId)` and `getDecryptionKey(depotId)` — read cached tickets and keys from the registry, returned as hex.
+- `addtoken(appId, accessToken)` — register package access tokens for license validation.
+- `setAppticket(appId, data)` and `setEticket(appId, data)` — inject pre-built ticket blobs directly.
+
+### LumaCore — manifest fetch
+
+- Manifest download bridge now tries HTTPS endpoints first before falling back to HTTP. The three-provider chain resolves faster when the primary is up and keeps working when it is not.
+
+### LumaCore — achievement fixes for online-fix
+
+- Achievement callbacks now correctly rewrite m_nGameID for online-fix games. UserAchievementStored, UserAchievementIconFetched, UserStatsReceived, and GlobalAchievementPercentagesReady all bind to the real game instead of appid 480. Achievements unlock on the right game.
+
+### LumaCore — IPC dispatch survives Steam updates
+
+- IPC method specs (funcHash, fencepost offset, argument count per method) are now loaded from per-build TOML files instead of hardcoded. When a Steam client update changes internal hashes, LumaCore picks up the new spec from the network mirror cache on next launch. No rebuild needed.
+
+### LumaCore — config hot-reload
+
+- Settings in lumacore.toml now reload when the file changes on disk. No need to restart Steam after flipping a toggle.
+
+### LumaCore — process extension injection
+
+- Config-driven DLL injection into game processes via lumacore.toml. Point `processExtensionX86` and `processExtensionX64` at DLLs and LumaCore loads them into matching game processes at launch.
+
+### LumaCore — pipe identity tracking
+
+- IPC pipe handshakes are now tracked against the real process PID, creation time, image name, and appid. Launcher-heavy games get a steadier per-pipe identity for ticket and stats handlers instead of relying on one global launch appid.
+
+### LumaCore — ownership marking
+
+- When Steam confirms a Lua-tracked app is genuinely owned on the account (CheckAppOwnership returns true with multiple package hits), LumaCore marks it as owned so it is excluded from future patching. Stops injecting ownership for apps the user actually bought.
+
+### LumaCore — diagnostics
+
+- Boot diagnostic mode (opt-in via lumacore.toml) shows a popup with the Steam build ID and steamclient SHA256 when something goes wrong. Useful for reporting which Steam build needs a pattern update.
+- Logging expanded to 20 per-module files covering auth, eticket, onlinefix, netpacket, steamui, and the IPC router. Every subsystem has its own log now.
+
+### Linux
+
+- Keyring crash on KDE and SteamOS fixed. norduk and NeruMarcus both hit this, saving an API key in Settings would crash if kwallet was disabled. Secret store now falls back to local file encryption when the desktop keychain is missing and tells you to install keyrings.alt or enable kwallet.
+- Chrome for Testing download works on Bazzite and Fedora Atomic now. Br [FART]'s SSL verification error is gone, the downloader retries without CA verification on distros that ship incomplete cert bundles. Chrome-based SteamDB scraping works again.
+- Wrong SSD download fixed. Dantesousa had Steam on one SSD and games on another; DLC checks and redownloads were writing to the system drive instead of the library where the game actually lives. SteaMidra now checks every Steam library for the game's ACF before picking where to put the files.
+- Store search DNS failures no longer spam the live log. Network hiccups on Bazzite and offline machines stay at debug level instead of filling the log panel with red ERROR lines.
+
+### Home page
+
+- Game search in the home tab survives Steam Web API outages. When the API is down the search falls back to GitHub mirrors (jsnli/steamappidlist and SteamTools-Team/GameList) instead of hanging on "Fetching game list" forever. No cached all_games.txt needed, it pulls fresh from GitHub.
+- Multiplayer Fix no longer auto-downloads files from online-fix.me. It now searches for the game page and opens it in your default browser. You follow their official guide yourself. The first press shows a one-time popup explaining the change, with links to the site and Discord. The old automation code is backed up as a reference.
+
+### Store / download
+
+- The settings file no longer hits the disk on every get_setting call. Every UI tick was reading and msgpack-decoding the same file dozens of times, that was the main source of the 2fps lag Drakrayt hit. Settings now load once and stay cached in memory until a write invalidates them.
+
+### LumaCore — setup
+
+- LumaCorePayload.dll is now tracked alongside dwmapi.dll, xinput1_4.dll, and LumaCore.dll during install, uninstall, and the NSIS cleanup step. The new LumaCore zip includes this fourth file and SteaMidra installs and removes it properly.
+
+### Lua / endpoints
+
+- oureveryday downloads reuse cached .lua files when they already exist on disk instead of re-fetching the depot list and provider keys every single time. Same app, same source, no re-fetch.
+- SteamAutoCrack's NO LICENSE error from miicha7's Tmodloader case is fixed. The Steam Web API key now gets written even when config.json is missing, and the user's custom key from Settings takes priority over the bundled default.
+
+### Workshop
+
+- Workshop browser no longer renders half-gray when opened from Quick Tools. The page waits for the first render to finish before showing, so the gray checkerboard flash that LowEntropyCreature saw is gone.
+
+### Installer (Windows)
+
+- Windows Defender exclusion prompt removed from the installer. No more hidden PowerShell commands that mess with your AV settings during install or uninstall.
+- Installer now runs at user level by default and installs to AppData without asking for admin. Picking Program Files triggers the normal Windows elevation prompt.
+
+### Bug fixes
+
+- iateacake's SteamAutoCrack STEAMLESS-ONLY crash is fixed. The legacy config key "Enable Debug Log." had a space in its alias that System.CommandLine rejected as an illegal argument, the bad key gets stripped before the CLI sees it.
+- The Steam Web API game list retry loop actually retries now instead of dying on the first failure. Three attempts like it was supposed to.
+- REMOVE_DRM result handling in the CLI path no longer silently swallows the success or failure message. The return type mismatch between tuple and enum is fixed.
+- Scanning Steam libraries on Windows skips A: and B: drives now, so machines with physical floppy drives or legacy BIOS mappings do not stall for seconds on every directory walk.
+
 ## 6.3.1
 
 ### Home page
@@ -26,8 +140,8 @@
 
 ### LumaCore — security
 
-- The `lcHttpGet` lua binding used to let any .lua dropped into stplug-in hit any URL on the internet. A malicious .lua could pair that with the addappid / setStat read surface and silently exfil whatever it found to whatever host it wanted. The binding now only reaches the hosts SteaMidra's official flows actually need (manifesthub, raw.githubusercontent.com, jsdelivr cdn, gitflic, github api). Anything else gets a 403 / empty body without the network ever being hit. Power users running a private mirror can extend the list through `[lua] http_allowlist = ["my.host.example"]` in the LumaCore config.
-- The pattern fetcher now verifies an RSA-PSS-SHA256 signature on every TOML it pulls before letting the bytes drive any hook install. The public key is hardcoded into LumaCore so a hostile mirror or someone serving a forged TOML cannot pass the gate without obtaining the maintainer's private key. Default is permissive (logs a warning on missing or bad sig but accepts the body) so the rollout doesn't brick anyone before signed TOMLs are actually published. Flip `[pattern_fetch] require_signed = true` to make rejection fatal once sigs are in place. Bad signatures are always fatal regardless of the flag because that's the actual tampering signal.
+- Removed the script-side HTTP binding from LumaCore. Lua files in stplug-in should not be able to phone home from inside Steam.
+- LumaCore can verify RSA-PSS-SHA256 signatures before external hook metadata is accepted. The default stays permissive for now, but bad signatures are fatal because that means someone tampered with the file.
 
 ### LumaCore — hot-reload
 

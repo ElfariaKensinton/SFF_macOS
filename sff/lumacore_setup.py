@@ -123,7 +123,7 @@ def _extract_dlls_via_subprocess(
 _LUMACORE_GITHUB_REPO = "KoriaPolis/LumaCore"
 _LUMACORE_RELEASE_API = f"https://api.github.com/repos/{_LUMACORE_GITHUB_REPO}/releases/latest"
 
-_LC_DLLS = ("dwmapi.dll", "LumaCore.dll")
+_LC_DLLS = ("dwmapi.dll", "xinput1_4.dll", "LumaCore.dll", "LumaCorePayload.dll")
 
 _GL_MARKER = ".steamidra_gl_cleaned"
 _LEGACY_MARKER_DIR = "lumacore"
@@ -152,9 +152,10 @@ _GL_ROOT_DIRS = (
 
 _LC_RESET_FILES = (
     ("", "dwmapi.dll"),
+    ("", "xinput1_4.dll"),
     ("", "LumaCore.dll"),
+    ("", "LumaCorePayload.dll"),
     ("bin", "lcoverlay.dll"),
-    ("bin", "diversion.dll"),
 )
 
 

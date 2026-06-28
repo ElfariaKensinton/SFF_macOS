@@ -23,37 +23,50 @@ from sff.http_utils import get_game_name
 from sff.structs import NamedIDs
 
 
-def _load_named_ids(file):
-    if not file.exists():
-        return NamedIDs({})
+def _id_cache_path(folder: Path) -> Path:
+    return folder / "names.json"
+
+
+def _blank_registry() -> NamedIDs:
+    return NamedIDs({})
+
+
+def _read_registry_file(cache_file: Path):
+    if not cache_file.is_file():
+        return _blank_registry()
     try:
-        with file.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else NamedIDs({})
-    except (json.JSONDecodeError, ValueError):
-        return NamedIDs({})
+        payload = json.loads(cache_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError, OSError):
+        return _blank_registry()
+    return payload if isinstance(payload, dict) else _blank_registry()
 
 
-def _save_named_ids(file, data):
-    with file.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+def _write_registry_file(cache_file: Path, payload):
+    cache_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _scan_saved_lua_ids(folder: Path) -> list[str]:
+    return [lua_path.stem for lua_path in folder.glob("*.lua")]
+
+
+def _backfill_unknown_names(registry, disk_ids) -> bool:
+    dirty = False
+    for disk_id in disk_ids:
+        if disk_id in registry:
+            continue
+        registry[disk_id] = get_game_name(disk_id)
+        dirty = True
+    return dirty
 
 
 def get_named_ids(folder):
-    if not folder.exists():
+    if not folder.is_dir():
         folder.mkdir()
         return NamedIDs({})
 
-    id_names_file = folder / "names.json"
-    named_ids = _load_named_ids(id_names_file)
+    cache_file = _id_cache_path(folder)
+    registry = _read_registry_file(cache_file)
 
-    new_ids = False
-    saved_ids = [x.stem for x in folder.glob("*.lua")]
-    for saved_id in saved_ids:
-        if saved_id not in named_ids:
-            new_ids = True
-            named_ids[saved_id] = get_game_name(saved_id)
-
-    if new_ids:
-        _save_named_ids(id_names_file, named_ids)
-    return named_ids
+    if _backfill_unknown_names(registry, _scan_saved_lua_ids(folder)):
+        _write_registry_file(cache_file, registry)
+    return registry

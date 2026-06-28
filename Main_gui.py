@@ -443,6 +443,11 @@ def main():
                 pass
 
         QTimer.singleShot(0, _run_slssteam_update_check)
+        _slssteam_timer = QTimer(app)
+        _slssteam_timer.setInterval(60 * 60 * 1000)
+        _slssteam_timer.timeout.connect(_run_slssteam_update_check)
+        _slssteam_timer.start()
+        app._slssteam_update_timer = _slssteam_timer
 
         # Auto-install .NET 9 on first Linux launch. DepotDownloaderMod and
         # Steamless both need it, and the user shouldn't have to dig into

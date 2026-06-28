@@ -88,7 +88,8 @@ window.Bridge = (function() {
     function call(method /*, ...args */) {
         if (!_py) {
             console.warn('[Bridge] Not connected, queuing call:', method);
-            onReady(function() { call.apply(null, arguments); });
+            var _args = arguments;
+            onReady(function() { call.apply(null, _args); });
             return;
         }
         var args = Array.prototype.slice.call(arguments, 1);
@@ -150,6 +151,7 @@ window.Bridge = (function() {
             get_setting: function(key, cb) { if (cb) cb(''); },
             get_steam_libraries: function(cb) { if (cb) cb('[]'); },
             set_active_library: function() {},
+            browse_ddmod_download_folder: function(cb) { if (cb) cb(''); },
             open_file_dialog: function(cb) { if (cb) cb(''); },
             open_log_window: function() {},
             restart_steam: function() {},

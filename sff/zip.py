@@ -50,48 +50,53 @@ def read_lua_from_zip(
     # Having manifests in depotcache before Steam starts the download is the
     # key fix for the 'no internet connection' error during downloads.
     lua_contents = None
-    try:
-        with zipfile.ZipFile(path) as f:
-            for file in f.filelist:
-                if file.filename.endswith(".lua"):
-                    print(f".lua found in ZIP: {file.filename}")
-                    if lua_contents is None:
-                        lua_contents = f.read(file)
-                elif file.filename.endswith(".manifest"):
-                    filename = Path(file.filename).name
-                    data = f.read(file)
-                    # Always save to the staging dir so the Linux DDMod
-                    # forwarder and the depotcache pre-seeder can find
-                    # them. Path.cwd() is unreliable on AppImage / Web UI
-                    # launches; manifests_staging_dir() resolves to the
-                    # writable user-data root.
-                    from sff.utils import manifests_staging_dir
-                    manifests_dir = manifests_staging_dir()
-                    (manifests_dir / filename).write_bytes(data)
-                    # Always write to depotcache — fresh ZIP data wins over
-                    # stale local copies (prevents 'no internet connection')
-                    if depotcache is not None:
-                        depotcache.mkdir(parents=True, exist_ok=True)
-                        dest = depotcache / filename
-                        already = dest.exists()
-                        dest.write_bytes(data)
-                        if already:
-                            print(
-                                Fore.GREEN
-                                + f"  Manifest refreshed in depotcache: {filename}"
-                                + Style.RESET_ALL
-                            )
-                        else:
-                            print(
-                                Fore.GREEN
-                                + f"  Manifest seeded to depotcache: {filename}"
-                                + Style.RESET_ALL
-                            )
-                    else:
-                        print(f"Manifest found in ZIP: {filename}")
+
+    def _handle_member(name, data):
+        nonlocal lua_contents
+        lower = name.lower()
+        if lower.endswith(".lua"):
+            print(f".lua found in archive: {name}")
             if lua_contents is None:
-                print(Fore.RED + "Could not find the lua in the ZIP" + Style.RESET_ALL)
-    except zipfile.BadZipFile:
+                lua_contents = data
+        elif lower.endswith(".manifest"):
+            filename = Path(name).name
+            from sff.utils import manifests_staging_dir
+            manifests_dir = manifests_staging_dir()
+            (manifests_dir / filename).write_bytes(data)
+            if depotcache is not None:
+                depotcache.mkdir(parents=True, exist_ok=True)
+                dest = depotcache / filename
+                already = dest.exists()
+                dest.write_bytes(data)
+                print(
+                    Fore.GREEN
+                    + f"  Manifest {'refreshed in' if already else 'seeded to'} depotcache: {filename}"
+                    + Style.RESET_ALL
+                )
+            else:
+                print(f"Manifest found in archive: {filename}")
+
+    try:
+        suffix = Path(path).suffix.lower() if isinstance(path, Path) else ".zip"
+        if suffix == ".7z":
+            import py7zr
+            with py7zr.SevenZipFile(path, mode="r") as archive:
+                for name, bio in archive.readall().items():
+                    _handle_member(name, bio.read())
+        elif suffix == ".rar":
+            import rarfile
+            with rarfile.RarFile(str(path), "r") as archive:
+                for name in archive.namelist():
+                    if name.lower().endswith((".lua", ".manifest")):
+                        _handle_member(name, archive.read(name))
+        else:
+            with zipfile.ZipFile(path) as f:
+                for file in f.filelist:
+                    if file.filename.lower().endswith((".lua", ".manifest")):
+                        _handle_member(file.filename, f.read(file))
+        if lua_contents is None:
+            print(Fore.RED + "Could not find the lua in the archive" + Style.RESET_ALL)
+    except Exception:
         return
     if decode and lua_contents:
         lua_contents = lua_contents.decode(encoding="utf-8")

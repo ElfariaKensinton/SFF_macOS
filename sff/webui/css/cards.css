@@ -77,6 +77,23 @@
     color: #fff;
 }
 
+.badge-nsfw {
+    background: rgba(231, 76, 60, 0.9);
+    color: #fff;
+}
+
+.badge-drm {
+    background: rgba(30, 30, 30, 0.95);
+    color: #ff5555;
+    border: 1px solid #ff4444;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 800;
+    padding: 3px 9px;
+    letter-spacing: 0.4px;
+    margin-left: auto;
+}
+
 .game-card-body {
     padding: 12px 14px;
 }
@@ -95,6 +112,10 @@
 .game-card-appid {
     font-size: 11px;
     opacity: 0.5;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
 }
 
 .game-card-meta {

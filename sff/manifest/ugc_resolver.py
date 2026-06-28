@@ -31,12 +31,26 @@ from steam.protobufs.steammessages_publishedfile_pb2 import (
 
 logger = logging.getLogger(__name__)
 
+_WORKSHOP_DETAIL_FLAGS = {
+    "includetags": False,
+    "includeadditionalpreviews": False,
+    "includechildren": False,
+    "includekvtags": False,
+    "includevotes": False,
+    "short_description": True,
+    "includeforsaledata": False,
+    "includemetadata": False,
+    "language": 0,
+}
+
 
 @dataclass
 class WorkshopItemContext:
     client: SteamClient
     workshop_id: int
     "AKA PublishedFileId"
+    timestamp: float = 0.0
+    "When the request was initiated (epoch seconds)"
 
 
 @dataclass
@@ -67,66 +81,63 @@ class StandardUgcIdStrategy(IUgcIdStrategy):
 
     @property
     def name(self):
-        return "Standard"
+        return "SteamWorkshop_Default"
+
+    def _build_request_payload(self, workshop_id):
+        payload = {"publishedfileids": [workshop_id]}
+        payload.update(_WORKSHOP_DETAIL_FLAGS)
+        return payload
+
+    def _parse_response(self, resp):
+        if not isinstance(resp, MsgProto):
+            return None
+        body = resp.body  # pyright: ignore[reportUnknownMemberType]
+        if not isinstance(body, CPublishedFile_GetDetails_Response):
+            return None
+        return body
 
     def _send_request(self, client, workshop_id):
-        resp = (  # pyright: ignore[reportUnknownVariableType]
-            client.send_um_and_wait(  # pyright: ignore[reportUnknownMemberType]
-                "PublishedFile.GetDetails#1",
-                {
-                    "publishedfileids": [workshop_id],
-                    "includetags": False,
-                    "includeadditionalpreviews": False,
-                    "includechildren": False,
-                    "includekvtags": False,
-                    "includevotes": False,
-                    "short_description": True,
-                    "includeforsaledata": False,
-                    "includemetadata": False,
-                    "language": 0,
-                },
-                timeout=7,
-            )
-        )
-        if (
-            not isinstance(resp, MsgProto)
-            or resp.body is None  # pyright: ignore[reportUnknownMemberType]
-        ):
-            return None
-        if not isinstance(
-            resp.body,  # pyright: ignore[reportUnknownMemberType]
-            CPublishedFile_GetDetails_Response,
-        ):
-            return None
-        details = resp.body.publishedfiledetails
-        return details[0]
+        msg = self._build_request_payload(workshop_id)
+        resp = client.send_um_and_wait("PublishedFile.GetDetails#1", msg, timeout=7)  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        body = self._parse_response(resp)
+        return None if body is None else body.publishedfiledetails[0]
 
     _MAX_UGC_RETRIES = 3
 
+    def _ensure_logged_on(self, client):
+        if client.logged_on:
+            return
+        print("Logging in anonymously...", end="", flush=True)
+        client.anonymous_login()
+        print(" Done!")
+
+    def _try_relogin(self, client):
+        try:
+            client.anonymous_login()
+        except RuntimeError:
+            pass
+
+    def _handle_timeout(self, client, attempt):
+        if attempt < self._MAX_UGC_RETRIES:
+            print(f"Request timed out. Trying again ({attempt}/{self._MAX_UGC_RETRIES})...")
+            self._try_relogin(client)
+            time.sleep(2)
+            return
+        print(
+            "Request timed out after several attempts. "
+            "Check your internet connection and try again later."
+        )
+
     def _get_workshop_items_details(self, ctx):
-        if not ctx.client.logged_on:
-            print("Logging in anonymously...", end="", flush=True)
-            ctx.client.anonymous_login()
-            print(" Done!")
+        self._ensure_logged_on(ctx.client)
         last_error = None
         for attempt in range(1, self._MAX_UGC_RETRIES + 1):
             try:
-                resp = self._send_request(ctx.client, ctx.workshop_id)
-                return resp
+                return self._send_request(ctx.client, ctx.workshop_id)
             except gevent.Timeout as e:
                 last_error = e
-                if attempt < self._MAX_UGC_RETRIES:
-                    print(f"Request timed out. Trying again ({attempt}/{self._MAX_UGC_RETRIES})...")
-                    try:
-                        ctx.client.anonymous_login()
-                    except RuntimeError:
-                        pass
-                    time.sleep(2)
-                else:
-                    print(
-                        "Request timed out after several attempts. "
-                        "Check your internet connection and try again later."
-                    )
+                self._handle_timeout(ctx.client, attempt)
+                if attempt >= self._MAX_UGC_RETRIES:
                     raise
         if last_error is not None:
             raise last_error
@@ -158,18 +169,19 @@ class UgcIDResolver:
         content, _method, _details = self.resolve_with_details(ctx)
         return content, _method
 
+    def _try_strategy(self, strategy, ctx):
+        if isinstance(strategy, StandardUgcIdStrategy):
+            content, details = strategy.get_content_and_details(ctx)
+            return content, details
+        return strategy.get_content(ctx), None
+
     def resolve_with_details(
         self, ctx: WorkshopItemContext
     ):
         for strategy in self.strategies:
-            if isinstance(strategy, StandardUgcIdStrategy):
-                content, details = strategy.get_content_and_details(ctx)
-                if content is not None:
-                    return content, strategy.name, details
-            else:
-                content = strategy.get_content(ctx)
-                if content is not None:
-                    return content, strategy.name, None
+            content, details = self._try_strategy(strategy, ctx)
+            if content is not None:
+                return content, strategy.name, details
         raise Exception(f"Unable to resolve manifest for depot {ctx.workshop_id}")
 
 

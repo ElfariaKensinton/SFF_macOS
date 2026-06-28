@@ -232,7 +232,13 @@ class StoreApiClient:
             logger.debug("hubcap library status err %s: %s", e.response.status_code, e)
             return LibraryPage(offset=offset, limit=limit)
         except Exception as e:
-            logger.error("Failed to get library: %s", e)
+            err_str = str(e)
+            if isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
+                logger.debug("hubcap library unreachable (network): %s", e)
+            elif "Name or service not known" in err_str or "getaddrinfo" in err_str.lower():
+                logger.debug("hubcap library dns resolution failed: %s", e)
+            else:
+                logger.warning("Failed to get library: %s", e)
             return LibraryPage()
 
     def search_library(

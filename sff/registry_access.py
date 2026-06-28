@@ -25,26 +25,39 @@ from colorama import Fore, Style
 from sff.utils import root_folder
 
 
-def find_steam_path_from_registry():
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Valve\Steam") as key:
-            return Path(winreg.QueryValueEx(key, "SteamPath")[0])
-    except FileNotFoundError:
-        pass
+def _read_registry_value(hive, key_path, value_name):
+    with winreg.OpenKey(hive, key_path) as key:
+        return winreg.QueryValueEx(key, value_name)[0]
 
+
+def _drop_hkcu_key(path) -> bool:
     try:
-        with winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam"
-        ) as key:
-            return Path(winreg.QueryValueEx(key, "InstallPath")[0])
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+        return True
     except FileNotFoundError:
-        return None
+        return True
+    except OSError as e:
+        print(Fore.RED + f"Error deleting {path}: {e}" + Style.RESET_ALL)
+        return False
+
+
+def find_steam_path_from_registry():
+    lookup = (
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Valve\Steam", "SteamPath"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
+    )
+    for hive, kp, val in lookup:
+        try:
+            return Path(_read_registry_value(hive, kp, val))
+        except FileNotFoundError:
+            continue
+    return None
 
 
 def key_exists(hive, key_path):
     try:
-        key = winreg.OpenKey(hive, key_path, 0, winreg.KEY_READ)
-        winreg.CloseKey(key)
+        h = winreg.OpenKey(hive, key_path, 0, winreg.KEY_READ)
+        winreg.CloseKey(h)
         return True
     except FileNotFoundError:
         return False
@@ -55,8 +68,7 @@ def key_exists(hive, key_path):
 
 def read_subkey(hive, key_path, sub_key_name):
     try:
-        with winreg.OpenKey(hive, key_path) as key:
-            return winreg.QueryValueEx(key, sub_key_name)[0]
+        return _read_registry_value(hive, key_path, sub_key_name)
     except FileNotFoundError:
         return
 
@@ -66,34 +78,30 @@ def set_stats_and_achievements(app_id):
 
 
 def install_context_menu():
-    exe_path = sys.executable
+    frozen = getattr(sys, "frozen", False)
+    interpreter = sys.executable
 
-    if not getattr(sys, "frozen", False):
+    if not frozen:
         root_dir = root_folder()
-        script_path = root_dir / "main.py"
-        command_val = f'"{exe_path}" "{script_path}" -f "%V"'
-        mode = "Venv"
-        icon = str((root_dir / "sff.ico").resolve())
+        icon_path = str((root_dir / "sff.ico").resolve())
+        cmd = f'"{interpreter}" "{root_dir / "main.py"}" -f "%V"'
+        how = "Venv"
     else:
-        command_val = f'"{exe_path}" -f "%V"'
-        mode = "Executable"
-        icon = exe_path
+        icon_path = interpreter
+        cmd = f'"{interpreter}" -f "%V"'
+        how = "Executable"
 
-    sff_path = r"SOFTWARE\Classes\*\shell\SteaMidra"
-    command_path = r"SOFTWARE\Classes\*\shell\SteaMidra\command"
+    shell_root = r"SOFTWARE\Classes\*\shell\SteaMidra"
+    shell_cmd = shell_root + r"\command"
+    hkcu = winreg.HKEY_CURRENT_USER
 
     try:
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, sff_path) as key:
-            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Add to SteaMidra")
-            winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, icon)
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, command_path) as key:
-            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, command_val)
-        print(
-            Fore.GREEN + f"Success! Context menu added via {mode}.\n"
-            'You can now right click .lua/.zip files and click "Add to SteaMidra"'
-            + Style.RESET_ALL
-        )
-
+        with winreg.CreateKey(hkcu, shell_root) as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, "Add to SteaMidra")
+            winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, icon_path)
+        with winreg.CreateKey(hkcu, shell_cmd) as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, cmd)
+        print(Fore.GREEN + f"Success! Context menu added via {how}.\nYou can now right click .lua/.zip files and click \"Add to SteaMidra\"" + Style.RESET_ALL)
     except Exception as e:
         print(f"Failed to update registry: {e}")
 
@@ -108,12 +116,7 @@ def uninstall_context_menu():
 
     try:
         for subkey in keys_to_delete:
-            try:
-                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, subkey)
-            except FileNotFoundError:
-                pass
-            except OSError as e:
-                print(Fore.RED + f"Error deleting {subkey}: {e}" + Style.RESET_ALL)
+            if not _drop_hkcu_key(subkey):
                 return
         print(Fore.GREEN + "Success! Context menu removed." + Style.RESET_ALL)
 

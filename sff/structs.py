@@ -163,14 +163,32 @@ SettingType = Union[type, list[Enum], SettingCustomTypes]
 
 
 class SettingItem(NamedTuple):
-    key_name: str
-    "The key name of the setting (used in the savefile)"
-    clean_name: str
+    storage_key: str
+    "The storage-key of the setting (used in the savefile)"
+    label: str
     "The name of the setting as displayed in the Settings menu"
-    hidden: bool
-    "Whether the item is hidden (e.g. sensitive info)"
-    type: SettingType
+    is_secret: bool
+    "Whether the item holds sensitive info"
+    value_type: SettingType
     "Type of the setting"
+    group_hint: str = ""
+    "Optional group label for UI organisation"
+
+    @property
+    def key_name(self):
+        return self.storage_key
+
+    @property
+    def clean_name(self):
+        return self.label
+
+    @property
+    def hidden(self):
+        return self.is_secret
+
+    @property
+    def type(self):
+        return self.value_type
 
 
 # Note: values are only obtained through get_setting() in utils.py
@@ -195,6 +213,7 @@ class Settings(Enum):
     THEME = SettingItem("theme", "Theme", False, str)
     ONLINE_FIX_USER = SettingItem("online_fix_user", "Online-fix.me Username", False, str)
     ONLINE_FIX_PASS = SettingItem("online_fix_pass", "Online-fix.me Password", True, str)
+    ONLINE_FIX_NEW_SYSTEM_SHOWN = SettingItem("online_fix_new_system_shown", "Online-Fix New System Shown", False, bool)
     PARALLEL_DOWNLOADS = SettingItem("parallel_downloads", "Parallel Download Workers", False, str)
     BACKUP_RETENTION = SettingItem("backup_retention", "Backup Retention Count", False, str)
     ENABLE_NOTIFICATIONS = SettingItem("enable_notifications", "Enable Desktop Notifications", False, bool)
@@ -266,6 +285,7 @@ class Settings(Enum):
     # titles surface alongside games. Default ON; an explicit False clamps
     # the list back to type "game" only and matches pre-A17 behavior.
     STORE_SHOW_SOFTWARE = SettingItem("store_show_software", "Show software in Store", False, bool)
+    STORE_BLOCK_NSFW = SettingItem("store_block_nsfw", "Block NSFW content in Store", False, bool)
     # LumaCore version tracking. Both fields are managed by sff.lumacore_setup
     # and never surface in the Settings UI directly.
     LUMACORE_INSTALLED_VERSION = SettingItem(
@@ -329,6 +349,44 @@ class Settings(Enum):
     GAME_UPDATE_OVERRIDE = SettingItem(
         "game_update_override",
         "Per-game LetUpdate override flags (managed automatically)",
+        False,
+        str,
+    )
+    WINDOW_GEOMETRY = SettingItem(
+        "window_geometry",
+        "Window geometry (managed automatically)",
+        False,
+        str,
+    )
+    USE_MODERN_UI = SettingItem(
+        "use_modern_ui",
+        "Use Modern Web UI",
+        False,
+        bool,
+    )
+    # Older-version browser headless mode. Default false so the browser
+    # window is visible. Set true to suppress QMessageBox warnings.
+    OLDER_VERSION_QUIET = SettingItem(
+        "older_version_quiet",
+        "Older-version browser quiet mode (no popup warnings)",
+        False,
+        bool,
+    )
+    PROVIDER_CONTRIBUTE_KEYS = SettingItem(
+        "provider_contribute_keys",
+        "Contribute clean provider keys every 24 hours",
+        False,
+        bool,
+    )
+    PROVIDER_ENRICH_STEAM_METADATA = SettingItem(
+        "provider_enrich_steam_metadata",
+        "Use Steam appinfo to fill missing provider metadata before submitting",
+        False,
+        bool,
+    )
+    PROVIDER_LAST_UPDATE_CHECK = SettingItem(
+        "provider_last_update_check",
+        "Provider cache last update check (managed automatically)",
         False,
         str,
     )
@@ -445,6 +503,8 @@ class LuaParsedInfo(RawLua):
     depots: list[DepotKeyPair]
     manifest_overrides: dict = field(default_factory=dict)
     "depot_id -> manifest_gid pins from setManifestid() Lua calls"
+    token_overrides: dict = field(default_factory=dict)
+    "appid -> token values from addtoken() Lua calls"
 
 
 NamedIDs = NewType("NamedIDs", dict[str, str])

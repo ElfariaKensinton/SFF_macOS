@@ -120,7 +120,7 @@ def validate_lua_file(path: Path):
         return None, str(exc)
 
     try:
-        if path.suffix.lower() == ".zip":
+        if path.suffix.lower() in (".zip", ".rar", ".7z"):
             from sff.zip import read_lua_from_zip
 
             text = read_lua_from_zip(path, decode=True)
@@ -245,7 +245,7 @@ class BulkImportQueue:
 
         for path in unique:
             ext = path.suffix.lower()
-            if ext == ".lua" or ext == ".zip":
+            if ext in (".lua", ".zip", ".rar", ".7z"):
                 parsed, reason = validate_lua_file(path)
                 if parsed is None:
                     skipped_records.append(

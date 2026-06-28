@@ -40,7 +40,7 @@
 
     function _isImportable(name) {
         var e = _ext(name);
-        return e === '.lua' || e === '.zip' || e === '.manifest';
+        return e === '.lua' || e === '.zip' || e === '.rar' || e === '.7z' || e === '.manifest';
     }
 
     function _hashFile(file) {
@@ -319,15 +319,29 @@
 
     function _wireFolderScan() {
         var card = _$('bulk-import-folder');
-        if (!card) return;
-        card.addEventListener('click', function (e) {
-            e.preventDefault();
-            _resetUI();
-            _showAggregate();
-            if (window.Bridge && Bridge.call) {
-                Bridge.call('open_folder_scan');
-            }
-        });
+        if (card) {
+            card.addEventListener('click', function (e) {
+                e.preventDefault();
+                _resetUI();
+                _showAggregate();
+                if (window.Bridge && Bridge.call) {
+                    Bridge.call('open_folder_scan');
+                }
+            });
+        }
+        var archive = _$('bulk-import-archive');
+        if (archive) {
+            archive.addEventListener('click', function (e) {
+                e.preventDefault();
+                if (!(window.Bridge && Bridge.callSync && Bridge.call)) return;
+                Bridge.callSync('open_archive_dialog', function(path) {
+                    if (!path) return;
+                    _resetUI();
+                    _showAggregate();
+                    Bridge.call('enqueue_dropped_files', JSON.stringify([path]));
+                });
+            });
+        }
     }
 
     function _wireCancel() {

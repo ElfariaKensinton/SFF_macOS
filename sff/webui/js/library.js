@@ -71,7 +71,9 @@ window.Library = (function() {
                 if (btn) {
                     var action = btn.dataset.action;
                     var appId = btn.dataset.appid;
-                    if (action === 'fix') {
+                    if (action === 'play') {
+                        Bridge.call('launch_game', appId);
+                    } else if (action === 'fix') {
                         FixGame.preSelect(appId);
                         App.navigateTo('fixgame');
                     } else if (action === 'delete') {
@@ -255,6 +257,7 @@ window.Library = (function() {
             var actions = card.querySelector('.game-card-actions');
             if (actions) {
                 actions.innerHTML =
+                    '<button class="btn btn-sm btn-primary" data-action="play" data-appid="' + game.app_id + '" data-tooltip="Launch through Steam">Play</button>' +
                     '<button class="btn btn-sm" data-action="fix" data-appid="' + game.app_id + '" data-tooltip="Fix this game">Fix</button>' +
                     '<button class="btn btn-sm" data-action="dlc_check" data-appid="' + game.app_id + '" data-tooltip="Check DLCs">DLC</button>' +
                     '<button class="btn btn-sm" data-action="workshop" data-appid="' + game.app_id + '" data-tooltip="Open Workshop">Workshop</button>' +

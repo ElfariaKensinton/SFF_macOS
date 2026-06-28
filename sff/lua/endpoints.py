@@ -30,12 +30,24 @@ import httpx
 from colorama import Fore, Style
 
 from sff.http_utils import download_to_tempfile, get_request
+from sff.lua.generator import LuaDlc, render_grouped_lua
+from sff.lua.provider import download_provider_update, load_provider, update_cache_from_lua_bytes
 from sff.prompts import prompt_confirm, prompt_secret
 from sff.storage.settings import get_setting, set_setting
 from sff.structs import Settings
 from sff.zip import read_lua_from_zip
 
 logger = logging.getLogger(__name__)
+
+_PROVIDER_CACHE: dict | None = None
+
+
+def _cached_provider():
+    global _PROVIDER_CACHE
+    if _PROVIDER_CACHE is None:
+        _PROVIDER_CACHE = load_provider()
+    return _PROVIDER_CACHE
+
 
 _REVO_PATTERN = re.compile(
     r'addappid\(\s*(\d+)\s*,\s*[01]\s*,\s*["\']([0-9a-fA-F]{64})["\']\s*\)'
@@ -44,25 +56,47 @@ _REVO_PATTERN = re.compile(
 
 def _update_fallback_depotkeys(lua_bytes):
     try:
-        text = lua_bytes.decode("utf-8", errors="ignore")
-        new_pairs = dict(_REVO_PATTERN.findall(text))
-        if not new_pairs:
-            return
-        local_db = Path(__file__).parent / "fallback_depotkeys.json"
-        if not local_db.exists():
-            return
-        existing = json.loads(local_db.read_text(encoding="utf-8"))
-        added = 0
-        for depot_id, key in new_pairs.items():
-            if depot_id not in existing:
-                existing[depot_id] = key
-                added += 1
-        if added == 0:
-            return
-        sorted_data = dict(sorted(existing.items(), key=lambda x: int(x[0])))
-        local_db.write_text(json.dumps(sorted_data, indent=2), encoding="utf-8")
+        update_cache_from_lua_bytes(lua_bytes)
     except Exception:
         pass
+
+
+def _provider_key_map() -> dict[str, str]:
+    out: dict[str, str] = {}
+    for depot_id, entry in _cached_provider().items():
+        if isinstance(entry, dict):
+            key = str(entry.get("key") or "")
+        else:
+            key = str(entry or "")
+        if key:
+            out[str(depot_id)] = key
+    return out
+
+
+def _count_provider_matches(depots: list[str], keys_dict: dict[str, str]) -> int:
+    return sum(1 for d in depots if keys_dict.get(d))
+
+
+def _build_lua_from_provider(app_id: str, app_name: str, depots: list[str], keys_dict: dict[str, str], dlc_app_ids: list[str], manifest_map: dict[str, str] | None = None) -> str:
+    provider = _cached_provider()
+    depot_entries = []
+    for depot_id in depots:
+        key = keys_dict.get(depot_id)
+        if not key:
+            continue
+        meta = provider.get(depot_id) or {}
+        if isinstance(meta, str):
+            meta = {}
+        depot_entries.append({
+            "id": depot_id,
+            "key": key,
+            "name": meta.get("name") or f"Depot {depot_id}",
+            "parent_appid": meta.get("parent_appid") or str(app_id),
+            "parent_name": meta.get("parent_name") or app_name,
+            "manifest_id": (manifest_map or {}).get(depot_id, ""),
+        })
+    dlcs = [LuaDlc(str(dlc_id)) for dlc_id in dlc_app_ids]
+    return render_grouped_lua(app_id, app_name, depot_entries, manifest_map or {}, dlcs)
 
 
 def get_oureverday(dest, app_id):
@@ -73,6 +107,15 @@ def get_oureverday(dest, app_id):
     if not app_id or not str(app_id).strip().isdigit():
         print(Fore.RED + f"Invalid App ID: '{app_id}'" + Style.RESET_ALL)
         return None
+
+    # Try cached Lua first — avoids re-fetching Steam CM and provider
+    # keys on every download. The caller (download_lua_direct) targets
+    # <cwd>/saved_lua/, and _run_windows_fastest copies the result back
+    # there, so a subsequent download of the same app_id hits the cache.
+    lua_path = Path(dest) / f"{app_id}.lua"
+    if lua_path.exists() and lua_path.stat().st_size > 0:
+        print(Fore.GREEN + f"[Cached] Using existing Lua for {app_id}" + Style.RESET_ALL)
+        return lua_path
 
     # Step 1: Steam native query for depot IDs
     print(Fore.CYAN + f"[Step 1] Fetching depot list for {app_id} from Steam client..." + Style.RESET_ALL)
@@ -107,6 +150,17 @@ def get_oureverday(dest, app_id):
         print(Fore.RED + f"No valid depots exist on Steam for this App ID." + Style.RESET_ALL)
         return None
 
+    # Pull latest manifest GIDs from Steam app info so we can write
+    # setManifestid lines into the generated Lua.
+    manifest_map: dict[str, str] = {}
+    for depot_id in depots:
+        depot_info = app_info.get("depots", {}).get(depot_id, {})
+        manifests = depot_info.get("manifests", {})
+        public = manifests.get("public", {}) if isinstance(manifests, dict) else {}
+        gid = str(public.get("gid", ""))
+        if gid and gid.isdigit():
+            manifest_map[depot_id] = gid
+
     # Pull every DLC app id Steam reports for this game from extended.listofdlc.
     # These are DLCs with no depot of their own (cosmetic, soundtrack, in-game
     # currency, etc) — the keyed addappid(depot, 1, "key") lines won't cover
@@ -129,25 +183,44 @@ def get_oureverday(dest, app_id):
 
     # Step 2: Bundled local key database
     print(Fore.CYAN + f"[Step 2] Loading bundled key database..." + Style.RESET_ALL)
-    keys_dict = {}
-    local_db = Path(__file__).parent / "fallback_depotkeys.json"
-    if local_db.exists():
-        try:
-            keys_dict = json.loads(local_db.read_text(encoding="utf-8"))
-            print(Fore.GREEN + f"[OK] Loaded bundled key database ({len(keys_dict):,} entries)." + Style.RESET_ALL)
-        except Exception as e:
-            print(Fore.YELLOW + f"Failed to load bundled key database ({e})." + Style.RESET_ALL)
+    keys_dict = _provider_key_map()
+    if keys_dict:
+        print(Fore.GREEN + f"[OK] Loaded provider key database ({len(keys_dict):,} keyed entries)." + Style.RESET_ALL)
     else:
-        print(Fore.YELLOW + f"Bundled key database not found." + Style.RESET_ALL)
+        print(Fore.YELLOW + f"Provider key database not found or contains no keys." + Style.RESET_ALL)
 
     # Generate the Lua File Dynamically
-    lua_lines = [f"addappid({app_id})"]
-    found = 0
-    for d in depots:
-        if d in keys_dict:
-            # SteamAutoCrack uses addappid(depot_id, 1, "key") format
-            lua_lines.append(f"addappid({d}, 1, \"{keys_dict[d]}\")")
-            found += 1
+    found = _count_provider_matches(depots, keys_dict)
+
+    if found < len(depots):
+        missing = len(depots) - found
+        print(
+            Fore.YELLOW
+            + f"Provider is missing {missing} depot key(s). Refreshing provider once..."
+            + Style.RESET_ALL
+        )
+        try:
+            update_result = download_provider_update(timeout=20.0)
+            if update_result.get("ok"):
+                global _PROVIDER_CACHE
+                _PROVIDER_CACHE = None
+                print(
+                    Fore.GREEN
+                    + f"[OK] Provider refreshed from {update_result.get('url', '')} "
+                      f"({update_result.get('count', 0):,} entries)."
+                    + Style.RESET_ALL
+                )
+                keys_dict = _provider_key_map()
+                found = _count_provider_matches(depots, keys_dict)
+            else:
+                print(
+                    Fore.YELLOW
+                    + "Provider refresh did not complete: "
+                    + "; ".join(update_result.get("errors") or [])
+                    + Style.RESET_ALL
+                )
+        except Exception as exc:
+            print(Fore.YELLOW + f"Provider refresh failed ({exc})." + Style.RESET_ALL)
 
     if found == 0:
         print(Fore.RED + f"No known keys found in any database for {app_id}." + Style.RESET_ALL)
@@ -171,21 +244,19 @@ def get_oureverday(dest, app_id):
                             injected += 1
                     if injected > 0:
                         print(Fore.GREEN + f"\u2705 revobd.club: Injected {injected} key(s) for {app_id}" + Style.RESET_ALL)
-                        lua_lines = [f"addappid({app_id})"]
                         found = 0
                         for d in depots:
                             if keys_dict.get(d):
-                                lua_lines.append(f"addappid({d}, 1, \"{keys_dict[d]}\")")
                                 found += 1
                         if found > 0:
                             # Append every depotless DLC the game declares so
                             # LumaCore marks them as owned alongside the keyed
                             # depots above.
-                            for dlc_id in dlc_app_ids:
-                                if dlc_id != str(app_id) and dlc_id not in depots:
-                                    lua_lines.append(f"addappid({dlc_id})")
                             lua_path = dest / f"{app_id}.lua"
-                            lua_path.write_text("\n".join(lua_lines), encoding="utf-8")
+                            lua_path.write_text(
+                                _build_lua_from_provider(app_id, app_info.get("common", {}).get("name", ""), depots, keys_dict, dlc_app_ids, manifest_map),
+                                encoding="utf-8",
+                            )
                             print(Fore.GREEN + f"\u2705 Built Lua for {app_id} using revobd.club keys ({found} depot(s))" + Style.RESET_ALL)
                             return lua_path
             print(Fore.YELLOW + f"revobd.club: No usable keys for {app_id} (HTTP {revo_resp.status_code})." + Style.RESET_ALL)
@@ -196,16 +267,11 @@ def get_oureverday(dest, app_id):
     # Append every depotless DLC the game declares so LumaCore marks them as
     # owned alongside the keyed depots above. Skipping the base appid and any
     # id that already appears as a depot avoids duplicates.
-    appended_dlcs = 0
-    for dlc_id in dlc_app_ids:
-        if dlc_id == str(app_id) or dlc_id in depots:
-            continue
-        lua_lines.append(f"addappid({dlc_id})")
-        appended_dlcs += 1
+    appended_dlcs = len([d for d in dlc_app_ids if d != str(app_id) and d not in depots])
 
     lua_path = dest / f"{app_id}.lua"
     with lua_path.open("w", encoding="utf-8") as f:
-        f.write("\n".join(lua_lines))
+        f.write(_build_lua_from_provider(app_id, app_info.get("common", {}).get("name", ""), depots, keys_dict, dlc_app_ids, manifest_map))
 
     if appended_dlcs:
         print(Fore.GREEN + f"[OK] Built custom Lua for {app_id} (Resolved {found} keys natively, +{appended_dlcs} DLC appid(s))" + Style.RESET_ALL)

@@ -27,6 +27,7 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Callable, Optional
+from sff.utils import sff_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +92,7 @@ class DownloadHistory:
 
     @staticmethod
     def _get_history_path():
-        base = Path(os.environ.get("APPDATA", os.path.expanduser("~")))
-        path = base / "SteaMidra" / "download_history.json"
+        path = sff_data_dir() / "download_history.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 

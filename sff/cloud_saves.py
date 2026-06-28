@@ -35,9 +35,19 @@ from dataclasses import dataclass, field, asdict
 
 _CREATE_NO_WINDOW = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
 
-from sff.utils import root_folder
+from sff.utils import root_folder, sff_data_dir
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_path(path_val) -> Path | None:
+    if not path_val:
+        return None
+    try:
+        return Path(os.path.expandvars(str(path_val))).expanduser()
+    except Exception:
+        return None
+
 
 # module-level cache for all_games.txt — parsed once per session
 _ALL_GAMES_CACHE = None
@@ -128,7 +138,7 @@ def _get_backup_dir():
 
     Honours the user-selected `cloud_local_backup_dest` setting from the
     Cloud Saves UI when it points at an existing or creatable folder.
-    Falls back to %APPDATA%/SteaMidra/save_backups/ otherwise. The user
+    Falls back to <SteaMidra install>/save_backups/ otherwise. The user
     sets this through the Local-provider folder picker on the Cloud Saves
     tab, and the setting persists across sessions.
     """
@@ -146,11 +156,10 @@ def _get_backup_dir():
             return p
         except OSError:
             # Custom path is unwritable (no permission, drive missing).
-            # Drop back to APPDATA so the legacy code paths keep working
+            # Drop back to the app data dir so the legacy code paths keep working
             # instead of crashing on every backup attempt.
             pass
-    base = Path(os.environ.get("APPDATA", os.path.expanduser("~")))
-    backup_dir = base / "SteaMidra" / "save_backups"
+    backup_dir = sff_data_dir() / "save_backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     return backup_dir
 
@@ -608,7 +617,7 @@ EMU_SAVE_LOCATIONS = {
     "Goldberg SocialClub Emu Saves": Path(os.environ.get("APPDATA", "")) / "Goldberg SocialClub Emu Saves",
 }
 
-_BACKUP_ROOT = Path(os.environ.get("APPDATA", "")) / "SteaMidra" / "save_backups"
+_BACKUP_ROOT = sff_data_dir() / "save_backups"
 
 
 def _resolve_game_name(folder_name, name_map_cache=None):
@@ -747,11 +756,8 @@ def scan_all_save_locations(steam_path=None, steam32_id=None):
         for app_id_str, raw_path in custom_map.items():
             if not raw_path:
                 continue
-            try:
-                src = Path(raw_path).expanduser()
-            except Exception:
-                continue
-            if not src.exists() or not src.is_dir():
+            src = _normalize_path(raw_path)
+            if not src or not src.exists() or not src.is_dir():
                 continue
             files = [f for f in src.rglob("*") if f.is_file()]
             if not files:
@@ -813,13 +819,17 @@ def backup_save_location_local(entry, dest_root, log_func=None):
     Returns dest folder path on success, None on failure.
     """
     log = log_func or (lambda m: None)
-    src = Path(entry["source_path"])
-    if not src.exists():
-        log(f"[!] Source not found: {src}")
+    src = _normalize_path(entry.get("source_path"))
+    if not src or not src.exists():
+        log(f"[!] Source not found: {entry.get('source_path')}")
         return None
     label = entry["label"]
     location = entry["location"]
-    dest = Path(dest_root) / "SteaMidraAllSaves" / location / label
+    dest_root_norm = _normalize_path(dest_root)
+    if not dest_root_norm:
+        log(f"[!] Invalid destination root: {dest_root}")
+        return None
+    dest = dest_root_norm / "SteaMidraAllSaves" / location / label
     try:
         dest.mkdir(parents=True, exist_ok=True)
         copied = 0
@@ -857,9 +867,9 @@ def backup_save_location_rclone(entry, rclone_exe, remote_dest, log_func=None):
     import subprocess
     import tempfile
     log = log_func or (lambda m: None)
-    src = Path(entry["source_path"])
-    if not src.exists():
-        log(f"[!] Source not found: {src}")
+    src = _normalize_path(entry.get("source_path"))
+    if not src or not src.exists():
+        log(f"[!] Source not found: {entry.get('source_path')}")
         return False
     label = entry["label"]
     location = entry["location"]
@@ -901,9 +911,11 @@ def backup_save_location_rclone(entry, rclone_exe, remote_dest, log_func=None):
 
 def backup_save_location_gdrive(entry, service, backup_root_id, log_func=None, folder_cache=None):
     """Upload one save entry via Google Drive API with smart sync (skip unchanged, update changed)."""
-    import tempfile
-    from sff.google_drive import get_or_create_folder, upload_folder, upload_file
+    from sff.google_drive import get_or_create_folder, upload_folder, write_backup_meta
     log = log_func or (lambda m: None)
+    if service is None:
+        log("[!] Google Drive service not available. Reconnect in Settings.")
+        return False
     src = Path(entry["source_path"])
     if not src.exists():
         log(f"[!] Source not found: {src}")
@@ -926,16 +938,14 @@ def backup_save_location_gdrive(entry, service, backup_root_id, log_func=None, f
         if ok:
             game_folder_id = local_fc.get((label, loc_folder_id))
             if game_folder_id:
-                meta_tmp = Path(tempfile.mkdtemp(prefix="steamidra_meta_"))
-                try:
-                    meta_path = meta_tmp / "steamidra_meta.json"
-                    meta_path.write_text(
-                        json.dumps(_make_meta(entry.get("app_id"), entry["game_name"], src, location), indent=2),
-                        encoding="utf-8",
-                    )
-                    upload_file(service, meta_path, game_folder_id, log_func=log)
-                finally:
-                    shutil.rmtree(meta_tmp, ignore_errors=True)
+                write_backup_meta(
+                    service,
+                    backup_root_id,
+                    location,
+                    label,
+                    _make_meta(entry.get("app_id"), entry["game_name"], src, location),
+                    log_func=log,
+                )
             log(f"  Synced to Drive: {label}")
         if folder_cache is not None:
             folder_cache.update(local_fc)
@@ -1045,9 +1055,10 @@ def restore_save_entry(game_entry, log_func=None):
     Creates a safety backup of the current saves first.
     """
     log = log_func or (lambda m: None)
-    dest = Path(game_entry.get("source_path", ""))
+    raw_dest = game_entry.get("source_path")
+    dest = _normalize_path(raw_dest) if raw_dest else None
     if not dest:
-        log("[FAIL] No source_path in entry — cannot restore.")
+        log("[FAIL] No valid source_path in entry — cannot restore.")
         return False
 
     rclone_path = game_entry.get("rclone_path")

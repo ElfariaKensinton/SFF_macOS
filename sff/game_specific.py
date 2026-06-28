@@ -76,6 +76,7 @@ logger = logging.getLogger(__name__)
 class ACFInfo(NamedTuple):
     app_id: str
     path: Path
+    name: str = ""
 
 
 AppName = str
@@ -106,6 +107,8 @@ class GameHandler:
             if os.name == 'nt':  # Windows
                 from string import ascii_uppercase
                 for drive_letter in ascii_uppercase:
+                    if drive_letter in ("A", "B"):
+                        continue
                     drive = Path(f"{drive_letter}:/")
                     if not drive.exists():
                         continue
@@ -705,6 +708,9 @@ class GameHandler:
     def _resolve_game_name(self, app_info):
         """Helper: resolve game name from ACF or Steam Store fallback."""
         game_name = "Unknown"
+        explicit_name = (getattr(app_info, "name", "") or "").strip()
+        if explicit_name:
+            return explicit_name
         # Outside-Steam mode uses app_id "0" — skip ACF/Store lookups and use folder name
         if not app_info.app_id or str(app_info.app_id).strip() == "0":
             return app_info.path.name or "Unknown"
@@ -726,21 +732,10 @@ class GameHandler:
         return game_name
 
     def apply_multiplayer_fix(self, app_info):
-        print("\n" + Fore.CYAN + "Multiplayer Fix (online-fix.me)" + Style.RESET_ALL)
-        print("This will download and apply a multiplayer fix for the selected game.")
-        print("The fix will be extracted directly to the game folder.\n")
         game_name = self._resolve_game_name(app_info)
         print(f"Game: {Fore.YELLOW}{game_name}{Style.RESET_ALL}")
-        print(f"Folder: {Fore.YELLOW}{app_info.path}{Style.RESET_ALL}\n")
-        if not prompt_confirm("Continue with multiplayer fix via online-fix.me?"):
-            return
-        success = apply_online_fix(game_name, app_info.path)
-        if success:
-            print("\n" + Fore.GREEN + "Multiplayer fix applied successfully!" + Style.RESET_ALL)
-            print("You can now launch the game and try multiplayer features.")
-        else:
-            print("\n" + Fore.RED + "Failed to apply multiplayer fix." + Style.RESET_ALL)
-            print("Check the error messages above for details.")
+        print()
+        apply_online_fix(game_name, app_info.path)
 
     def apply_crack_fix(self, app_info):
         print("\n" + Fore.CYAN + "Fixes & Bypasses" + Style.RESET_ALL)
@@ -988,7 +983,12 @@ class GameHandler:
             else:
                 self.crack_dll(app_info.app_id, dll)
         elif choice == MainMenu.REMOVE_DRM:
-            return self.apply_steamless(app_info)
+            ok, msg = self.apply_steamless(app_info)
+            if ok:
+                print("\n" + Fore.GREEN + msg + Style.RESET_ALL)
+            else:
+                print("\n" + Fore.RED + msg + Style.RESET_ALL)
+            return MainReturnCode.LOOP
         elif choice == MainMenu.DL_USER_GAME_STATS:
             self.run_gen_emu(app_info.app_id, GenEmuMode.USER_GAME_STATS)
         elif choice == MainMenu.DLC_CHECK:

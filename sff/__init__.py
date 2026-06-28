@@ -23,6 +23,9 @@ Core package for game library management, manifest decryption,
 DLC unlockers (CreamInstaller-compatible), and Steam integration.
 """
 
+from datetime import date as _date
+
 from sff.strings import VERSION
 
 __version__ = VERSION
+__build_date__ = _date.today().isoformat()

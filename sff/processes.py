@@ -18,35 +18,28 @@
 
 
 import logging
-
 import os
-
 import subprocess
-
 import time
-
 from pathlib import Path
-
 
 import psutil
 
-
 from sff.prompts import prompt_confirm
-
 
 logger = logging.getLogger(__name__)
 
 
 def is_proc_running(process_name: str):
-
-    for proc in psutil.process_iter(["pid", "name"]):
-
-        try:
-            if process_name.lower() == proc.info["name"].lower():
+    wanted = process_name.lower()
+    try:
+        for proc in psutil.process_iter(attrs=("name",)):
+            info = proc.info or {}
+            name = (info.get("name") or "").lower()
+            if name == wanted:
                 return True
-        except psutil.Error:
-            pass
-
+    except psutil.Error:
+        pass
     return False
 
 

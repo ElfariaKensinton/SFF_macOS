@@ -343,6 +343,34 @@ class ManifestDownloader:
             logger.debug(f"GitHub mirror coverage check failed: {e}")
         return 0
 
+    def _try_mirror_endpoints(self, depot_id, manifest_id):
+        """Hit the 3 GMRC mirrors to get a request code, then download
+        from Steam's fixed CDN (steampipe.akamaized.net). HTTPS first,
+        HTTP last. No Steam CDN client needed, the code works directly.
+        """
+        _MIRROR_URLS = (
+            (f"https://manifest.opensteamtool.com/{manifest_id}", "opensteamtool"),
+            (f"https://manifest.steam.run/api/manifest/{manifest_id}", "steam.run"),
+            (f"http://gmrc.wudrm.com/manifest/{manifest_id}", "wudrm"),
+        )
+        for url, label in _MIRROR_URLS:
+            try:
+                resp = httpx.get(url, timeout=12, follow_redirects=True)
+                if resp.status_code == 200 and resp.text.strip().isdigit():
+                    req_code = resp.text.strip()
+                    logger.debug(f"Mirror {label} returned request code for manifest {manifest_id}")
+                    cdn_url = f"http://steampipe.akamaized.net/depot/{depot_id}/manifest/{manifest_id}/5/{req_code}"
+                    result = get_request_raw(cdn_url)
+                    if result is None:
+                        cdn_url_https = f"https://steampipe.akamaized.net/depot/{depot_id}/manifest/{manifest_id}/5/{req_code}"
+                        result = get_request_raw(cdn_url_https)
+                    if result is not None:
+                        logger.debug(f"Mirror {label} download succeeded for depot {depot_id}")
+                        return result
+            except Exception:
+                continue
+        return None
+
     def _try_manifesthub(self, depot_id, manifest_id):
         # Hits the ManifestHub API; key is auto-fetched and renewed as needed.
         api_key = get_manifesthub_api_key()
@@ -393,32 +421,31 @@ class ManifestDownloader:
             mh_result = self._try_manifesthub(depot_id, manifest_id)
             if mh_result is not None:
                 return mh_result
-            req_code = self.resolve_gmrc(manifest_id)
-            if req_code is None:
-                return None
-            cdn_server = cast(ContentServer, cdn_client.get_content_server())
-            cdn_server_name = f"http{'s' if cdn_server.https else ''}://{cdn_server.host}"
-            manifest_url = urljoin(
-                cdn_server_name, f"depot/{depot_id}/manifest/{manifest_id}/5/{req_code}"
-            )
-            logger.debug(f"Download manifest from {manifest_url}")
-            return get_request_raw(manifest_url)
+            # CDN is dead, skip resolve_gmrc + CDN download.
+            # ManifestHub already tried above, fall through to GitHub.
+            logger.debug(f"Hubcap path for depot {depot_id}: all sources failed")
+            return None
         # oureveryday path ─────────────────────────────────────────────────────
-        # Step 1: clearnet GMRC endpoint
-        # Step 2: ManifestHub fallback (auto-prompts for key if none cached)
-        # Step 3: caller falls through to interactive CDN fetch
+        # Step 1: Try the 3 GMRC mirrors (opensteamtool, steam.run, wudrm)
+        #          directly. Each returns a request code; we pull the manifest
+        #          from Steam CDN with it. HTTPS before HTTP.
+        # Step 2: Fall back to the encrypted GMRC endpoint + CDN.
+        # Step 3: ManifestHub API (auto-prompts for key if none cached).
+        # Step 4: GitHub raw mirror.
+        # Step 1: Hit the 3 mirror endpoints (opensteamtool, steam.run, wudrm)
+        #          to get a request code and download from steampipe CDN.
+        mirror_result = self._try_mirror_endpoints(depot_id, manifest_id)
+        if mirror_result is not None:
+            return mirror_result
+        # Step 2: Try the encrypted GMRC endpoint for a request code,
+        #          then download from steampipe CDN with it.
         req_code = asyncio.run(get_gmrc(manifest_id, silent=True))
         if req_code is not None:
-            cdn_server = cast(ContentServer, cdn_client.get_content_server())
-            cdn_server_name = f"http{'s' if cdn_server.https else ''}://{cdn_server.host}"
-            manifest_url = urljoin(
-                cdn_server_name, f"depot/{depot_id}/manifest/{manifest_id}/5/{req_code}"
-            )
-            logger.debug(f"Download manifest from {manifest_url}")
-            result = get_request_raw(manifest_url)
+            pipe_url = f"http://steampipe.akamaized.net/depot/{depot_id}/manifest/{manifest_id}/5/{req_code}"
+            result = get_request_raw(pipe_url)
             if result is not None:
                 return result
-        # GMRC dead or returned nothing usable. Try ManifestHub before
+        # Try ManifestHub before
         # giving up so users with a key configured don't get blocked when
         # the primary endpoint goes down. Same provider that the hubcap
         # path uses, just runs as a fallback here instead of as the second

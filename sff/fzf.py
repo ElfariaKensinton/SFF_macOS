@@ -16,7 +16,6 @@
 # You should have received a copy of the GNU General Public License
 # along with SteaMidra.  If not, see <https://www.gnu.org/licenses/>.
 
-from pathlib import Path
 import shutil
 import subprocess
 
@@ -24,40 +23,37 @@ from sff.structs import OSType
 from sff.utils import root_folder
 
 
-def run_fzf(choices, os_type):
+def _build_choices_text(choices) -> str:
     if isinstance(choices, list):
-        choices_str = "\n".join(choices)
-    else:
-        with choices.open(encoding="utf-8") as f:
-            choices_str = f.read()
+        return "\n".join(str(choice) for choice in choices)
+    raw = choices.read_text(encoding="utf-8")
+    return raw
 
-    cmd = []
+
+def _resolve_fzf_binary(os_type):
     if os_type == OSType.LINUX:
-        fzf_path = shutil.which("fzf")
-        if fzf_path is None:
-            print(
-                "You don't have fzf installed. Please install it and try this again."
-            )
+        exe = shutil.which("fzf")
+        if exe is None:
+            print("You don't have fzf installed. Please install it and try this again.")
             return None
-        cmd = [fzf_path]
-    elif os_type == OSType.WINDOWS:
-        fzf_path = root_folder() / "third_party/fzf/fzf.exe"
-        if not fzf_path.exists():
-            print(
-                f"fzf.exe not found at {fzf_path}.\n"
-                "Please re-extract the release zip to ensure third_party/fzf/ is present,\n"
-                "or enter the App ID directly instead of using game search."
-            )
+        return [str(exe)]
+    if os_type == OSType.WINDOWS:
+        bundled = root_folder() / "third_party/fzf/fzf.exe"
+        if not bundled.is_file():
+            print(f"fzf.exe not found at {bundled}.\nPlease re-extract the release zip to ensure third_party/fzf/ is present,\nor enter the App ID directly instead of using game search.")
             return None
-        cmd = [fzf_path]
+        return [str(bundled)]
+    return None
+
+
+def run_fzf(choices, os_type):
+    argv = _resolve_fzf_binary(os_type)
+    if not argv:
+        return None
+    stdin_text = _build_choices_text(choices)
     try:
-        proc = subprocess.run(
-            cmd,
-            input=choices_str,
-            capture_output=True,
-            encoding="utf-8",
-        )
-        return proc.stdout.strip("\n")
+        result = subprocess.run(argv, input=stdin_text, capture_output=True, encoding="utf-8")
+        return result.stdout.strip("\n")
     except (FileNotFoundError, OSError) as e:
         print(f"Failed to run fzf: {e}")
         return None

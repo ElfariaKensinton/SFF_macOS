@@ -21,11 +21,12 @@ import json
 import logging
 import os
 from pathlib import Path
+from sff.utils import sff_data_dir
 
 logger = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/drive.file"]
-_TOKEN_PATH = Path(os.environ.get("APPDATA", "~")) / "SteaMidra" / "gdrive_token.json"
+_TOKEN_PATH = sff_data_dir() / "gdrive_token.json"
 _AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 _TOKEN_URI = "https://oauth2.googleapis.com/token"
 
@@ -88,7 +89,8 @@ def authorize(log_func=None):
     try:
         from google_auth_oauthlib.flow import InstalledAppFlow
         flow = InstalledAppFlow.from_client_config(cfg, _SCOPES)
-        creds = flow.run_local_server(port=0, open_browser=True, prompt="consent")
+        flow.oauth2session.extra = {"access_type": "offline", "prompt": "consent"}
+        creds = flow.run_local_server(port=0, open_browser=True)
         _TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
         _TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
         if log_func:
@@ -117,6 +119,11 @@ def get_service():
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
                 _TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+            elif creds and creds.expired:
+                # Token expired with no refresh token — force re-auth
+                logger.warning("GDrive token expired without refresh token, re-auth needed")
+                _TOKEN_PATH.unlink(missing_ok=True)
+                return None
             else:
                 return None
 
@@ -240,21 +247,43 @@ def _upload_file_smart(service, local_path, parent_id, existing_index, log_func=
 def upload_file(service, local_path, parent_id, log_func=None):
     """Upload a single file (creates new; does not check for existing). Use _upload_file_smart for sync."""
     from googleapiclient.http import MediaFileUpload
+    from googleapiclient.errors import HttpError
     local_path = Path(local_path)
     if not local_path.exists():
         return None
     name = local_path.name
-    try:
-        media = MediaFileUpload(str(local_path), resumable=False)
-        meta = {"name": name, "parents": [parent_id]}
-        service.files().create(body=meta, media_body=media, fields="id").execute()
-        if log_func:
-            log_func(f"  Uploaded: {name}")
-        return True
-    except Exception as e:
-        if log_func:
-            log_func(f"  [FAIL] {name}: {e}")
-        return False
+    import time as _time
+    for _attempt in range(4):
+        try:
+            media = MediaFileUpload(str(local_path), resumable=False)
+            meta = {"name": name, "parents": [parent_id]}
+            service.files().create(body=meta, media_body=media, fields="id").execute()
+            if log_func:
+                log_func(f"  Uploaded: {name}")
+            return True
+        except HttpError as e:
+            if e.resp.status == 429:
+                _time.sleep(2 ** _attempt)
+                continue
+            if e.resp.status in (401, 403):
+                _time.sleep(1)
+                continue
+            if log_func:
+                log_func(f"  [FAIL] {name}: {e}")
+            return False
+        except Exception as e:
+            if log_func:
+                log_func(f"  [FAIL] {name}: {e}")
+            return False
+    if log_func:
+        log_func(f"  [FAIL] {name}: rate-limited after retries")
+    return False
+
+
+def upload_file_replace(service, local_path, parent_id, log_func=None):
+    """Upload or replace one file by name in parent_id."""
+    index = _list_folder_index(service, parent_id)
+    return _upload_file_smart(service, local_path, parent_id, index, log_func=log_func)
 
 
 def upload_folder(service, local_folder, parent_id, log_func=None, folder_cache=None, drive_folder_name=None):
@@ -355,10 +384,59 @@ def download_folder(service, folder_id, local_dest, log_func=None):
 
 
 _BACKUP_ROOT_NAME = "SteaMidra Backups"
+_META_ROOT_NAME = "_steamidra_meta"
 
 
 def get_backup_root(service):
     return get_or_create_folder(service, _BACKUP_ROOT_NAME, "root")
+
+
+def _meta_file_name(location: str, folder_name: str) -> str:
+    raw = f"{location}__{folder_name}.json"
+    return "".join("_" if ch in '<>:"/\\|?*\r\n' else ch for ch in raw)[:180]
+
+
+def write_backup_meta(service, backup_root_id, location, folder_name, meta, log_func=None):
+    """Store Drive metadata outside the visible save folder."""
+    import tempfile
+    meta_root = get_or_create_folder(service, _META_ROOT_NAME, backup_root_id)
+    if not meta_root:
+        return False
+    loc_root = get_or_create_folder(service, str(location or "unknown"), meta_root)
+    if not loc_root:
+        return False
+    tmp = Path(tempfile.mkdtemp(prefix="steamidra_drive_meta_"))
+    try:
+        meta_path = tmp / _meta_file_name(str(location or ""), str(folder_name or ""))
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        return bool(upload_file_replace(service, meta_path, loc_root, log_func=log_func))
+    finally:
+        try:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def _fetch_meta_from_index(service, backup_root_id, location, folder_name):
+    meta_root = find_folder(service, _META_ROOT_NAME, backup_root_id)
+    if not meta_root:
+        return {}
+    loc_root = find_folder(service, str(location or "unknown"), meta_root)
+    if not loc_root:
+        return {}
+    name = _meta_file_name(str(location or ""), str(folder_name or ""))
+    escaped = name.replace("'", "\\'")
+    q = f"name='{escaped}' and '{loc_root}' in parents and trashed=false"
+    try:
+        res = service.files().list(q=q, fields="files(id,name)", pageSize=1).execute()
+        files = res.get("files", [])
+        if not files:
+            return {}
+        content = service.files().get_media(fileId=files[0]["id"]).execute()
+        return json.loads(content)
+    except Exception:
+        return {}
 
 
 def list_backup_locations(service):
@@ -370,11 +448,15 @@ def list_backup_locations(service):
         if loc_item["mimeType"] != "application/vnd.google-apps.folder":
             continue
         loc_name = loc_item["name"]
+        if loc_name == _META_ROOT_NAME:
+            continue
         games = []
         for game_item in list_folder(service, loc_item["id"]):
             if game_item["mimeType"] != "application/vnd.google-apps.folder":
                 continue
-            meta = _fetch_meta_from_folder(service, game_item["id"])
+            meta = _fetch_meta_from_index(service, root_id, loc_name, game_item["name"])
+            if not meta:
+                meta = _fetch_meta_from_folder(service, game_item["id"])
             games.append({
                 "folder_id": game_item["id"],
                 "folder_name": game_item["name"],

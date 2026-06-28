@@ -317,7 +317,7 @@ def _save_app_depot_cache(app_id: str, result: dict):
         data = {
             "version": _APP_CACHE_VERSION,
             "app_id": app_id,
-            "cached_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "cached_at": datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "depots": {
                 depot_id: [
                     {
@@ -713,7 +713,9 @@ async def _fetch_steamdb_zendriver_async(
     from zendriver.cdp import network as cdp_network
 
     if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        _current = asyncio.get_event_loop_policy()
+        if not isinstance(_current, asyncio.WindowsSelectorEventLoopPolicy):
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     results: dict = {}
     if results_out is None:
@@ -841,7 +843,16 @@ async def _fetch_steamdb_zendriver_async(
             try:
                 proc = getattr(browser, "_process", None) or getattr(browser, "process", None)
                 if proc is not None and getattr(proc, "pid", None):
-                    if sys.platform == "win32":
+                    _kill = True
+                    try:
+                        import psutil
+                        p = psutil.Process(proc.pid)
+                        if "chrome" not in p.name().lower():
+                            logger.debug("Skipping taskkill for PID %s (not chrome: %s)", proc.pid, p.name())
+                            _kill = False
+                    except Exception:
+                        pass
+                    if _kill and sys.platform == "win32":
                         import subprocess
                         subprocess.run(
                             ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
@@ -931,8 +942,15 @@ def _ensure_chrome_for_testing(progress_cb=None):
     """
     import urllib.request, zipfile, json as _json, platform as _platform
 
-    plat = "win64" if _platform.machine() in ("AMD64", "x86_64") else "win32"
-    chrome_exe = _sff_dir() / "chrome-for-testing" / f"chrome-{plat}" / "chrome.exe"
+    if _platform.system() == "Linux":
+        plat = "linux64"
+        chrome_exe = _sff_dir() / "chrome-for-testing" / f"chrome-{plat}" / "chrome"
+    elif _platform.system() == "Darwin":
+        plat = "mac-x64" if _platform.machine() in ("AMD64", "x86_64") else "mac-arm64"
+        chrome_exe = _sff_dir() / "chrome-for-testing" / f"chrome-{plat}" / "Google Chrome for Testing.app" / "Contents" / "MacOS" / "Google Chrome for Testing"
+    else:
+        plat = "win64" if _platform.machine() in ("AMD64", "x86_64") else "win32"
+        chrome_exe = _sff_dir() / "chrome-for-testing" / f"chrome-{plat}" / "chrome.exe"
 
     if chrome_exe.exists():
         return str(chrome_exe)
@@ -943,38 +961,56 @@ def _ensure_chrome_for_testing(progress_cb=None):
             progress_cb("Downloading Chrome for Testing (~300 MB, one-time setup)…")
         except Exception:
             pass
-    try:
-        api = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json"
-        with urllib.request.urlopen(api, timeout=20) as resp:
-            data = _json.loads(resp.read())
-        downloads = data["channels"]["Stable"]["downloads"].get("chrome", [])
-        entry = next((d for d in downloads if d["platform"] == plat), None)
-        if not entry:
-            logger.debug("Chrome for Testing: no %s download found", plat)
-            return ""
-        zip_path = _sff_dir() / "chrome-for-testing.zip"
-        logger.info("Downloading Chrome for Testing (%s) — this may take a minute...", plat)
-        import socket as _sock_cft
-        _old_timeout_cft = _sock_cft.getdefaulttimeout()
-        _sock_cft.setdefaulttimeout(120)
+    import ssl as _ssl
+    import socket as _sock_cft
+
+    # Some Linux distros (Bazzite/Fedora Atomic) don't ship Mozilla CA certs.
+    # First attempt with verification, fall back to unverified if that fails.
+    for _verify in (True, False):
         try:
-            urllib.request.urlretrieve(entry["url"], str(zip_path))
-        finally:
-            _sock_cft.setdefaulttimeout(_old_timeout_cft)
-        extract_dir = _sff_dir() / "chrome-for-testing"
-        with zipfile.ZipFile(str(zip_path)) as z:
-            z.extractall(str(extract_dir))
-        zip_path.unlink(missing_ok=True)
-        if chrome_exe.exists():
-            logger.info("Chrome for Testing ready: %s", chrome_exe)
-            if progress_cb:
-                try:
-                    progress_cb("Chrome for Testing ready — starting SteamDB scrape…")
-                except Exception:
-                    pass
-            return str(chrome_exe)
-    except Exception as exc:
-        logger.debug("Chrome for Testing download failed: %s", exc)
+            _ctx = _ssl.create_default_context()
+            if _verify:
+                _ctx.check_hostname = True
+                _ctx.verify_mode = _ssl.CERT_REQUIRED
+            else:
+                _ctx.check_hostname = False
+                _ctx.verify_mode = _ssl.CERT_NONE
+
+            api = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json"
+            with urllib.request.urlopen(api, timeout=20, context=_ctx) as resp:
+                data = _json.loads(resp.read())
+            downloads = data["channels"]["Stable"]["downloads"].get("chrome", [])
+            entry = next((d for d in downloads if d["platform"] == plat), None)
+            if not entry:
+                logger.debug("Chrome for Testing: no %s download found", plat)
+                return ""
+
+            zip_path = _sff_dir() / "chrome-for-testing.zip"
+            logger.info("Downloading Chrome for Testing (%s) — this may take a minute...", plat)
+            _old_timeout_cft = _sock_cft.getdefaulttimeout()
+            _sock_cft.setdefaulttimeout(120)
+            try:
+                urllib.request.urlretrieve(entry["url"], str(zip_path))
+            finally:
+                _sock_cft.setdefaulttimeout(_old_timeout_cft)
+
+            extract_dir = _sff_dir() / "chrome-for-testing"
+            with zipfile.ZipFile(str(zip_path)) as z:
+                z.extractall(str(extract_dir))
+            zip_path.unlink(missing_ok=True)
+            if chrome_exe.exists():
+                logger.info("Chrome for Testing ready: %s", chrome_exe)
+                if progress_cb:
+                    try:
+                        progress_cb("Chrome for Testing ready — starting SteamDB scrape…")
+                    except Exception:
+                        pass
+                return str(chrome_exe)
+        except Exception as exc:
+            if _verify:
+                logger.debug("Chrome for Testing SSL verify failed, retrying unverified: %s", exc)
+                continue
+            logger.debug("Chrome for Testing download failed: %s", exc)
     return ""
 
 

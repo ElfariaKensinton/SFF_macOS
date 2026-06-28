@@ -9,6 +9,7 @@ window.App = (function() {
     var _currentPage = 'home';
     var _platform = 'win32';
     var _outsideMode = false;
+    var _letUpdatesHelper = null;
 
     function init() {
         Components.initModals();
@@ -24,6 +25,9 @@ window.App = (function() {
         if (window.DlcCheck) DlcCheck.init();
 
         Bridge.onReady(function(py) {
+            if (py && py.signal_ready) {
+                try { py.signal_ready(); } catch (e) {}
+            }
             // Detect platform
             py.get_platform(function(platform) {
                 _platform = platform || 'win32';
@@ -75,6 +79,7 @@ window.App = (function() {
             // Refresh button beside game dropdown
             var homeRefreshBtn = document.getElementById('home-game-refresh');
             if (homeRefreshBtn) homeRefreshBtn.addEventListener('click', _populateGameDropdown);
+            _initHomeProviderControls();
 
             // Listen to global signals
             Bridge.on('task_finished', function(json) {
@@ -151,6 +156,24 @@ window.App = (function() {
                     }
                     if (result.task === 'api_key_connected') {
                         Store.onApiKeyAvailable('');
+                    }
+                    if (result.task === 'provider_contribute' || result.task === 'provider_update') {
+                        _updateHomeProviderStatus(result);
+                    }
+                    if (result.task === 'store_metadata' && result.success && _currentPage === 'store' && window.Store && Store.refresh) {
+                        Store.refresh();
+                    }
+                    if (result.task === 'store_metadata_refresh') {
+                        var btn = document.getElementById('store-update-list-btn');
+                        if (btn) { btn.disabled = false; btn.textContent = 'Update List'; }
+                        if (result.success) {
+                            Components.showToast('success', result.message || 'Store lists updated.');
+                            if (_currentPage === 'store' && window.Store && Store.refresh) {
+                                Store.refresh();
+                            }
+                        } else {
+                            Components.showToast('error', result.message || 'Failed to update store lists.');
+                        }
                     }
                     if (result.task === 'check_updates') {
                         // A5: restore the Settings Update button.
@@ -412,13 +435,26 @@ window.App = (function() {
         }
     }
 
+    function _nameFromOutsidePath(path) {
+        var cleaned = (path || '').toString().replace(/[\\\/]+$/, '');
+        if (!cleaned) return '';
+        var parts = cleaned.split(/[\\\/]+/);
+        return (parts[parts.length - 1] || '').trim();
+    }
+
+    function _getOutsideGameName(path) {
+        var inp = document.getElementById('outside-game-name');
+        var value = inp ? (inp.value || '').trim() : '';
+        return value || _nameFromOutsidePath(path);
+    }
+
     function _initGlobalListeners() {
         // Game source toggle (Steam vs outside)
         var srcSteam   = document.getElementById('game-source-steam');
         var srcOutside = document.getElementById('game-source-outside');
         if (srcSteam) srcSteam.addEventListener('change', function() {
             _outsideMode = false;
-            document.getElementById('steam-mode-row').style.display   = '';
+            document.getElementById('steam-mode-row').style.display   = 'flex';
             document.getElementById('outside-mode-row').style.display  = 'none';
         });
         if (srcOutside) srcOutside.addEventListener('change', function() {
@@ -439,7 +475,13 @@ window.App = (function() {
         var browseBtn = document.getElementById('outside-path-browse');
         if (browseBtn) browseBtn.addEventListener('click', function() {
             Bridge.callSync('browse_game_folder', function(path) {
-                if (path) document.getElementById('outside-path-display').value = path;
+                if (path) {
+                    document.getElementById('outside-path-display').value = path;
+                    var nameInp = document.getElementById('outside-game-name');
+                    if (nameInp && !nameInp.value.trim()) {
+                        nameInp.value = _nameFromOutsidePath(path);
+                    }
+                }
             });
         });
 
@@ -508,17 +550,47 @@ window.App = (function() {
             });
         }
 
+        // Download modal — choose DDMod destination
+        var dlDdmodDestBrowse = document.getElementById('dl-ddmod-dest-browse');
+        if (dlDdmodDestBrowse) {
+            dlDdmodDestBrowse.addEventListener('click', function() {
+                Bridge.callSync('browse_ddmod_download_folder', function(path) {
+                    if (path) {
+                        var inp = document.getElementById('dl-ddmod-dest-path');
+                        if (inp) inp.value = path;
+                    }
+                });
+            });
+        }
+        var dlDdmodDestClear = document.getElementById('dl-ddmod-dest-clear');
+        if (dlDdmodDestClear) {
+            dlDdmodDestClear.addEventListener('click', function() {
+                var inp = document.getElementById('dl-ddmod-dest-path');
+                if (inp) inp.value = '';
+            });
+        }
+
         // Download modal — fastest
         var dlFastest = document.getElementById('dl-fastest');
         if (dlFastest) {
             dlFastest.addEventListener('click', function() {
                 var appId = this.dataset.appid;
                 var sourceEl = document.querySelector('input[name="dl-source"]:checked');
-                var source = sourceEl ? sourceEl.value : 'hubcap';
+                var source = sourceEl ? sourceEl.value : 'oureveryday';
                 var updateEl = document.getElementById('ryuu-request-update');
                 var requestUpdate = (source === 'ryuu' && updateEl && updateEl.checked) ? '1' : '0';
                 Components.hideModal('download-modal');
-                _startDownload(appId, 'fastest', source, requestUpdate);
+                if (source === 'local') {
+                    var luaPath = (document.getElementById('dl-local-lua-path') || {}).value || '';
+                    if (!luaPath) {
+                        Components.showToast('warning', 'Please select a local .lua or archive file first.');
+                        return;
+                    }
+                    var manifestFolder = (document.getElementById('dl-manifest-folder-path') || {}).value || '';
+                    Bridge.call('download_game_with_source', appId, source, requestUpdate, luaPath, manifestFolder);
+                } else {
+                    _startDownload(appId, 'fastest', source, requestUpdate);
+                }
             });
         }
 
@@ -528,9 +600,44 @@ window.App = (function() {
             dlOlder.addEventListener('click', function() {
                 var appId = this.dataset.appid;
                 Components.hideModal('download-modal');
-                _showVersionPicker(appId);
+                var saved = localStorage.getItem('older_version_method') || '';
+                if (saved) {
+                    window._olderVersionMethod = saved;
+                    _showVersionPicker(appId);
+                    return;
+                }
+                Bridge.callSync('get_platform', function(platform) {
+                    if (platform === 'win32') {
+                        var methodModal = document.getElementById('older-method-modal');
+                        if (methodModal) {
+                            methodModal.querySelectorAll('.download-option').forEach(function(b) {
+                                b.dataset.appid = appId;
+                            });
+                            Components.showModal('older-method-modal');
+                        }
+                    } else {
+                        window._olderVersionMethod = 'ddmod';
+                        _showVersionPicker(appId);
+                    }
+                });
             });
         }
+
+        // Older method choice — DDMod
+        document.getElementById('older-method-ddmod')?.addEventListener('click', function() {
+            var appId = this.dataset.appid;
+            window._olderVersionMethod = 'ddmod';
+            Components.hideModal('older-method-modal');
+            _showVersionPicker(appId);
+        });
+
+        // Older method choice — Steam Native
+        document.getElementById('older-method-steam')?.addEventListener('click', function() {
+            var appId = this.dataset.appid;
+            window._olderVersionMethod = 'steam_native';
+            Components.hideModal('older-method-modal');
+            _showVersionPicker(appId);
+        });
 
         // Download modal — direct DDMod
         var dlDdmod = document.getElementById('dl-ddmod');
@@ -542,19 +649,25 @@ window.App = (function() {
                     return;
                 }
                 var sourceEl = document.querySelector('input[name="dl-source"]:checked');
-                var source = sourceEl ? sourceEl.value : 'hubcap';
+                var source = sourceEl ? sourceEl.value : 'oureveryday';
                 var luaPath = '';
                 var manifestFolder = '';
                 if (source === 'local') {
                     luaPath = (document.getElementById('dl-local-lua-path') || {}).value || '';
                     if (!luaPath) {
-                        Components.showToast('warning', 'Please select a local .lua or .zip file first.');
+                        Components.showToast('warning', 'Please select a local .lua or archive file first.');
                         return;
                     }
                     manifestFolder = (document.getElementById('dl-manifest-folder-path') || {}).value || '';
                 }
+                var destPath = (document.getElementById('dl-ddmod-dest-path') || {}).value || '';
+                if (!destPath) {
+                    Components.showToast('warning', 'Choose a DDMod download location first.');
+                    return;
+                }
                 Components.hideModal('download-modal');
-                _startDdmodDownload(appId, source, luaPath, manifestFolder);
+                var targetOs = (document.getElementById('dl-target-os') || {}).value || '';
+                _startDdmodDownload(appId, source, luaPath, manifestFolder, targetOs, destPath);
             });
         }
 
@@ -687,19 +800,20 @@ window.App = (function() {
                     return;
                 }
                 var sourceEl = document.querySelector('input[name="steam-home-source"]:checked');
-                var source = sourceEl ? sourceEl.value : 'hubcap';
+                var source = sourceEl ? sourceEl.value : 'oureveryday';
                 var updateEl = document.getElementById('steam-home-request-update');
                 var requestUpdate = (source === 'ryuu' && updateEl && updateEl.checked) ? '1' : '0';
                 Components.hideModal('steam-home-modal');
                 if (source === 'local') {
                     var luaPath = (document.getElementById('steam-home-local-path') || {}).value || '';
                     if (!luaPath) {
-                        Components.showToast('warning', 'Please select a local .lua or .zip file first.');
+                        Components.showToast('warning', 'Please select a local .lua or archive file first.');
                         Components.showModal('steam-home-modal');
                         return;
                     }
                     var mf = (document.getElementById('steam-home-manifest-path') || {}).value || '';
-                    _startDdmodDownload(appId, 'local', luaPath, mf);
+                    Components.showToast('info', 'Importing local Lua for App ' + appId + '...');
+                    Bridge.call('import_local_lua', appId, luaPath, mf);
                 } else if (source === 'recent') {
                     var recentPath = (document.getElementById('steam-home-recent-select') || {}).value || '';
                     if (!recentPath) {
@@ -707,7 +821,8 @@ window.App = (function() {
                         Components.showModal('steam-home-modal');
                         return;
                     }
-                    _startDdmodDownload(appId, 'local', recentPath, '');
+                    Components.showToast('info', 'Importing recent Lua for App ' + appId + '...');
+                    Bridge.call('import_local_lua', appId, recentPath, '');
                 } else {
                     _startDownload(appId, 'fastest', source, requestUpdate);
                 }
@@ -767,6 +882,26 @@ window.App = (function() {
             });
         }
 
+        // DDMod home modal — choose download destination
+        var ddmodHomeDestBrowse = document.getElementById('ddmod-home-dest-browse');
+        if (ddmodHomeDestBrowse) {
+            ddmodHomeDestBrowse.addEventListener('click', function() {
+                Bridge.callSync('browse_ddmod_download_folder', function(path) {
+                    if (path) {
+                        var inp = document.getElementById('ddmod-home-dest-path');
+                        if (inp) inp.value = path;
+                    }
+                });
+            });
+        }
+        var ddmodHomeDestClear = document.getElementById('ddmod-home-dest-clear');
+        if (ddmodHomeDestClear) {
+            ddmodHomeDestClear.addEventListener('click', function() {
+                var inp = document.getElementById('ddmod-home-dest-path');
+                if (inp) inp.value = '';
+            });
+        }
+
         // DDMod home modal — Download button
         var ddmodHomeDownload = document.getElementById('ddmod-home-download');
         if (ddmodHomeDownload) {
@@ -777,13 +912,13 @@ window.App = (function() {
                     return;
                 }
                 var sourceEl = document.querySelector('input[name="ddmod-home-source"]:checked');
-                var source = sourceEl ? sourceEl.value : 'hubcap';
+                var source = sourceEl ? sourceEl.value : 'oureveryday';
                 var luaPath = '';
                 var manifestFolder = '';
                 if (source === 'local') {
                     luaPath = (document.getElementById('ddmod-home-local-path') || {}).value || '';
                     if (!luaPath) {
-                        Components.showToast('warning', 'Please select a local .lua or .zip file first.');
+                        Components.showToast('warning', 'Please select a local .lua or archive file first.');
                         return;
                     }
                     manifestFolder = (document.getElementById('ddmod-home-manifest-path') || {}).value || '';
@@ -795,8 +930,14 @@ window.App = (function() {
                     }
                     source = 'local';
                 }
+                var destPath = (document.getElementById('ddmod-home-dest-path') || {}).value || '';
+                if (!destPath) {
+                    Components.showToast('warning', 'Choose a DDMod download location first.');
+                    return;
+                }
                 Components.hideModal('ddmod-home-modal');
-                _startDdmodDownload(appId, source, luaPath, manifestFolder);
+                var targetOs = (document.getElementById('ddmod-home-target-os') || {}).value || '';
+                _startDdmodDownload(appId, source, luaPath, manifestFolder, targetOs, destPath);
             });
         }
 
@@ -805,6 +946,12 @@ window.App = (function() {
         if (versionDl) {
             versionDl.addEventListener('click', function() {
                 _downloadSelectedVersion();
+            });
+        }
+        var versionManualDl = document.getElementById('version-manual-download');
+        if (versionManualDl) {
+            versionManualDl.addEventListener('click', function() {
+                _downloadManualVersion();
             });
         }
 
@@ -864,31 +1011,66 @@ window.App = (function() {
             });
         }
 
+        var luToggleBtn = document.getElementById('lu-toggle-all');
+        if (luToggleBtn) {
+            luToggleBtn.addEventListener('click', function() {
+                var checkboxes = document.querySelectorAll('#lu-game-list input[type="checkbox"]');
+                var allChecked = Array.prototype.every.call(checkboxes, function(cb) { return cb.checked; });
+                checkboxes.forEach(function(cb) { cb.checked = !allChecked; });
+                luToggleBtn.textContent = allChecked ? 'Select All' : 'Deselect All';
+            });
+        }
+
+        var luSaveBtn = document.getElementById('let-updates-save');
+        if (luSaveBtn) {
+            luSaveBtn.addEventListener('click', function() {
+                var selected = [];
+                document.querySelectorAll('#lu-game-list input[type="checkbox"]:checked').forEach(function(cb) {
+                    if (cb.dataset.appid) selected.push(cb.dataset.appid);
+                });
+                luSaveBtn.disabled = true;
+                Bridge.callWithCallback('let_updates_apply', JSON.stringify({ allow_updates: selected }), function(json) {
+                    luSaveBtn.disabled = false;
+                    var result;
+                    try { result = JSON.parse(json || '{}'); } catch(e) { result = { ok: false, error: String(e) }; }
+                    if (!result.ok) {
+                        Components.showToast('error', result.error || 'Failed to update Lua manifest pins.');
+                        return;
+                    }
+                    Components.hideModal('let-updates-modal');
+                    var suffix = result.global_override ? ' Global override updated too.' : '';
+                    Components.showToast('success', 'Updated ' + (result.changed_games || 0) + ' game Lua file(s).' + suffix);
+                });
+            });
+        }
+
+        var luAddHelperBtn = document.getElementById('let-updates-add-helper');
+        if (luAddHelperBtn) {
+            luAddHelperBtn.addEventListener('click', function() {
+                _setLetUpdatesHelper(true);
+            });
+        }
+
+        var luRemoveHelperBtn = document.getElementById('let-updates-remove-helper');
+        if (luRemoveHelperBtn) {
+            luRemoveHelperBtn.addEventListener('click', function() {
+                _setLetUpdatesHelper(false);
+            });
+        }
+
         // 6.2.4: restart-after-dl-run handler dropped along with the modal.
         // LumaCore picks up new manifests / keys live, no restart needed.
     }
 
-    function _startDdmodDownload(appId, source, luaPath, manifestFolder) {
-        Bridge.callSync('get_steam_libraries', function(json) {
-            var libs;
-            try { libs = JSON.parse(json || '[]'); } catch(e) { libs = []; }
-            if (libs.length === 0) {
-                Components.showToast('error', 'No Steam libraries found. Check your Steam path in Settings.');
-                return;
-            }
-            var mf = manifestFolder || '';
-            if (libs.length === 1) {
-                Bridge.call('set_active_library', libs[0]);
-                Components.showToast('info', 'Starting DDMod download for App ' + appId + '...');
-                Bridge.call('download_game_ddmod', appId, source, luaPath || '', mf);
-            } else {
-                Components.showLibraryModal(libs, function(selectedLib) {
-                    Bridge.call('set_active_library', selectedLib);
-                    Components.showToast('info', 'Starting DDMod download for App ' + appId + '...');
-                    Bridge.call('download_game_ddmod', appId, source, luaPath || '', mf);
-                });
-            }
-        });
+    function _startDdmodDownload(appId, source, luaPath, manifestFolder, targetOs, destinationPath) {
+        var dest = (destinationPath || '').trim();
+        if (!dest) {
+            Components.showToast('warning', 'Choose a DDMod download location first.');
+            return;
+        }
+        Bridge.call('set_active_library', dest);
+        Components.showToast('info', 'Starting DDMod download for App ' + appId + '...');
+        Bridge.call('download_game_ddmod', appId, source, luaPath || '', manifestFolder || '', targetOs || '');
     }
 
     function _openSteamHomeModal(appId, gameName) {
@@ -914,7 +1096,7 @@ window.App = (function() {
         if (recentRow) recentRow.style.display = 'none';
         var updateChk = document.getElementById('steam-home-request-update');
         if (updateChk) updateChk.checked = false;
-        var firstRadio = document.querySelector('input[name="steam-home-source"][value="hubcap"]');
+        var firstRadio = document.querySelector('input[name="steam-home-source"][value="oureveryday"]');
         if (firstRadio) firstRadio.checked = true;
         Bridge.callSync('get_recent_lua_files', function(json) {
             var files;
@@ -1018,11 +1200,13 @@ window.App = (function() {
         var recentRow = document.getElementById('ddmod-home-recent-row');
         var mfRow = document.getElementById('ddmod-home-manifest-row');
         var mfInp = document.getElementById('ddmod-home-manifest-path');
+        var destInp = document.getElementById('ddmod-home-dest-path');
         if (localRow) localRow.style.display = 'none';
         if (recentRow) recentRow.style.display = 'none';
         if (mfRow) mfRow.style.display = 'none';
         if (mfInp) mfInp.value = '';
-        var firstRadio = document.querySelector('input[name="ddmod-home-source"][value="hubcap"]');
+        if (destInp) destInp.value = '';
+        var firstRadio = document.querySelector('input[name="ddmod-home-source"][value="oureveryday"]');
         if (firstRadio) firstRadio.checked = true;
 
         Bridge.callSync('get_recent_lua_files', function(json) {
@@ -1070,10 +1254,14 @@ window.App = (function() {
         var table = document.getElementById('version-table');
         var tbody = document.getElementById('version-tbody');
         var dlBtn = document.getElementById('version-download');
+        var manualBtn = document.getElementById('version-manual-download');
+        var manualInp = document.getElementById('version-manual-input');
 
         if (loading) loading.classList.remove('hidden');
         if (table) table.classList.add('hidden');
         if (dlBtn) { dlBtn.disabled = true; dlBtn.dataset.appid = appId; }
+        if (manualBtn) manualBtn.dataset.appid = appId;
+        if (manualInp) manualInp.value = '';
 
         var handler = function(json) {
             Bridge.off('depot_history_results', handler);
@@ -1183,8 +1371,41 @@ window.App = (function() {
         tbody.querySelectorAll('.version-check:checked').forEach(function(cb) {
             manifest_override[cb.dataset.depot] = cb.dataset.manifest;
         });
+        if (!Object.keys(manifest_override).length) {
+            Components.showToast('warning', 'Select at least one depot or use Manual IDs.');
+            return;
+        }
+        _downloadVersionWithOverride(appId, manifest_override);
+    }
 
+    function _downloadManualVersion() {
+        var btn = document.getElementById('version-manual-download');
+        var appId = btn ? btn.dataset.appid : '';
+        var inp = document.getElementById('version-manual-input');
+        var raw = inp ? inp.value : '';
+        if (!appId) return;
+        var manifest_override = {};
+        raw.split(/\r?\n/).forEach(function(line) {
+            var clean = (line || '').trim();
+            if (!clean || clean.charAt(0) === '#') return;
+            var parts = clean.split(/[=,\s:]+/).filter(Boolean);
+            if (parts.length < 2) return;
+            var depot = parts[0].trim();
+            var gid = parts[1].trim();
+            if (/^\d+$/.test(depot) && /^\d+$/.test(gid)) {
+                manifest_override[depot] = gid;
+            }
+        });
+        if (!Object.keys(manifest_override).length) {
+            Components.showToast('warning', 'Enter at least one line like 939851=2233225956230312354.');
+            return;
+        }
+        _downloadVersionWithOverride(appId, manifest_override);
+    }
+
+    function _downloadVersionWithOverride(appId, manifest_override) {
         Components.hideModal('version-modal');
+        var method = window._olderVersionMethod || 'ddmod';
 
         // Library selection + version download
         Bridge.callSync('get_steam_libraries', function(json) {
@@ -1192,8 +1413,13 @@ window.App = (function() {
             try { libs = JSON.parse(json || '[]'); } catch(e) { libs = []; }
 
             var doDownload = function() {
-                Bridge.call('download_game_version', appId, JSON.stringify(manifest_override));
-                Components.showToast('info', 'Downloading specific version of App ' + appId + '...');
+                if (method === 'steam_native') {
+                    Bridge.call('download_game_version_native', appId, JSON.stringify(manifest_override));
+                    Components.showToast('info', 'Setting up Steam Native download for App ' + appId + '...');
+                } else {
+                    Bridge.call('download_game_version', appId, JSON.stringify(manifest_override));
+                    Components.showToast('info', 'Downloading specific version of App ' + appId + '...');
+                }
             };
 
             if (libs.length <= 1) {
@@ -1269,11 +1495,12 @@ window.App = (function() {
                 var appId   = this.dataset.pendingAppId   || '';
                 var outside = this.dataset.pendingOutside === '1';
                 var path    = this.dataset.pendingPath    || '';
+                var name    = this.dataset.pendingName    || _getOutsideGameName(path);
                 var oAppId  = this.dataset.pendingOAppId  || '0';
                 Bridge.call('set_setting', 'hv_first_use_warned', 'true');
                 Bridge.call('open_url', 'https://discord.gg/denuvowo');
                 if (outside) {
-                    Bridge.call('run_game_action_outside', path, oAppId, 'hv_fix');
+                    Bridge.call('run_game_action_outside', path, name, oAppId, 'hv_fix');
                 } else {
                     Bridge.call('run_game_action', appId, 'hv_fix');
                 }
@@ -1306,6 +1533,7 @@ window.App = (function() {
         okBtn.dataset.pendingAppId   = onConfirmArgs.appId   || '';
         okBtn.dataset.pendingOutside = onConfirmArgs.outside ? '1' : '0';
         okBtn.dataset.pendingPath    = onConfirmArgs.path    || '';
+        okBtn.dataset.pendingName    = onConfirmArgs.name    || '';
         okBtn.dataset.pendingOAppId  = onConfirmArgs.oAppId  || '0';
 
         var secs = 20;
@@ -1326,6 +1554,102 @@ window.App = (function() {
 
         Components.showModal('hv-warning-modal');
         return true;
+    }
+
+    function _renderLetUpdatesList(games) {
+        var listEl = document.getElementById('lu-game-list');
+        var countEl = document.getElementById('lu-count');
+        var toggleBtn = document.getElementById('lu-toggle-all');
+        if (!listEl) return;
+        if (!games || !games.length) {
+            listEl.innerHTML = '<span style="opacity:0.5;font-size:13px;">No stplug-in Lua files with manifest pins found.</span>';
+            if (countEl) countEl.textContent = '0 games';
+            if (toggleBtn) toggleBtn.textContent = 'Select All';
+            return;
+        }
+
+        var html = '';
+        games.forEach(function(g) {
+            var appId = Components.escapeHtml(String(g.app_id || ''));
+            var name = Components.escapeHtml(String(g.name || ('App ' + appId)));
+            var path = Components.escapeHtml(String(g.path || ''));
+            var activePins = parseInt(g.active_pins || 0, 10);
+            var commentedPins = parseInt(g.commented_pins || 0, 10);
+            var checked = g.allow_update ? ' checked' : '';
+            html += '<label style="display:flex;align-items:flex-start;gap:9px;padding:7px 2px;cursor:pointer;font-size:13px;border-bottom:1px solid rgba(255,255,255,0.04);">'
+                + '<input type="checkbox" data-appid="' + appId + '"' + checked + ' style="margin-top:3px;accent-color:var(--accent,#e94560);">'
+                + '<span style="display:flex;flex-direction:column;gap:2px;min-width:0;">'
+                + '<span>' + name + ' <span style="opacity:0.45;font-size:11px;">' + appId + '</span></span>'
+                + '<span style="opacity:0.55;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+                + 'Pinned: ' + activePins + ' | Auto-update lines: ' + commentedPins + ' | ' + path
+                + '</span>'
+                + '</span>'
+                + '</label>';
+        });
+        listEl.innerHTML = html;
+        if (countEl) countEl.textContent = games.length + ' game' + (games.length !== 1 ? 's' : '');
+        if (toggleBtn) {
+            var allChecked = games.every(function(g) { return !!g.allow_update; });
+            toggleBtn.textContent = allChecked ? 'Deselect All' : 'Select All';
+        }
+    }
+
+    function _renderLetUpdatesHelperStatus(helper) {
+        _letUpdatesHelper = helper || {};
+        var statusEl = document.getElementById('lu-helper-status');
+        var addBtn = document.getElementById('let-updates-add-helper');
+        var removeBtn = document.getElementById('let-updates-remove-helper');
+        var exists = !!(_letUpdatesHelper && _letUpdatesHelper.exists);
+        if (statusEl) {
+            var path = _letUpdatesHelper.path ? (' - ' + _letUpdatesHelper.path) : '';
+            statusEl.textContent = exists ? ('Helper Lua: installed' + path) : 'Helper Lua: not installed';
+        }
+        if (addBtn) addBtn.disabled = exists;
+        if (removeBtn) removeBtn.disabled = !exists;
+    }
+
+    function _setLetUpdatesHelper(enabled) {
+        var action = enabled ? 'add' : 'remove';
+        var filePath = (_letUpdatesHelper && _letUpdatesHelper.path) ? _letUpdatesHelper.path : 'Steam/config/stplug-in/00_LetUpdate_override.lua';
+        var message = enabled
+            ? 'Add 00_LetUpdate_override.lua?\n\nThis lets Steam show update prompts for pinned manifest games.\n\n' + filePath
+            : 'Remove 00_LetUpdate_override.lua?\n\nThis disables the global helper Lua.\n\n' + filePath;
+        if (!window.confirm(message)) return;
+
+        Bridge.callWithCallback('let_updates_set_helper', !!enabled, function(json) {
+            var result;
+            try { result = JSON.parse(json || '{}'); } catch(e) { result = { ok: false, error: String(e) }; }
+            if (!result.ok) {
+                Components.showToast('error', result.error || ('Failed to ' + action + ' helper Lua.'));
+                return;
+            }
+            _renderLetUpdatesHelperStatus(result.status || { exists: !!result.enabled });
+            Components.showToast('success', enabled ? 'Helper Lua added.' : 'Helper Lua removed.');
+        });
+    }
+
+    function _openLetUpdatesModal() {
+        var listEl = document.getElementById('lu-game-list');
+        var countEl = document.getElementById('lu-count');
+        var toggleBtn = document.getElementById('lu-toggle-all');
+        var statusEl = document.getElementById('lu-helper-status');
+        if (listEl) listEl.innerHTML = '<span style="opacity:0.5;font-size:13px;">Loading stplug-in Lua files...</span>';
+        if (countEl) countEl.textContent = 'Loading...';
+        if (toggleBtn) toggleBtn.textContent = 'Deselect All';
+        if (statusEl) statusEl.textContent = 'Helper status: checking...';
+        Components.showModal('let-updates-modal');
+        Bridge.callWithCallback('let_updates_list_games', function(json) {
+            var data;
+            try { data = JSON.parse(json || '{}'); } catch(e) { data = { ok: false, error: String(e) }; }
+            if (!data.ok) {
+                if (listEl) listEl.innerHTML = '<span style="opacity:0.65;font-size:13px;">' + Components.escapeHtml(data.error || 'Failed to scan stplug-in Lua files.') + '</span>';
+                if (countEl) countEl.textContent = 'Scan failed';
+                _renderLetUpdatesHelperStatus({});
+                return;
+            }
+            _renderLetUpdatesHelperStatus(data.helper || {});
+            _renderLetUpdatesList(data.games || []);
+        });
     }
 
     function _handleHomeAction(action) {
@@ -1406,11 +1730,17 @@ window.App = (function() {
             var hvOutside  = false;
             var hvPath     = '';
             var hvOAppId   = '0';
+            var hvName     = '';
             if (_outsideMode) {
                 hvPath    = (document.getElementById('outside-path-display') || {}).value || '';
                 hvOAppId  = (document.getElementById('outside-appid') || {}).value || '0';
+                hvName    = _getOutsideGameName(hvPath);
                 if (!hvPath) {
                     Components.showToast('warning', 'Please select a game folder first.');
+                    return;
+                }
+                if (!hvName) {
+                    Components.showToast('warning', 'Please enter the game name first.');
                     return;
                 }
                 hvOutside = true;
@@ -1421,14 +1751,14 @@ window.App = (function() {
                     return;
                 }
             }
-            var confirmArgs = { appId: hvAppId, outside: hvOutside, path: hvPath, oAppId: hvOAppId };
+            var confirmArgs = { appId: hvAppId, outside: hvOutside, path: hvPath, name: hvName, oAppId: hvOAppId };
             Bridge.callWithCallback('get_setting', 'hv_first_use_warned', function(val) {
                 var warned = val === 'True' || val === 'true' || val === '1';
                 if (!warned) {
                     _showHvWarning(confirmArgs);
                 } else {
                     if (hvOutside) {
-                        Bridge.call('run_game_action_outside', hvPath, hvOAppId, 'hv_fix');
+                        Bridge.call('run_game_action_outside', hvPath, hvName, hvOAppId, 'hv_fix');
                     } else {
                         Bridge.call('run_game_action', hvAppId, 'hv_fix');
                     }
@@ -1448,7 +1778,13 @@ window.App = (function() {
             // session would otherwise see a stale "—". Force the refresh here
             // so the modal always shows the current installed/latest pair.
             _refreshLcVersionInfo();
+            _refreshLcSteamUpdateWarning();
             Components.showModal('lc-setup-modal');
+            return;
+        }
+        if (action === 'linux_setup') {
+            Components.showToast('info', 'Running Linux setup...');
+            Bridge.call('linux_setup_now');
             return;
         }
 
@@ -1495,6 +1831,28 @@ window.App = (function() {
             return;
         }
 
+        if (action === 'let_updates') {
+            _openLetUpdatesModal();
+            return;
+        }
+
+        if (action === 'provider_preview') {
+            _showHomeProviderPreview();
+            return;
+        }
+
+        if (action === 'provider_submit') {
+            _setHomeProviderStatus('Submitting clean provider keys...');
+            Bridge.call('provider_contribute_submit', 'manual');
+            return;
+        }
+
+        if (action === 'provider_update') {
+            _setHomeProviderStatus('Updating provider cache...');
+            Bridge.call('provider_update_now');
+            return;
+        }
+
         if (action === 'download_games') {
             var homeAppId = _getSelectedGameId() || '';
             var chooseSteamBtn = document.getElementById('ddmod-choose-steam');
@@ -1510,14 +1868,19 @@ window.App = (function() {
             'download_games', 'download_manifests', 'recent_lua', 'update_manifests',
             'mute_toggle', 'remove_game', 'context_menu', 'applist_menu',
             'check_updates', 'scan_library', 'analytics', 'auto_lc_setup', 'lc_online_fix',
-            'steam_updates'
+            'steam_updates', 'let_updates'
         ];
         // Outside-Steam game action
         if (_outsideMode && nonGameActions.indexOf(action) === -1) {
             var gamePath     = (document.getElementById('outside-path-display') || {}).value || '';
+            var outsideName  = _getOutsideGameName(gamePath);
             var outsideAppId = (document.getElementById('outside-appid') || {}).value || '0';
             if (!gamePath) {
                 Components.showToast('warning', 'Please select a game folder first.');
+                return;
+            }
+            if (!outsideName) {
+                Components.showToast('warning', 'Please enter the game name first.');
                 return;
             }
             // Same achievement-breakage gate as the Steam-game path.
@@ -1526,7 +1889,7 @@ window.App = (function() {
                 Bridge.callWithCallback('get_setting', 'warn_before_breaking_achievements', function(val) {
                     var skipWarn = (val === 'False' || val === 'false' || val === '0');
                     if (skipWarn) {
-                        Bridge.call('run_game_action_outside', gamePath, outsideAppId || '0', action);
+                        Bridge.call('run_game_action_outside', gamePath, outsideName, outsideAppId || '0', action);
                         return;
                     }
                     var msg = 'Heads up — this will break Steam achievements.\n\n'
@@ -1534,12 +1897,12 @@ window.App = (function() {
                         + 'Prefer "Remove DRM (Steamless)" if the game uses Steam DRM — it keeps achievements working.\n\n'
                         + 'Continue anyway?';
                     if (window.confirm(msg)) {
-                        Bridge.call('run_game_action_outside', gamePath, outsideAppId || '0', action);
+                        Bridge.call('run_game_action_outside', gamePath, outsideName, outsideAppId || '0', action);
                     }
                 });
                 return;
             }
-            Bridge.call('run_game_action_outside', gamePath, outsideAppId || '0', action);
+            Bridge.call('run_game_action_outside', gamePath, outsideName, outsideAppId || '0', action);
             return;
         }
 
@@ -1555,6 +1918,15 @@ window.App = (function() {
         // path which fires-and-forgets to a stdout no one reads.
         if (action === 'dlc_check') {
             DlcCheck.show(appId);
+            return;
+        }
+
+        if (action === 'multiplayer') {
+            var mpMsg = 'Multiplayer Fix uses version-specific online fix files.\n\n'
+                + 'Check the game support page first and make sure your game version matches the fix. Some games use Epic or Microsoft services and need a different fix than the normal Steam path.\n\n'
+                + 'Continue?';
+            if (!window.confirm(mpMsg)) return;
+            Bridge.call('run_game_action', appId || '', action);
             return;
         }
 
@@ -1584,6 +1956,64 @@ window.App = (function() {
         }
 
         Bridge.call('run_game_action', appId || '', action);
+    }
+
+    function _initHomeProviderControls() {
+        var box = document.getElementById('home-provider-contribute');
+        var enrichBox = document.getElementById('home-provider-enrich');
+        if (box) {
+            Bridge.callWithCallback('get_setting', 'provider_contribute_keys', function(val) {
+                box.checked = (val === 'True' || val === 'true' || val === '1');
+            });
+            box.addEventListener('change', function() {
+                Bridge.call('set_setting', 'provider_contribute_keys', box.checked ? 'True' : 'False');
+                _setHomeProviderStatus(box.checked ? 'Auto contribution enabled.' : 'Auto contribution disabled.');
+            });
+        }
+        if (enrichBox) {
+            Bridge.callWithCallback('get_setting', 'provider_enrich_steam_metadata', function(val) {
+                enrichBox.checked = (val === 'True' || val === 'true' || val === '1');
+            });
+            enrichBox.addEventListener('change', function() {
+                Bridge.call('set_setting', 'provider_enrich_steam_metadata', enrichBox.checked ? 'True' : 'False');
+                _setHomeProviderStatus(enrichBox.checked ? 'Steam metadata enrichment enabled. Submit may take longer.' : 'Steam metadata enrichment disabled.');
+            });
+        }
+    }
+
+    function _setHomeProviderStatus(msg) {
+        var status = document.getElementById('home-provider-status');
+        if (status) status.textContent = msg || '';
+    }
+
+    function _showHomeProviderPreview() {
+        Bridge.callSync('provider_contribute_preview', function(json) {
+            var data = {};
+            try { data = JSON.parse(json || '{}'); } catch(e) {}
+            _setHomeProviderStatus(
+                'Found ' + (data.valid || 0) + ' valid keys to submit. ' +
+                'Invalid skipped: ' + (data.invalid || 0) + '. ' +
+                'Duplicate skipped: ' + (data.duplicates || 0) + '. ' +
+                'Already submitted skipped: ' + (data.already_submitted || 0) + '.'
+            );
+        });
+    }
+
+    function _updateHomeProviderStatus(data) {
+        if (!data || !data.task) return;
+        if (data.task === 'provider_contribute') {
+            var msg = data.already_submitted ? 'Already submitted' : (data.message || 'Submitted');
+            var enrich = data.steam_metadata_enrichment || {};
+            var enrichText = enrich.enabled ? (' Steam metadata filled ' + (enrich.items_enriched || 0) + ' item(s).') : '';
+            _setHomeProviderStatus(
+                msg + '. Found ' + (data.valid || 0) + ' valid, skipped ' +
+                (data.invalid || 0) + ' invalid, ' + (data.duplicates || 0) +
+                ' duplicates, and ' + (data.already_submitted_count || 0) +
+                ' already submitted.' + enrichText
+            );
+        } else if (data.task === 'provider_update') {
+            _setHomeProviderStatus(data.message || '');
+        }
     }
 
     var _lcSetupInitialized = false;
@@ -1634,6 +2064,23 @@ window.App = (function() {
             });
         }
 
+        var blockUpdatesBtn = document.getElementById('lc-block-steam-updates');
+        if (blockUpdatesBtn) {
+            blockUpdatesBtn.addEventListener('click', function() {
+                blockUpdatesBtn.disabled = true;
+                Bridge.callWithCallback('steam_updates_set_state', 'block', function(res) {
+                    blockUpdatesBtn.disabled = false;
+                    var result = (res || '').toString();
+                    if (result === 'blocked') {
+                        Components.showToast('success', 'Steam updates BLOCKED. Restart Steam for it to take effect.');
+                        _refreshLcSteamUpdateWarning();
+                    } else {
+                        Components.showToast('error', 'Failed to update steam.cfg: ' + result);
+                    }
+                });
+            });
+        }
+
         // Browse button: lets the user pin the Steam folder when auto-detect
         // landed on the wrong install (multiple Steams on disk, registry
         // pointing somewhere stale, etc). Persists the choice through the
@@ -1656,6 +2103,15 @@ window.App = (function() {
         // Initial version probe — uses the cached answer when available so
         // there's no redundant network round-trip when the modal opens.
         _refreshLcVersionInfo();
+        _refreshLcSteamUpdateWarning();
+    }
+
+    function _refreshLcSteamUpdateWarning() {
+        var warning = document.getElementById('lc-steam-updates-warning');
+        if (!warning) return;
+        Bridge.callSync('steam_updates_get_state', function(state) {
+            warning.style.display = ((state || '').toString() === 'blocked') ? 'none' : 'flex';
+        });
     }
 
     function _refreshLcVersionInfo(force) {

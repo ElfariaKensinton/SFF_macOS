@@ -18,6 +18,8 @@ window.Store = (function() {
     var _initialized = false;
     var _imagesHidden = false;
     var _activeGenre = '';
+    var _blockNsfw = true;
+    var _nsfwNameRe = /(hentai|futanari|furry|sex)/i;
 
     function init() {
         if (_initialized) return;
@@ -81,6 +83,16 @@ window.Store = (function() {
             });
         }
 
+        var toggleNsfwBtn = document.getElementById('store-toggle-nsfw');
+        if (toggleNsfwBtn) {
+            toggleNsfwBtn.addEventListener('click', function() {
+                _blockNsfw = !_blockNsfw;
+                this.classList.toggle('active', _blockNsfw);
+                Bridge.call('set_setting', 'store_block_nsfw', _blockNsfw ? 'True' : 'False');
+                _fetchGames();
+            });
+        }
+
         var genreChips = document.querySelectorAll('.genre-chip');
         genreChips.forEach(function(chip) {
             chip.addEventListener('click', function() {
@@ -94,6 +106,16 @@ window.Store = (function() {
 
         if (prevBtn) prevBtn.addEventListener('click', function() { if (_page > 1) { _page--; _fetchGames(); } });
         if (nextBtn) nextBtn.addEventListener('click', function() { if (_page < _totalPages) { _page++; _fetchGames(); } });
+
+        var updateListBtn = document.getElementById('store-update-list-btn');
+        if (updateListBtn) {
+            updateListBtn.addEventListener('click', function() {
+                updateListBtn.disabled = true;
+                updateListBtn.textContent = 'Updating...';
+                Components.showToast('info', 'Downloading game list and metadata from all sources...');
+                Bridge.call('update_store_lists');
+            });
+        }
 
         if (apiKeyConnect) {
             apiKeyConnect.addEventListener('click', function() {
@@ -116,11 +138,15 @@ window.Store = (function() {
             _hideLoading();
             try {
                 var data = JSON.parse(json);
-                _renderGames(data.games || []);
-                _total = data.total || 0;
+                var games = data.games || [];
+                if (_blockNsfw) {
+                    games = games.filter(function(g) { return !g.nsfw && !_looksNsfwByName(g); });
+                }
+                _renderGames(games);
+                _total = data.total || games.length;
                 _totalPages = Math.max(1, Math.ceil(_total / _perPage));
                 _updatePagination();
-                if (data.has_hubcap) {
+                if (data.has_hubcap || data.has_fallback_data) {
                     _hideConnectBanner();
                 } else {
                     _showConnectBanner();
@@ -145,22 +171,39 @@ window.Store = (function() {
     function onPageEnter() {
         init();
         _page = 1;
-        Bridge.callSync('get_setting', 'hide_store_images', function(val) {
+        Bridge.call('warm_store_metadata');
+        Bridge.callWithCallback('get_setting', 'hide_store_images', function(val) {
             _imagesHidden = (val === 'True');
             Components.setHideImages(_imagesHidden);
             var btn = document.getElementById('store-toggle-images');
             if (btn) btn.classList.toggle('active', _imagesHidden);
         });
+        Bridge.callWithCallback('get_setting', 'store_block_nsfw', function(val) {
+            _blockNsfw = (val !== 'False');
+            var btn = document.getElementById('store-toggle-nsfw');
+            if (btn) btn.classList.toggle('active', _blockNsfw);
+        });
         _fetchGames();
     }
 
     function _fetchGames() {
+        if (_blockNsfw && _nsfwNameRe.test(_searchQuery || '')) {
+            _hideLoading();
+            _renderGames([]);
+            _total = 0;
+            _totalPages = 1;
+            _updatePagination();
+            _hideConnectBanner();
+            return;
+        }
         _showLoading();
         var offset = (_page - 1) * _perPage;
-        var effectiveQuery = _activeGenre
-            ? (_searchQuery ? _searchQuery + ' ' + _activeGenre : _activeGenre)
-            : _searchQuery;
-        Bridge.call('search_games', effectiveQuery, offset, _perPage, _sortBy);
+        Bridge.call('search_games', _searchQuery, offset, _perPage, _sortBy, _activeGenre);
+    }
+
+    function _looksNsfwByName(game) {
+        var name = ((game && game.name) || '').toString();
+        return _nsfwNameRe.test(name);
     }
 
     function _renderGames(games) {
@@ -249,6 +292,7 @@ window.Store = (function() {
     return {
         init: init,
         onPageEnter: onPageEnter,
+        refresh: _fetchGames,
         onApiKeyAvailable: onApiKeyAvailable
     };
 })();

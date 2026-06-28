@@ -34,19 +34,53 @@ def convert_to_path(x):
     return Path(x.strip("\"' "))
 
 
-def _clean_prompt(prompt):
+def _try_gui_dispatch(method_name, *args, **kwargs):
+    if not _gui_backend:
+        return None, False
+    impl = getattr(_gui_backend, method_name)
+    return impl(*args, **kwargs), True
+
+
+def _release_inquirer(prompt_obj):
     """Dark voodoo I cooked that actually works??? `prompt_select` leaks way less now"""
     from InquirerPy.base import BaseComplexPrompt, BaseListPrompt
     from InquirerPy.prompts.input import InputPrompt
 
-    if isinstance(prompt, BaseComplexPrompt):
-        prompt.application.reset()  # pyright: ignore[reportUnknownMemberType]
-        prompt.application = None  # type: ignore
-    if isinstance(prompt, BaseListPrompt):
-        prompt.content_control.reset()
-        prompt.content_control = None  # type: ignore
-    del prompt
+    if isinstance(prompt_obj, BaseComplexPrompt):
+        prompt_obj.application.reset()  # pyright: ignore[reportUnknownMemberType]
+        prompt_obj.application = None  # type: ignore
+    if isinstance(prompt_obj, BaseListPrompt):
+        prompt_obj.content_control.reset()
+        prompt_obj.content_control = None  # type: ignore
+    del prompt_obj
     gc.collect()
+
+
+def _normalize_choice(item, exclude):
+    from InquirerPy.base.control import Choice
+
+    if isinstance(item, Enum):
+        if exclude and item in exclude:
+            return None
+        return Choice(value=item, name=item.value)
+    if isinstance(item, Choice):
+        return item
+    if isinstance(item, tuple) and len(item) == 2:  # type: ignore
+        return Choice(value=item[1], name=item[0])  # type: ignore
+    return Choice(value=item, name=str(item))
+
+
+def _build_choice_list(choices, *, cancellable=False, exclude=None):
+    from InquirerPy.base.control import Choice
+
+    result = []
+    for c in choices:
+        norm = _normalize_choice(c, exclude)
+        if norm is not None:
+            result.append(norm)
+    if cancellable:
+        result.append(Choice(value=None, name="[Back]"))
+    return result
 
 
 def prompt_select(
@@ -58,39 +92,25 @@ def prompt_select(
     exclude = None,
     **kwargs,
 ):
-    if _gui_backend:
-        return _gui_backend.prompt_select(
+    result, handled = _try_gui_dispatch(
+        "prompt_select",
             msg, choices, default=default, fuzzy=fuzzy,
             cancellable=cancellable, exclude=exclude, **kwargs,
-        )
+    )
+    if handled:
+        return result
     from InquirerPy import inquirer
-    from InquirerPy.base.control import Choice
 
-    new_choices = []
-    for c in choices:
-        if isinstance(c, Enum):
-            if exclude and c in exclude:
-                continue
-            new_choices.append(Choice(value=c, name=c.value))
-        elif isinstance(c, Choice):
-            new_choices.append(c)
-        elif isinstance(c, tuple):
-            if len(c) == 2:  # type: ignore
-                new_choices.append(Choice(value=c[1], name=c[0]))  # type: ignore
-        else:
-            new_choices.append(Choice(value=c, name=str(c)))
-    if cancellable:
-        new_choices.append(Choice(value=None, name="[Back]"))
     cmd = inquirer.fuzzy if fuzzy else inquirer.select  # type: ignore
     obj = cmd(
         message=msg,
-        choices=new_choices,
+        choices=_build_choice_list(choices, cancellable=cancellable, exclude=exclude),
         default=default,
         vi_mode=False if fuzzy else True,
         **kwargs,
     )
     result = obj.execute()
-    _clean_prompt(obj)
+    _release_inquirer(obj)
     return result
 
 
@@ -99,8 +119,11 @@ def prompt_dir(
     custom_check = None,
     custom_msg = None,
 ):
-    if _gui_backend:
-        return _gui_backend.prompt_dir(msg, custom_check=custom_check, custom_msg=custom_msg)
+    result, handled = _try_gui_dispatch(
+        "prompt_dir", msg, custom_check=custom_check, custom_msg=custom_msg
+    )
+    if handled:
+        return result
     def validator(raw_input):
         path = convert_to_path(raw_input)
         if not (path.exists() and path.is_dir()):
@@ -142,12 +165,14 @@ def prompt_text(
     long_instruction = "",
     filter = None,
 ):
-    if _gui_backend:
-        return _gui_backend.prompt_text(
+    result, handled = _try_gui_dispatch(
+        "prompt_text",
             msg, validator=validator, invalid_msg=invalid_msg,
             instruction=instruction, long_instruction=long_instruction,
             filter=filter,
-        )
+    )
+    if handled:
+        return result
     from InquirerPy import inquirer
 
     obj = inquirer.text(
@@ -159,7 +184,7 @@ def prompt_text(
         filter=filter,
     )
     res = obj.execute()
-    _clean_prompt(obj)
+    _release_inquirer(obj)
     return res
 
 
@@ -170,11 +195,13 @@ def prompt_secret(
     instruction = "",
     long_instruction = "",
 ):
-    if _gui_backend:
-        return _gui_backend.prompt_secret(
+    result, handled = _try_gui_dispatch(
+        "prompt_secret",
             msg, validator=validator, invalid_msg=invalid_msg,
             instruction=instruction, long_instruction=long_instruction,
-        )
+    )
+    if handled:
+        return result
     from InquirerPy import inquirer
 
     obj = inquirer.secret(
@@ -186,7 +213,7 @@ def prompt_secret(
         long_instruction=long_instruction,
     )
     res = obj.execute()
-    _clean_prompt(obj)
+    _release_inquirer(obj)
     return res
 
 
@@ -196,10 +223,12 @@ def prompt_confirm(
     false_msg = None,
     default = True,
 ):
-    if _gui_backend:
-        return _gui_backend.prompt_confirm(
-            msg, true_msg=true_msg, false_msg=false_msg, default=default,
-        )
+    result, handled = _try_gui_dispatch(
+        "prompt_confirm",
+        msg, true_msg=true_msg, false_msg=false_msg, default=default,
+    )
+    if handled:
+        return result
     # inquirer.confirm exists but I prefer this
     return prompt_select(
         msg,

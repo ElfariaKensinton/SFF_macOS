@@ -19,6 +19,7 @@
 import logging
 from enum import IntFlag
 from pathlib import Path
+from typing import Optional
 
 from sff.storage.vdf import get_steam_libs, vdf_load
 from sff.utils import enter_path
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 class AppState(IntFlag):
     StateInvalid = 0
+    StateDownloading = 1048576
     StateUninstalled = 1
     StateUpdateRequired = 2
     StateFullyInstalled = 4
@@ -45,75 +47,70 @@ class AppState(IntFlag):
     StateValidating = 131072
     StateAddingFiles = 262144
     StatePreallocating = 524288
-    StateDownloading = 1048576
     StateStaging = 2097152
     StateCommitting = 4194304
     StateUpdateStopping = 8388608
+    StateReserved1 = 16777216
+    StateReserved2 = 33554432
 
 
 class ACFParser:
     def __init__(self, acf):
         self.data = vdf_load(acf)
-        self._name: Optional[str] = None
-        self._id: Optional[int] = None
-        self._state: Optional[AppState] = None
+        self._cached_name: Optional[str] = None
+        self._cached_id: Optional[int] = None
+        self._cached_state: Optional[AppState] = None
 
     @property
     def name(self):
-        if self._name is None:
-            raw_name = enter_path(
-                self.data, "AppState", "name", default=None
-            )
-            self._name = raw_name
-        return self._name
+        if self._cached_name is None:
+            self._cached_name = enter_path(self.data, "AppState", "name", default=None)
+        return self._cached_name
 
     @property
     def id(self):
-        if self._id is None:
-            raw_id = enter_path(
-                self.data, "AppState", "appid", default=None
-            )
-            if raw_id and raw_id.isdigit():
-                self._id = int(raw_id)
-        return self._id
+        if self._cached_id is None:
+            raw = enter_path(self.data, "AppState", "appid", default=None)
+            if raw and raw.isdigit():
+                self._cached_id = int(raw)
+        return self._cached_id
 
     @property
     def state(self):
-        if self._state is None:
-            raw_state = enter_path(
-                self.data, "AppState", "StateFlags", default=None
-            )
-            if raw_state and raw_state.isdigit():
-                self._state = AppState(int(raw_state))
-        return self._state
+        if self._cached_state is None:
+            raw = enter_path(self.data, "AppState", "StateFlags", default=None)
+            self._cached_state = AppState(int(raw)) if raw and raw.isdigit() else None
+        return self._cached_state
 
     @property
     def install_dir(self):
-        raw_install_dir = enter_path(
-            self.data, "AppState", "installdir", default=None
-        )
-        return raw_install_dir if raw_install_dir else ""
+        raw = enter_path(self.data, "AppState", "installdir", default=None)
+        return raw if raw else ""
 
     def needs_update(self):
-        state = self.state
-        if state and AppState.StateUpdateRequired in state:
-            return True
-        return False
+        s = self.state
+        return bool(s and AppState.StateUpdateRequired in s)
 
     def get_mounted_depots(self) -> dict:
         return enter_path(self.data, "AppState", "MountedDepots", default={})
 
 
-def find_and_parse_acf(steam_path, app_id):
+def _candidate_libraries(steam_path):
     libs = []
     try:
         libs = get_steam_libs(steam_path)
     except Exception as e:
         logger.debug("get_steam_libs failed: %s", e)
-    if not libs:
-        libs = [steam_path]
-    for lib in libs:
-        acf_path = lib / "steamapps" / f"appmanifest_{app_id}.acf"
+    return libs or [steam_path]
+
+
+def _appmanifest_paths(steam_path, app_id):
+    for lib in _candidate_libraries(steam_path):
+        yield lib, lib / "steamapps" / f"appmanifest_{app_id}.acf"
+
+
+def find_and_parse_acf(steam_path, app_id):
+    for _, acf_path in _appmanifest_paths(steam_path, app_id):
         if acf_path.exists():
             try:
                 return ACFParser(acf_path), acf_path
@@ -128,15 +125,7 @@ def get_app_name_from_acf(steam_path, app_id):
     Used by remove-game menu so the list never blocks on "Logging in anonymously...".
     ACF first; store page is used as fallback for uninstalled games.
     """
-    libs = []
-    try:
-        libs = get_steam_libs(steam_path)
-    except Exception as e:
-        logger.debug("get_steam_libs failed, using steam path only: %s", e)
-    if not libs:
-        libs = [steam_path]
-    for lib in libs:
-        acf_path = lib / "steamapps" / f"appmanifest_{app_id}.acf"
+    for _, acf_path in _appmanifest_paths(steam_path, app_id):
         if acf_path.exists():
             try:
                 parser = ACFParser(acf_path)

@@ -16,25 +16,38 @@
 # You should have received a copy of the GNU General Public License
 # along with SteaMidra.  If not, see <https://www.gnu.org/licenses/>.
 
-from configupdater import ConfigUpdater
-
 from pathlib import Path
 from typing import Callable
+
+from configupdater import ConfigUpdater
+
+
+def _read_ini_document(path: Path) -> ConfigUpdater:
+    document = ConfigUpdater()
+    document.read(path)  # pyright: ignore[reportUnknownMemberType]
+    return document
+
+
+def _read_option(document: ConfigUpdater, section: str, option: str) -> str | None:
+    try:
+        return document[section][option].value
+    except KeyError:
+        return None
+
+
+def _write_option(document: ConfigUpdater, section: str, option: str, value: str) -> None:
+    document[section][option].value = value
 
 
 def edit_ini_option(
     ini_file: Path, section: str, option: str, converter: Callable[[str], str]
 ):
-    conf = ConfigUpdater()
-    conf.read(ini_file)  # pyright: ignore[reportUnknownMemberType]
-
-    old_val = conf[section][option].value
-    if old_val is None:
+    document = _read_ini_document(ini_file)
+    current_value = _read_option(document, section, option)
+    if current_value is None:
         return
 
-    new_val = converter(old_val)
-
-    conf[section][option].value = new_val
-
-    conf.update_file()
-    return new_val
+    converted_value = converter(current_value)
+    _write_option(document, section, option, converted_value)
+    document.update_file()
+    return converted_value

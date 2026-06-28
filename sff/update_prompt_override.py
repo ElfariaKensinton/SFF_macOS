@@ -16,13 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with SteaMidra.  If not, see <https://www.gnu.org/licenses/>.
 
-# Small helper that drops a setManifestid override .lua into stplug-in
-# so games render the "Update available" prompt in Steam. DarkH2o was
-# pasting this manually into stplug-in for a while and it works because
-# LumaCore's LuaState already exposes _originals.setManifestid, so the
-# wrapper can chain through to the C handler. The override stays loaded
-# alongside the game .lua files; LumaCore's hot-reload picks it up.
-
+import json
 import logging
 from pathlib import Path
 
@@ -34,18 +28,47 @@ logger = logging.getLogger(__name__)
 # depots. Filename is also a clear marker for support sweeps.
 OVERRIDE_FILENAME = "00_LetUpdate_override.lua"
 
-OVERRIDE_BODY = """\
+def _render_override_body(excluded_depots=()) -> str:
+    depot_ids = sorted({int(x) for x in (excluded_depots or []) if str(x).isdigit()})
+    depot_json = json.dumps(depot_ids, separators=(",", ":"))
+    depot_lines = "\n".join(f"    [{depot}] = true," for depot in depot_ids)
+    if not depot_lines:
+        depot_lines = "    -- empty means every setManifestid call is skipped"
+    return f"""\
 -- 00_LetUpdate_override.lua
 -- Lets games show the "Update" prompt in the Steam library when Steam
 -- pushes a newer manifest than the one our .lua pinned.
+--
+-- STEAMIDRA_EXCLUDED_DEPOTS: {depot_json}
 --
 -- Managed by SteaMidra. Toggle "Show in-Steam 'Update available' prompts"
 -- in Settings to remove this file. Editing it by hand is fine but the
 -- toggle will rewrite or delete it on next change.
 
-local original_setManifestid = setManifestid
+local original_setManifestid = _originals and (_originals.setManifestid or _originals.setmanifestid) or setManifestid
+
+local pinned_depots = {{
+{depot_lines}
+}}
+
+local function should_keep_pin(depot_id)
+    local numeric_id = tonumber(depot_id)
+    return numeric_id ~= nil and pinned_depots[numeric_id] == true
+end
+
+local function route_set_manifest(depot_id, manifest_id, size)
+    if should_keep_pin(depot_id) and original_setManifestid then
+        return original_setManifestid(depot_id, manifest_id, size)
+    end
+    return nil
+end
+
 function setManifestid(depot_id, manifest_id, size)
-    return original_setManifestid(depot_id, manifest_id, size)
+    return route_set_manifest(depot_id, manifest_id, size)
+end
+
+function setmanifestid(depot_id, manifest_id, size)
+    return route_set_manifest(depot_id, manifest_id, size)
 end
 """
 
@@ -54,17 +77,30 @@ def _stplugin_dir(steam_path: Path) -> Path:
     return steam_path / "config" / "stplug-in"
 
 
+def _override_path(steam_path: Path) -> Path:
+    return _stplugin_dir(Path(steam_path)) / OVERRIDE_FILENAME
+
+
 def install(steam_path: Path) -> bool:
     """Drop the override .lua into stplug-in. Idempotent. Returns True
     on success, False on any IO failure (already logged)."""
+    return install_with_exclusions(steam_path, ())
+
+
+def install_with_exclusions(steam_path: Path, excluded_depots=()) -> bool:
+    """Install the global LetUpdate override.
+
+    Depots in *excluded_depots* keep their setManifestid pins. Every other
+    depot skips setManifestid, which lets Steam resolve the latest manifest.
+    """
     if steam_path is None:
         logger.warning("update_prompt_override.install: no steam_path")
         return False
     target_dir = _stplugin_dir(Path(steam_path))
-    target = target_dir / OVERRIDE_FILENAME
+    target = _override_path(Path(steam_path))
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
-        target.write_text(OVERRIDE_BODY, encoding="utf-8")
+        target.write_text(_render_override_body(excluded_depots), encoding="utf-8")
         logger.info("update_prompt_override: installed %s", target)
         return True
     except OSError as e:
@@ -78,7 +114,7 @@ def remove(steam_path: Path) -> bool:
     only on a real IO error."""
     if steam_path is None:
         return True
-    target = _stplugin_dir(Path(steam_path)) / OVERRIDE_FILENAME
+    target = _override_path(Path(steam_path))
     try:
         target.unlink(missing_ok=True)
         logger.info("update_prompt_override: removed %s", target)
@@ -95,3 +131,26 @@ def apply_setting(steam_path: Path, enabled: bool) -> bool:
     if enabled:
         return install(steam_path)
     return remove(steam_path)
+
+
+def get_excluded_depots(steam_path: Path) -> set[str]:
+    """Read the managed exclusion list from the global override file."""
+    if steam_path is None:
+        return set()
+    target = _override_path(Path(steam_path))
+    try:
+        text = target.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    for line in text.splitlines():
+        if "STEAMIDRA_EXCLUDED_DEPOTS:" not in line:
+            continue
+        raw = line.split("STEAMIDRA_EXCLUDED_DEPOTS:", 1)[1].strip()
+        try:
+            values = json.loads(raw)
+        except Exception:
+            return set()
+        if isinstance(values, list):
+            return {str(x) for x in values if str(x).isdigit()}
+        return set()
+    return set()

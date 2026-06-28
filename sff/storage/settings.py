@@ -18,6 +18,7 @@
 
 import json
 import logging
+import tempfile
 from pathlib import Path
 
 import msgpack  # type: ignore
@@ -33,7 +34,32 @@ SETTINGS_FILE = sff_data_dir() / "settings.bin"
 SETTINGS_VERSION = "1.0.0"  # For migration tracking
 
 
+_SETTINGS_CACHE: dict | None = None
+
+
+def _invalidate_cache():
+    global _SETTINGS_CACHE
+    _SETTINGS_CACHE = None
+
+
+def _atomic_write_settings(data: dict) -> None:
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix="settings.", suffix=".tmp", dir=SETTINGS_FILE.parent)
+    try:
+        with open(tmp_fd, "wb") as f:
+            f.write(msgpack.packb(data))  # type: ignore
+        Path(tmp_path).replace(SETTINGS_FILE)
+    finally:
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def load_all_settings():
+    global _SETTINGS_CACHE
+    if _SETTINGS_CACHE is not None:
+        return _SETTINGS_CACHE
+
     SETTINGS_FILE.touch(exist_ok=True)
     with SETTINGS_FILE.open("rb") as f:
         data = f.read()
@@ -47,22 +73,17 @@ def load_all_settings():
         settings = {}
 
     settings = migrate_settings(settings)
-
+    _SETTINGS_CACHE = settings
     return settings
 
 
 def get_setting(key):
-    # TODO: don't trigger I/O when last used command was also get_setting
-    # spam control: every UI tick reads dozens of settings, the per-call
-    # log line was burying real errors in the live log panel
     value = load_all_settings().get(key.key_name)
     return keyring_decrypt(value) if (value and key.hidden) else value
 
 
 def set_setting(key, value):
-    if not isinstance(value, str) and not isinstance(
-        value, bool
-    ):  # pyright: ignore[reportUnnecessaryIsInstance]
+    if not isinstance(value, (str, bool, dict)):
         raise ValueError("Invalid type used for set_setting")
 
     logger.debug(f"set_setting: {key.clean_name} -> {str(value)}")
@@ -70,8 +91,7 @@ def set_setting(key, value):
     settings[key.key_name] = (
         keyring_encrypt(value) if key.hidden and isinstance(value, str) else value
     )
-    with SETTINGS_FILE.open("wb") as f:
-        f.write(msgpack.packb(settings))  # type: ignore
+    _atomic_write_settings(settings)
 
 
 def clear_setting(key):
@@ -79,8 +99,7 @@ def clear_setting(key):
     settings = load_all_settings()
     if key.key_name in settings:
         settings.pop(key.key_name)
-        with SETTINGS_FILE.open("wb") as f:
-            f.write(msgpack.packb(settings))  # type: ignore
+        _atomic_write_settings(settings)
 
 
 def resolve_advanced_mode():
@@ -112,10 +131,7 @@ def export_settings(export_path, include_sensitive = False):
                             logger.warning(f"Failed to decrypt {key}: {e}")
                             continue
                     elif isinstance(value, str):
-                        try:
-                            value = keyring_decrypt(value)
-                        except Exception as e:
-                            pass
+                        value = value
                 export_data["settings"][key] = value
         with export_path.open("w", encoding="utf-8") as f:
             json.dump(export_data, f, indent=2)
@@ -188,8 +204,8 @@ def migrate_settings(settings):
     #     settings["new_key"] = "default_value"
 
     settings["_version"] = SETTINGS_VERSION
-    with SETTINGS_FILE.open("wb") as f:
-        f.write(msgpack.packb(settings))  # type: ignore
+    _atomic_write_settings(settings)
+    _invalidate_cache()
 
     logger.info("Settings migration completed")
     return settings

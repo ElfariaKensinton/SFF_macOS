@@ -44,6 +44,12 @@ _EXE_PATHS = [
 # Note: the project targets x86 so dotnet run / dotnet <dll> requires an x86 .NET runtime.
 # The self-contained EXE bundles the runtime and works without any dotnet install.
 
+_SYSTEM_COMMANDLINE_ALIAS_CRASH = "Names and aliases cannot contain whitespace"
+_BAD_CONFIG_KEYS = {
+    "Enable Debug Log.",
+    "Enable Debug Log",
+}
+
 
 def get_steamauto_cli_path():
     # 1. Frozen single-file EXE: bundled data lives in sys._MEIPASS, not next to
@@ -123,22 +129,95 @@ def _ensure_config_has_api_key(cli_dir):
     """Drop the Steam Web API key into config.json if it's missing.
 
     Without the key SteamAutoCrack hits a "NO LICENSE" error when it tries
-    to generate Goldberg game info. Key comes from strings.py.
+    to generate Goldberg game info. Key comes from strings.py, and if the
+    user set a custom one in settings that one takes priority.
     """
+    from sff.storage.settings import get_setting
+    from sff.structs import Settings
+
+    api_key = (get_setting(Settings.STEAM_WEB_API_KEY) or "").strip() or STEAM_WEB_API_KEY
+    if not api_key:
+        return
+
     config_path = cli_dir / "config.json"
+    data = {}
     if config_path.exists():
         try:
             data = json.loads(config_path.read_text(encoding="utf-8"))
-            emu_info = data.get("EMUGameInfoConfigs", {})
-            current_key = emu_info.get("SteamWebAPIKey", "")
-            if not current_key and STEAM_WEB_API_KEY:
-                emu_info["SteamWebAPIKey"] = STEAM_WEB_API_KEY
-                data["EMUGameInfoConfigs"] = emu_info
-                config_path.write_text(
-                    json.dumps(data, indent=2), encoding="utf-8"
-                )
+            if not isinstance(data, dict):
+                data = {}
         except (json.JSONDecodeError, OSError):
-            pass  # If config is corrupt, let the CLI regenerate it
+            data = {}
+
+    emu_info = data.get("EMUGameInfoConfigs", {})
+    if not isinstance(emu_info, dict):
+        emu_info = {}
+    current_key = emu_info.get("SteamWebAPIKey", "")
+    if not current_key:
+        emu_info["SteamWebAPIKey"] = api_key
+        data["EMUGameInfoConfigs"] = emu_info
+        try:
+            config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+
+def _clean_legacy_cli_config(value):
+    """Drop legacy human-label config keys that old CLI builds can treat as aliases."""
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, child in value.items():
+            key_text = str(key)
+            if key_text in _BAD_CONFIG_KEYS:
+                continue
+            cleaned[key] = _clean_legacy_cli_config(child)
+        return cleaned
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            if isinstance(item, str) and item in _BAD_CONFIG_KEYS:
+                continue
+            out.append(_clean_legacy_cli_config(item))
+        return out
+    return value
+
+
+def _load_base_config(cli_dir: Path) -> dict:
+    base_cfg_path = cli_dir / "config.json"
+    if not base_cfg_path.exists():
+        return {}
+    try:
+        data = json.loads(base_cfg_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return _clean_legacy_cli_config(data) if isinstance(data, dict) else {}
+
+
+def _write_run_config(cli_dir: Path, mode: str) -> Path | None:
+    """Write a temporary CLI config for the selected run mode.
+
+    This keeps user config values but strips old keys that make newer
+    System.CommandLine builds crash, and it makes Steamless-only mode an
+    explicit SteamAutoCrack config instead of calling Steamless directly.
+    """
+    base = _load_base_config(cli_dir)
+    if mode != "steamless_only" and not base:
+        return None
+    if mode == "steamless_only":
+        process = base.get("ProcessConfigs") if isinstance(base.get("ProcessConfigs"), dict) else {}
+        base["ProcessConfigs"] = {
+            **process,
+            "GenerateEMUGameInfo": False,
+            "GenerateEMUConfig": False,
+            "Unpack": True,
+            "ApplyEMU": False,
+            "GenerateCrackOnly": False,
+            "Restore": False,
+        }
+    out_name = "config.steamless_only.json" if mode == "steamless_only" else "config.steamidra.json"
+    out = cli_dir / out_name
+    out.write_text(json.dumps(base, indent=2), encoding="utf-8")
+    return out
 
 
 def run_steamauto(
@@ -173,19 +252,17 @@ def run_steamauto(
     # Ensure the API key is set in the CLI config (prevents NO LICENSE errors)
     _ensure_config_has_api_key(cli.parent)
 
-    # Steamless-only mode: write a temporary process-config that turns off
-    # every Goldberg / EMU step. The CLI's `crack` command honours
-    # ProcessConfigs; setting Generate*EMU* / ApplyEMU to false makes the
-    # whole pipeline collapse to "unpack steamstub" only.
     config_arg = []
     temp_cfg = None
-    if mode == "steamless_only":
-        try:
-            temp_cfg = _write_steamless_only_config(cli.parent)
+    try:
+        temp_cfg = _write_run_config(cli.parent, mode)
+        if temp_cfg is not None:
             config_arg = ["--config", str(temp_cfg)]
+        if mode == "steamless_only":
             print_func("[SteaMidra] SteamAutoCrack: STEAMLESS-ONLY mode (no Goldberg / no EMU).")
-        except Exception as exc:
-            print_func(f"[SteaMidra] Could not write steamless-only config ({exc}); falling back to full mode.")
+    except Exception as exc:
+        print_func(f"[SteaMidra] Could not write SteamAutoCrack config: {exc}")
+        return 96
 
     # Safety: snapshot all game executables before the CLI touches them
     print_func("[SteaMidra] Backing up game executables before cracking...")
@@ -209,8 +286,12 @@ def run_steamauto(
 
     proc = subprocess.Popen(cmd, **_popen_kwargs)
     assert proc.stdout is not None
+    crash_detected = False
     for line in proc.stdout:
-        print_func(line.rstrip())
+        line = line.rstrip()
+        if _SYSTEM_COMMANDLINE_ALIAS_CRASH in line:
+            crash_detected = True
+        print_func(line)
     proc.wait()
 
     # Safety: verify executables survived the process
@@ -231,37 +312,11 @@ def run_steamauto(
             temp_cfg.unlink(missing_ok=True)
         except OSError:
             pass
+    if crash_detected:
+        print_func(
+            "\n[SteaMidra] SteamAutoCrack CLI crashed because its bundled "
+            "System.CommandLine setup contains an invalid alias. Update the "
+            "bundled SteamAutoCrack CLI; this run was not applied successfully."
+        )
+        return proc.returncode or 97
     return proc.returncode
-
-
-def _write_steamless_only_config(cli_dir: Path) -> Path:
-    """Write a one-shot config.json with every Goldberg / EMU / generator
-    step turned off, leaving only Unpack=true so SteamStub is the only
-    thing the CLI actually does.
-
-    Returns the file path. Caller deletes it after the run. We start from
-    the existing config.json so user customisation (Steamless flag set,
-    debug log, etc) is kept.
-    """
-    base_cfg_path = cli_dir / "config.json"
-    base = {}
-    if base_cfg_path.exists():
-        try:
-            base = json.loads(base_cfg_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            base = {}
-    if not isinstance(base, dict):
-        base = {}
-    process = base.setdefault("ProcessConfigs", {}) if isinstance(base.get("ProcessConfigs"), dict) else {}
-    base["ProcessConfigs"] = {
-        **(process if isinstance(process, dict) else {}),
-        "GenerateEMUGameInfo": False,
-        "GenerateEMUConfig": False,
-        "Unpack": True,
-        "ApplyEMU": False,
-        "GenerateCrackOnly": False,
-        "Restore": False,
-    }
-    out = cli_dir / "config.steamless_only.json"
-    out.write_text(json.dumps(base, indent=2), encoding="utf-8")
-    return out

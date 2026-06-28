@@ -36,7 +36,6 @@
 }
 
 .skeleton-card {
-    background: var(--card-bg);
     border: 1px solid var(--border);
     border-radius: 10px;
     height: 280px;
@@ -166,4 +165,22 @@
 @keyframes indeterminate {
     0% { transform: translateX(-100%); }
     100% { transform: translateX(400%); }
+}
+
+/* skeleton cards — shimmer loading placeholder (port from PR#58) */
+.skeleton-card {
+    height: 300px;
+    background: linear-gradient(90deg, var(--card-bg, #1e293b) 25%, var(--bg-secondary, #334155) 50%, var(--card-bg, #1e293b) 75%);
+    background-size: 200% 100%;
+    border-radius: 8px;
+    animation: skeleton-loading 2s infinite;
+}
+
+.skeleton-card::after {
+    content: none;
+}
+
+@keyframes skeleton-loading {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
 }

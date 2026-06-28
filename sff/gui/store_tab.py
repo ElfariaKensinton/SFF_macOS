@@ -356,7 +356,10 @@ class VersionPickerDialog(QDialog):
             ui = self._ui
             run_tool_fn = self._run_tool_fn
             self.accept()  # close version picker dialog
-            run_tool_fn(lambda: ui.process_from_store(app_id, manifest_override, use_hubcap))
+            from sff.storage.vdf import get_steam_libs
+            steam_libs = get_steam_libs(self.steam_path)
+            lib_path = steam_libs[0] if steam_libs else self.steam_path
+            run_tool_fn(lambda: ui.process_from_store(app_id, manifest_override, use_hubcap, lib_path=lib_path))
             return
         # Fallback: manifest-only download (no Lua, no ACF) when UI not available
         self._dl_btn.setEnabled(False)
@@ -624,6 +627,8 @@ class StoreTab(QWidget):
     def _fetch(self, query):
         if not self._client:
             QMessageBox.warning(self, "Not Connected", "Connect with your API key first.")
+            return
+        if getattr(self, '_thread', None) and self._thread.isRunning():
             return
         self._status_label.setText("Loading...")
         self._search_btn.setEnabled(False)

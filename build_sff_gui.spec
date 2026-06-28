@@ -24,10 +24,24 @@ datas = [
     ('static', 'static'),
 ]
 
-# Include third_party tools if present
+# Include only Windows-side third_party tools. Do not drag Linux .so folders
+# into the Windows package, that made the installer fat and confusing.
 third_party_dir = os.path.join(spec_root, 'third_party')
 if os.path.exists(third_party_dir):
-    datas.append((third_party_dir, 'third_party'))
+    for name in (
+        'DDMod',
+        'SteamAutoCrack',
+        'coldloader',
+        'fzf',
+        'gbe_fork',
+        'gbe_fork_tools',
+        'hv',
+        'rclone',
+        'steamless',
+    ):
+        src = os.path.join(third_party_dir, name)
+        if os.path.exists(src):
+            datas.append((src, f'third_party/{name}'))
 
 # DLC unlocker bundled resources (CreamAPI, SmokeAPI, Koaloader, UplayR1/R2 DLLs)
 dlc_resources_dir = os.path.join(spec_root, 'sff', 'dlc_unlockers', 'resources')
@@ -156,7 +170,6 @@ a = Analysis(
         'sff.tools',
         'sff.tools.gbe_token_generator',
         'sff.tools.vdf_key_extractor',
-        'sff.tools.capcom_save_fix',
         'py7zr',
         'rarfile',
         'sff.lumacore_setup',

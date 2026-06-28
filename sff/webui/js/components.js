@@ -11,6 +11,7 @@ window.Components = (function() {
     // Steam CDN image URL templates — ordered by 2026 reliability (akamai.shared first, matches Steam API responses)
     var _CDN = [
         'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{id}/library_600x900.jpg',
+        'https://cdn.akamai.steamstatic.com/steam/apps/{id}/header.jpg',
         'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{id}/header.jpg',
         'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{id}/library_header.jpg',
         'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{id}/capsule_616x353.jpg',
@@ -22,7 +23,6 @@ window.Components = (function() {
         'https://shared.steamstatic.com/store_item_assets/steam/apps/{id}/header.jpg',
         'https://shared.steamstatic.com/store_item_assets/steam/apps/{id}/library_header.jpg',
         'https://shared.steamstatic.com/store_item_assets/steam/apps/{id}/capsule_616x353.jpg',
-        'https://cdn.akamai.steamstatic.com/steam/apps/{id}/header.jpg',
         'https://cdn.cloudflare.steamstatic.com/steam/apps/{id}/header.jpg'
     ];
     var STEAM_CDN_LIBRARY = 'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{appid}/library_600x900.jpg';
@@ -68,15 +68,19 @@ window.Components = (function() {
         if (game.installed) {
             badgesHtml += '<span class="badge badge-downloaded">Installed</span>';
         }
+        if (game.nsfw) {
+            badgesHtml += '<span class="badge badge-nsfw">NSFW</span>';
+        }
 
         var lastUpdated = game.last_updated ? '<div class="game-card-meta">Updated: ' + game.last_updated + '</div>' : '';
+        var drmBadge = game.drm ? '<span class="badge badge-drm">DRM</span>' : '';
 
         card.innerHTML =
             '<div class="game-card-img-wrap"></div>' +
             '<div class="game-card-badges">' + badgesHtml + '</div>' +
             '<div class="game-card-body">' +
                 '<div class="game-card-name">' + escapeHtml(game.name) + '</div>' +
-                '<div class="game-card-appid">App ID: ' + game.app_id + '</div>' +
+                '<div class="game-card-appid">App ID: ' + game.app_id + drmBadge + '</div>' +
                 lastUpdated +
             '</div>' +
             '<div class="game-card-actions">' +
@@ -124,10 +128,20 @@ window.Components = (function() {
         item.className = 'game-list-item';
         item.dataset.appid = game.app_id;
 
+        var listBadges = '';
+        if (game.nsfw) {
+            listBadges += '<span class="badge badge-nsfw" style="margin-left:6px;">NSFW</span>';
+        }
+        if (game.drm) {
+            listBadges += '<span class="badge badge-drm" style="margin-left:6px;">DRM</span>';
+        }
+        if (game.platform_label) {
+            listBadges += '<span class="badge badge-platform" style="margin-left:6px;">' + escapeHtml(game.platform_label) + '</span>';
+        }
         item.innerHTML =
             '<div class="game-list-thumb-wrap"></div>' +
             '<div class="game-list-info">' +
-                '<div class="game-list-name">' + escapeHtml(game.name) + '</div>' +
+                '<div class="game-list-name">' + escapeHtml(game.name) + listBadges + '</div>' +
                 '<div class="game-list-appid">App ID: ' + game.app_id + '</div>' +
             '</div>' +
             '<div class="game-list-actions">' +
@@ -246,9 +260,11 @@ window.Components = (function() {
         var dlFastest = document.getElementById('dl-fastest');
         var dlOlder = document.getElementById('dl-older');
         var dlDdmod = document.getElementById('dl-ddmod');
+        var dlDdmodDest = document.getElementById('dl-ddmod-dest-path');
         if (dlFastest) dlFastest.dataset.appid = appId;
         if (dlOlder) dlOlder.dataset.appid = appId;
         if (dlDdmod) dlDdmod.dataset.appid = appId;
+        if (dlDdmodDest) dlDdmodDest.value = '';
 
         showModal('download-modal');
     }

@@ -92,6 +92,7 @@ def open_workshop_browser(app_id, parent=None):
     page = QWebEnginePage(profile)
     view = QWebEngineView()
     view.setPage(page)
+    view.hide()
 
     workshop_url = f"https://steamcommunity.com/app/{app_id}/workshop/" if app_id else "https://steamcommunity.com/workshop/"
 
@@ -112,19 +113,19 @@ def open_workshop_browser(app_id, parent=None):
     url_bar.setPlaceholderText("URL")
     url_bar.setReadOnly(False)
 
-    def update_url_bar(qurl):
-        url_str = qurl.toString()
-        if url_str and url_bar.text() != url_str:
-            url_bar.blockSignals(True)
-            url_bar.setText(url_str)
-            url_bar.blockSignals(False)
-
     def navigate_from_bar():
         text = url_bar.text().strip()
         if text:
             if not text.startswith(("http://", "https://")):
                 text = "https://" + text
             view.setUrl(QUrl(text))
+
+    def update_url_bar(qurl):
+        url_str = qurl.toString()
+        if url_str and url_bar.text() != url_str:
+            url_bar.blockSignals(True)
+            url_bar.setText(url_str)
+            url_bar.blockSignals(False)
 
     view.urlChanged.connect(update_url_bar)
     url_bar.returnPressed.connect(navigate_from_bar)
@@ -220,8 +221,19 @@ def open_workshop_browser(app_id, parent=None):
     btn_layout.addStretch()
     layout.addLayout(btn_layout)
     layout.addWidget(status_label)
+
+    loading_label = QLabel("Loading Steam Workshop...")
+    loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    loading_label.setStyleSheet("font-size:14px;color:#888;padding:80px;")
+    layout.addWidget(loading_label)
     layout.addWidget(view)
 
+    def on_page_loaded(ok):
+        if ok:
+            loading_label.hide()
+            view.show()
+
+    page.loadFinished.connect(on_page_loaded)
     view.setUrl(QUrl(workshop_url))
 
     tabs.addTab(browse_tab, "Browse")

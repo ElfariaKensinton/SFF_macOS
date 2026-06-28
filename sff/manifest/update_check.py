@@ -72,7 +72,7 @@ def _read_tracked_games() -> dict:
     games = {}
     tokens = {}
     if not tracking_dir.exists():
-        return games
+        return games, tokens
     for f in tracking_dir.glob("*.depot"):
         appid = f.stem
         try:
@@ -97,7 +97,7 @@ def check_game_updates(provider) -> List[Tuple[str, str, str]]:
     Returns list of ``(appid, status, detail)`` where status is one of:
     ``up_to_date``, ``update_available``, ``cannot_determine``
     """
-    games = _read_tracked_games()
+    games, _tokens = _read_tracked_games()
     if not games:
         return []
 

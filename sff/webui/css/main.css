@@ -695,6 +695,7 @@ input:focus, select:focus {
     display: flex;
     justify-content: flex-end;
     gap: 8px;
+    flex-wrap: wrap;
 }
 
 /* ── Download Options ───────────────────────────────── */
@@ -1048,6 +1049,24 @@ input:focus, select:focus {
     gap: 6px;
     font-size: 12px;
     opacity: 0.8;
+}
+
+.outside-name-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    opacity: 0.9;
+}
+
+.outside-name-input {
+    width: 210px;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 13px;
 }
 
 .outside-appid-input {

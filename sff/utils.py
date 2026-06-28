@@ -46,38 +46,24 @@ def sff_data_dir() -> Path:
 
 
 def root_folder(outside_internal = False):
+    bundled = getattr(sys, "frozen", False)
 
-    is_frozen = getattr(sys, "frozen", False)
-
-    if is_frozen:
-
+    if bundled:
         if outside_internal:
-            # outside_internal=True → caller wants a WRITABLE directory for user data
-            # (settings.bin, debug.log, recent_files.json, exports, …).
-            # On AppImage the squashfs mount is read-only, so use the directory that
-            # contains the .AppImage file instead (set by the AppImage runtime).
-            appimage = os.environ.get('APPIMAGE')
-            if appimage:
-                return Path(appimage).resolve().parent
+            ai = os.environ.get('APPIMAGE')
+            if ai:
+                return Path(ai).resolve().parent
             return Path(sys.executable).resolve().parent
 
-        # PyInstaller 6.x places ALL bundled data in sys._MEIPASS, not next to the EXE.
-        # One-file build  → _MEIPASS = %TEMP%\_MEIXXXXX\  (temporary extraction dir)
-        # One-dir  build  → _MEIPASS = <exe_dir>\_internal\
-        # This makes the EXE self-contained regardless of where the user places it.
-        meipass = getattr(sys, '_MEIPASS', None)
-        if meipass:
-            return Path(meipass).resolve()
+        internal_path = getattr(sys, '_MEIPASS', None)
+        if internal_path:
+            return Path(internal_path).resolve()
         return Path(sys.executable).resolve().parent
 
-    else:
-
-        # Running as Python script
-        # __file__ is in sff/ subfolder, so parent.parent gets us to Maintool/
-        root = Path(__file__).resolve().parent.parent
-        if outside_internal:
-            return root
-        return root
+    script_root = Path(__file__).resolve().parent.parent
+    if outside_internal:
+        return script_root
+    return script_root
 
 
 def manifests_staging_dir() -> Path:

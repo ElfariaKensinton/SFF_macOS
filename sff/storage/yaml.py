@@ -22,18 +22,27 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
+
+def _read_yaml_file(path: Path):
+    with path.open(encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def _write_yaml_file(path: Path, data):
+    text = yaml.dump(data)
+    path.write_text(text, encoding="utf-8")
+
+
 class YAMLParser:
     def __init__(self, path):
         self.path = path
 
     def read(self):
         try:
-            with self.path.open(encoding="utf-8") as f:
-                return yaml.safe_load(f)
+            return _read_yaml_file(self.path)
         except Exception as exc:
             logger.warning("Failed to read YAML config %s: %s", self.path, exc)
             return None
 
     def write(self, data):
-        with self.path.open("w", encoding="utf-8") as f:
-            f.write(yaml.dump(data))
+        _write_yaml_file(self.path, data)

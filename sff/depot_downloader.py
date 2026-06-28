@@ -78,7 +78,15 @@ def _copy_manifests_to_temp(steam_path: Path, manifests: dict) -> None:
                 shutil.copy2(src, dst)
 
 
-def _read_process_output(proc: subprocess.Popen, print_fn) -> None:
+def _read_process_output(proc: subprocess.Popen, print_fn, depot_timeout=600) -> None:
+    """Read subprocess stdout with a per-depot timeout (default 10 min).
+
+    Uses selectors for non-blocking reads so a hanging DDMod process
+    doesn't freeze the entire download chain. On timeout, kills the
+    process and returns (the caller checks returncode to surface the
+    failure).
+    """
+    import selectors
     if not proc.stdout:
         return
     pre_alloc_count = 0
@@ -89,61 +97,68 @@ def _read_process_output(proc: subprocess.Popen, print_fn) -> None:
     last_validate_t = 0.0
     last_progress_pct: float = -1.0
     _SUMMARY_INTERVAL = 2.0
-    # Per-line progress prefix patterns the DDMod CLI emits at very high
-    # frequency. These each arrive thousands of times per depot on a fast
-    # download, and forwarding every one through the QtWebChannel log
-    # pipeline is what locks up the modern UI on Linux/XFCE and stutters
-    # the live-log panel on Windows. The download is a few seconds long,
-    # so a percent-summary every 2 seconds keeps the user informed
-    # without ever queueing more than ~30 log lines per depot.
-    for raw_line in iter(proc.stdout.readline, b''):
-        line = raw_line.decode("utf-8", errors="replace").strip()
-        if not line:
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ)
+    deadline = time.monotonic() + depot_timeout
+    buf = b''
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            print_fn(Fore.RED + f"\n[timeout] Depot download exceeded {depot_timeout}s, killing process" + Style.RESET_ALL)
+            proc.kill()
+            break
+        events = sel.select(timeout=min(remaining, 1.0))
+        if not events:
             continue
-        now = time.monotonic()
+        chunk = proc.stdout.read1(65536)
+        if not chunk:
+            break
+        buf += chunk
+        while b'\n' in buf:
+            raw_line, buf = buf.split(b'\n', 1)
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            now = time.monotonic()
 
-        # File pre-allocation (one line per file, can be tens of thousands)
-        if line.startswith("Pre-allocating"):
-            pre_alloc_count += 1
-            if now - last_pre_alloc_t >= _SUMMARY_INTERVAL:
-                print_fn(f"[Pre-allocating files... {pre_alloc_count} so far]")
-                last_pre_alloc_t = now
-            continue
+            # File pre-allocation (one line per file, can be tens of thousands)
+            if line.startswith("Pre-allocating"):
+                pre_alloc_count += 1
+                if now - last_pre_alloc_t >= _SUMMARY_INTERVAL:
+                    print_fn(f"[Pre-allocating files... {pre_alloc_count} so far]")
+                    last_pre_alloc_t = now
+                continue
 
-        # Chunk validation (DDMod prints "Validated X out of Y chunks (Z%)"
-        # or "Validating chunk N / M" on every chunk; high-frequency)
-        lower = line.lower()
-        if "validating chunk" in lower or lower.startswith("validated "):
-            validate_count += 1
-            if now - last_validate_t >= _SUMMARY_INTERVAL:
-                print_fn(f"[Validating chunks... {validate_count} so far]")
-                last_validate_t = now
-            continue
+            # Chunk validation (DDMod prints "Validated X out of Y chunks (Z%)"
+            # or "Validating chunk N / M" on every chunk; high-frequency)
+            lower = line.lower()
+            if "validating chunk" in lower or lower.startswith("validated "):
+                validate_count += 1
+                if now - last_validate_t >= _SUMMARY_INTERVAL:
+                    print_fn(f"[Validating chunks... {validate_count} so far]")
+                    last_validate_t = now
+                continue
 
-        # Per-percent progress lines. DDMod writes a spinner-style line
-        # every chunk, format like "  12.34% Downloaded ...". Round to
-        # whole percent and only emit when we cross a percent boundary
-        # OR the summary interval elapses, whichever comes first.
-        m = _DDMOD_PROGRESS_RE.match(line)
-        if m:
-            progress_count += 1
-            try:
-                pct = float(m.group(1))
-            except ValueError:
-                pct = -1.0
-            crossed_pct = (pct >= 0 and (last_progress_pct < 0
-                                         or int(pct) != int(last_progress_pct)))
-            elapsed = now - last_progress_t >= _SUMMARY_INTERVAL
-            if crossed_pct or elapsed:
-                # Forward the original line so the user sees the depot
-                # MB/s + bytes-fetched columns DDMod prints, but only
-                # at a sustainable cadence.
-                print_fn(line)
-                last_progress_pct = pct
-                last_progress_t = now
-            continue
+            # Per-percent progress lines.
+            m = _DDMOD_PROGRESS_RE.match(line)
+            if m:
+                progress_count += 1
+                try:
+                    pct = float(m.group(1))
+                except ValueError:
+                    pct = -1.0
+                crossed_pct = (pct >= 0 and (last_progress_pct < 0
+                                             or int(pct) != int(last_progress_pct)))
+                elapsed = now - last_progress_t >= _SUMMARY_INTERVAL
+                if crossed_pct or elapsed:
+                    print_fn(line)
+                    last_progress_pct = pct
+                    last_progress_t = now
+                continue
 
-        print_fn(line)
+            print_fn(line)
+
+    sel.close()
 
     if pre_alloc_count > 0:
         print_fn(f"[Pre-allocation complete: {pre_alloc_count} file(s)]")
@@ -178,6 +193,7 @@ def run_download(
     dest_path: Path,
     steam_path: Path,
     print_fn=print,
+    os_name: str | None = None,
 ) -> Tuple[bool, int]:
     appid = str(game_data["appid"])
     depots = game_data.get("depots", {})
@@ -253,6 +269,7 @@ def run_download(
     deps_dir = get_deps_dir()
     total_depots = len(selected_depots)
     all_ok = True
+    target_os = (os_name or ("linux" if sys.platform.startswith("linux") else "windows")).lower()
 
     for i, depot_id in enumerate(selected_depots):
         depot_id_str = str(depot_id)
@@ -264,10 +281,11 @@ def run_download(
             "-depot", depot_id_str,
             "-depotkeys", str(KEYS_TMP),
             "-max-downloads", "32",
-            "-os", "windows",
             "-validate",
             "-dir", str(download_dir),
         ]
+        if target_os != "all":
+            cmd += ["-os", target_os]
 
         if manifest_id:
             manifest_file = MANIFESTS_TMP / f"{depot_id_str}_{manifest_id}.manifest"
@@ -300,7 +318,15 @@ def run_download(
 
             proc = subprocess.Popen(cmd, **popen_kwargs)
             _read_process_output(proc, print_fn)
-            proc.wait()
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                print_fn(
+                    Fore.RED + f"\n[timeout] Depot {depot_id_str} did not exit after output ended, killing"
+                    + Style.RESET_ALL
+                )
+                proc.kill()
+                proc.wait()
 
             if proc.returncode != 0:
                 print_fn(
@@ -347,16 +373,20 @@ def filter_depots_by_os(
     selected_depots: list,
     app_info: dict,
     print_fn=print,
+    os_name: str | None = None,
 ) -> list:
-    """Return selected_depots with non-Windows depots removed.
+    """Return selected_depots with depots outside the target OS removed.
 
     Keeps a depot if its oslist is empty/missing (shared content) or contains
-    'windows'.  Skips depots whose oslist is non-empty and lacks 'windows'.
+    the target OS. Skips depots whose oslist is non-empty and lacks the target.
     Also skips Steam China depots (contain platform-specific bundles not needed
     on global Steam).  Falls back to the original list when app_info is unavailable.
     """
     if not app_info:
         return selected_depots
+    target_os = (os_name or ("linux" if sys.platform.startswith("linux") else "windows")).lower()
+    if target_os == "all":
+        target_os = ""
     depots_section = app_info.get("depots", {}) if isinstance(app_info, dict) else {}
 
     # Build set of Steam China depot IDs from depots-level and top-level steamchina sections
@@ -384,10 +414,10 @@ def filter_depots_by_os(
                 category = config.get("category", "") or ""
                 realm = config.get("realm", "") or ""
                 ostype = config.get("ostype", "") or ""
-        if oslist and "windows" not in oslist.lower():
+        if target_os and oslist and target_os not in oslist.lower():
             print_fn(
                 Fore.YELLOW
-                + f"Skipping depot {depot_id} (oslist={oslist!r}, not Windows)"
+                + f"Skipping depot {depot_id} (oslist={oslist!r}, not {target_os})"
                 + Style.RESET_ALL
             )
             continue

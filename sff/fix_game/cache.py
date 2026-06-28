@@ -29,55 +29,24 @@ import json
 import logging
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
+from sff.utils import sff_data_dir
 
 logger = logging.getLogger(__name__)
 
 
 def _get_cache_dir():
-    """get the fix game cache directory (XDG-compliant on Linux)"""
-    if sys.platform == "win32":
-        base = Path(os.environ.get("APPDATA") or os.path.expanduser("~"))
-    else:
-        base = Path.home() / ".local" / "share"
-    cache_dir = base / "SteaMidra" / "fix_game_cache"
+    """get the fix game cache directory beside the app/install root"""
+    cache_dir = sff_data_dir() / "fix_game_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    _ensure_defender_exclusion(base / "SteaMidra")
     return cache_dir
 
 
 def _ensure_defender_exclusion(path):
     """
-    Attempt to add a Windows Defender exclusion for the SteaMidra data directory.
-    First tries non-elevated; if that fails (needs admin), silently skips.
-    A flag file prevents repeated pointless attempts in the same session.
-    No-op on non-Windows or if Defender is not running.
+    No-op until the GUI has an explicit consent prompt. Older builds tried
+    to add a Defender exclusion in the background, which is too surprising.
     """
-    import subprocess, sys
-    if sys.platform != "win32":
-        return
-
-    flag = path / ".defender_excluded"
-    if flag.exists():
-        return  # already confirmed excluded in a previous run
-
-    try:
-        _no_window = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
-        result = subprocess.run(
-            [
-                "powershell", "-NonInteractive", "-WindowStyle", "Hidden",
-                "-Command",
-                f"Add-MpPreference -ExclusionPath '{path}' -ErrorAction Stop",
-            ],
-            capture_output=True, timeout=10,
-            **_no_window,
-        )
-        if result.returncode == 0:
-            try:
-                flag.write_text("excluded", encoding="utf-8")
-            except Exception:
-                pass
-    except Exception:
-        pass
+    return
 
 
 @dataclass
@@ -101,7 +70,7 @@ class CachedAppInfo:
 
 class FixGameCache:
     """
-    Manages the fix game cache at %APPDATA%/SteaMidra/fix_game_cache/.
+    Manages the fix game cache at <SteaMidra install>/fix_game_cache/.
 
     Structure:
         fix_game_cache/

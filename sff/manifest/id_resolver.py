@@ -16,15 +16,29 @@
 # You should have received a copy of the GNU General Public License
 # along with SteaMidra.  If not, see <https://www.gnu.org/licenses/>.
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any, Protocol, Union
 
 from colorama import Fore, Style
 
 from sff.prompts import prompt_text
 from sff.steam_client import SteamInfoProvider
 from sff.utils import enter_path
-from typing import Any, Union
+
+
+def _dlc_ids_from_app_data(app_data: dict[str, Any]) -> list[int]:
+    raw = app_data.get("extended", {}).get("listofdlc", "")
+    if not raw:
+        return []
+    return [int(x) for x in raw.split(",") if x.strip()]
+
+
+def _iter_dlc_payloads(ctx: "ManifestContext"):
+    return ctx.dlc_data.values()
+
+
+def _manifest_from_depot_record(depot_data):
+    return enter_path(depot_data, "manifests", "public").get("gid")
 
 
 @dataclass
@@ -42,79 +56,82 @@ class ManifestContext:
     @property
     def dlc_data(self):
         if self._dlc_data is None:
-            extended = self.app_data.get("extended", {})
-            dlc_list_str = extended.get("listofdlc", "")
-            if dlc_list_str:
-                dlc_ids = [int(x) for x in dlc_list_str.split(",")]
-                self._dlc_data = self.provider.get_app_info(dlc_ids)
-            else:
-                self._dlc_data = {}
+            dlc_ids = _dlc_ids_from_app_data(self.app_data)
+            self._dlc_data = self.provider.get_app_info(dlc_ids) if dlc_ids else {}
         return self._dlc_data
 
 
-class IManifestStrategy(ABC):
+class IManifestStrategy(Protocol):
     @property
-    @abstractmethod
     def name(self):
-        pass
+        ...
 
-    @abstractmethod
     def get_manifest_id(self, ctx, depot_id):
-        pass
+        ...
+
+
+def _public_manifest_from(app_data: dict[str, Any], depot_id: Union[str, int]):
+    return enter_path(app_data, "depots", str(depot_id), "manifests", "public").get(
+        "gid"
+    )
+
+
+def _gui_prompting_disabled() -> bool:
+    try:
+        from sff.prompts import _gui_backend
+    except Exception:
+        return False
+    return _gui_backend is not None
 
 
 class StandardManifestStrategy(IManifestStrategy):
 
     @property
     def name(self):
-        return "Direct"
+        return "Steam appinfo"
 
     def get_manifest_id(
         self, ctx: ManifestContext, depot_id: Union[str, int]
     ):
-        return enter_path(
-            ctx.app_data, "depots", str(depot_id), "manifests", "public"
-        ).get("gid")
+        return _public_manifest_from(ctx.app_data, depot_id)
 
 
 class SharedDepotManifestStrategy(IManifestStrategy):
 
     @property
     def name(self):
-        return "Shared Install"
+        return "Shared app depot"
 
     def get_manifest_id(
         self, ctx: ManifestContext, depot_id: Union[str, int]
     ):
-        target_app_id = enter_path(ctx.app_data, "depots", str(depot_id)).get(
-            "depotfromapp"
-        )
+        depot_data = enter_path(ctx.app_data, "depots", str(depot_id))
+        target_app_id = depot_data.get("depotfromapp")
         if not target_app_id:
             return None
         target_data = ctx.provider.get_single_app_info(int(target_app_id))
-        return enter_path(
-            target_data, "depots", str(depot_id), "manifests", "public"
-        ).get("gid")
+        return _public_manifest_from(target_data, depot_id)
 
 
 class InnerDepotManifestStrategy(IManifestStrategy):
 
     @property
     def name(self):
-        return "Inner Depot From DLC"
+        return "DLC depot appinfo"
 
     def get_manifest_id(self, ctx, depot_id):
-        for dlc_data in ctx.dlc_data.values():
-            depots = dlc_data.get("depots", {})
-            if depot_id in depots:
-                return enter_path(depots[depot_id], "manifests", "public").get("gid")
+        depot_key = str(depot_id)
+        for dlc_data in _iter_dlc_payloads(ctx):
+            depot_data = dlc_data.get("depots", {}).get(depot_key)
+            if depot_data is not None:
+                return _manifest_from_depot_record(depot_data)
         return None
 
 
 class ManualManifestStrategy(IManifestStrategy):
     @property
     def name(self):
-        return "Manual"
+        return "Typed manifest GID"
 
     def get_manifest_id(self, ctx, depot_id):
         if ctx.app_id == int(depot_id):
@@ -132,18 +149,14 @@ class ManualManifestStrategy(IManifestStrategy):
         # gid in the steam appinfo and asking the user to type a manifest
         # GID for it is fantasy. Skip silently and let the caller handle
         # the missing gid (manifest fetch will skip the depot too).
-        try:
-            from sff.prompts import _gui_backend
-            if _gui_backend is not None:
-                print(
-                    Fore.YELLOW
-                    + f"Depot {depot_id}: no manifest GID in steam appinfo, "
-                    "skipping (GUI mode does not prompt)."
-                    + Style.RESET_ALL
-                )
-                return ""
-        except Exception:
-            pass
+        if _gui_prompting_disabled():
+            print(
+                Fore.YELLOW
+                + f"Depot {depot_id}: no manifest GID in steam appinfo, "
+                "skipping (GUI mode does not prompt)."
+                + Style.RESET_ALL
+            )
+            return ""
         if ctx.auto:
             print(
                 "All auto methods failed. Type the manifest ID manually here, "
@@ -154,11 +167,11 @@ class ManualManifestStrategy(IManifestStrategy):
 
 class ManifestIDResolver:
     def __init__(self, strategies):
-        self.strategies = strategies
+        self.strategies = tuple(strategies)
 
     def resolve(self, ctx, depot_id):
         for strategy in self.strategies:
             manifest = strategy.get_manifest_id(ctx, depot_id)
             if manifest is not None:
                 return manifest, strategy.name
-        raise Exception(f"Unable to resolve manifest for depot {depot_id}")
+        raise LookupError(f"Unable to resolve manifest for depot {depot_id}")

@@ -1,10 +1,10 @@
 ; SteaMidra Windows Installer
-; NSIS MUI2 script — 64-bit, admin, LZMA compression
+; NSIS MUI2 script — 64-bit, user-level, LZMA compression
 
 !define APPNAME    "SteaMidra"
 !define COMPANY    "Midrags"
 !ifndef VERSION
-  !define VERSION  "6.3.1"
+  !define VERSION  "6.3.2"
 !endif
 !define EXENAME    "SteaMidra_GUI.exe"
 !define PUBLISHER  "Midrags"
@@ -14,7 +14,7 @@ OutFile "SteaMidra-${VERSION}-Setup.exe"
 
 InstallDir "$LOCALAPPDATA\${APPNAME}"
 InstallDirRegKey HKCU "Software\${COMPANY}\${APPNAME}" "InstallDir"
-RequestExecutionLevel admin
+RequestExecutionLevel user
 SetCompressor /SOLID lzma
 BrandingText "${APPNAME} ${VERSION}"
 
@@ -84,14 +84,7 @@ Section "SteaMidra (required)" SEC_MAIN
     WriteRegStr  HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
     WriteRegStr  HKCU "Software\${COMPANY}\${APPNAME}" "InstallDir" "$INSTDIR"
 
-    ; Windows Defender exclusion
-    MessageBox MB_YESNO|MB_ICONINFORMATION \
-        "SteaMidra can be added to Windows Defender exclusions.$\r$\n$\r$\nThis prevents the download tool from being flagged as a false positive.$\r$\n$\r$\nAdd exclusion now?" \
-        IDNO skip_defender
 
-    nsExec::ExecToLog 'powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Add-MpPreference -ExclusionPath $\"$INSTDIR$\""'
-
-    skip_defender:
 SectionEnd
 
 ; ============================================================
@@ -236,6 +229,47 @@ Section "Uninstall"
     DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
     DeleteRegKey HKCU "Software\${COMPANY}\${APPNAME}"
 
-    ; Remove Defender exclusion
-    nsExec::ExecToLog 'powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Remove-MpPreference -ExclusionPath $\"$INSTDIR$\""'
+    ; Prompt to clean LumaCore DLLs from Steam folder
+    ReadRegStr $0 HKLM "SOFTWARE\WOW6432Node\Valve\Steam" "InstallPath"
+    StrCmp $0 "" try_hkcu_steam
+    Goto ask_clean_dlls
+try_hkcu_steam:
+    ReadRegStr $0 HKCU "Software\Valve\Steam" "SteamPath"
+    StrCmp $0 "" done_clean_dlls ask_clean_dlls
+ask_clean_dlls:
+    IfFileExists "$0\steam.exe" 0 try_steamapps
+    MessageBox MB_YESNO "Remove LumaCore files from Steam folder ($0)?$\nThis will delete:$\n  - LumaCore.dll$\n  - LumaCorePayload.dll$\n  - dwmapi.dll$\n  - xinput1_4.dll$\n  - version.dll$\n  - bin\lcoverlay.dll$\n$\nSelect Yes to clean these files." IDNO done_clean_dlls
+    Delete "$0\LumaCore.dll"
+    Delete "$0\LumaCorePayload.dll"
+    Delete "$0\dwmapi.dll"
+    Delete "$0\xinput1_4.dll"
+    Delete "$0\version.dll"
+    Delete "$0\bin\lcoverlay.dll"
+    RMDir "$0\bin"
+    Goto done_clean_dlls
+try_steamapps:
+    ; try common alternate paths
+    IfFileExists "$PROGRAMFILES64\Steam\steam.exe" 0 try_programfiles
+    StrCpy $0 "$PROGRAMFILES64\Steam"
+    MessageBox MB_YESNO "Remove LumaCore files from Steam folder ($0)?$\n...$\nSelect Yes to clean." IDNO done_clean_dlls
+    Delete "$0\LumaCore.dll"
+    Delete "$0\LumaCorePayload.dll"
+    Delete "$0\dwmapi.dll"
+    Delete "$0\xinput1_4.dll"
+    Delete "$0\version.dll"
+    Delete "$0\bin\lcoverlay.dll"
+    RMDir "$0\bin"
+    Goto done_clean_dlls
+try_programfiles:
+    IfFileExists "$PROGRAMFILES\Steam\steam.exe" 0 done_clean_dlls
+    StrCpy $0 "$PROGRAMFILES\Steam"
+    MessageBox MB_YESNO "Remove LumaCore files from Steam folder ($0)?$\n...$\nSelect Yes to clean." IDNO done_clean_dlls
+    Delete "$0\LumaCore.dll"
+    Delete "$0\LumaCorePayload.dll"
+    Delete "$0\dwmapi.dll"
+    Delete "$0\xinput1_4.dll"
+    Delete "$0\version.dll"
+    Delete "$0\bin\lcoverlay.dll"
+    RMDir "$0\bin"
+done_clean_dlls:
 SectionEnd

@@ -1,4 +1,4 @@
-# SteaMidra Trusted by r/FMHY [FMHY](https://fmhy.net/gaming-tools#steam-epic) and r/Piracy [Piracy](https://www.reddit.com/r/Piracy/wiki/megathread/games/#:~:text=SteaMidra)
+# SteaMidra Listed on r/FMHY [FMHY](https://fmhy.net/gaming-tools#steam-epic) and r/Piracy [Piracy](https://www.reddit.com/r/Piracy/wiki/megathread/games/#:~:text=SteaMidra)
 
 *Made by Midrag and his brother!*
 ## Educational use only. Use at your own risk.
@@ -147,11 +147,25 @@ See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common problems and s
 
 ---
 
-## Credits
+## Credits and third-party notices
 
 **Made by Midrag and his brother.**
 
-**LumaCore** – Windows DLL hook library bundled with SteaMidra. Injects into Steam at startup via a `dwmapi.dll` proxy, reads Lua files from `Steam/config/stplug-in/`, and patches Steam's in-memory license tables so games appear owned without AppList files or Steam restarts.
+SteaMidra uses, integrates with, downloads, is compatible with, or was originally influenced by several third-party projects and community tools. Third-party tools, binaries, unlockers, emulators, assets, APIs, services, and earlier project bases remain owned by their original authors and keep their original licenses/terms. They are not relicensed as SteaMidra code.
+
+SteaMidra’s GPL license applies to SteaMidra’s own source code only. It does not claim ownership over third-party components.
+
+**SMD / Steam Manifest Downloader** – SteaMidra originally started from an early SMD base/fork. Credit to **Kur0 / the SMD project and contributors** for the original project structure, early workflow, and inspiration. Since then, SteaMidra has been heavily reworked and expanded with its own workflows, LumaCore integration, GUI/web UI, Store/search features, online fix handling, DLC unlocker handling, fixes/bypasses, backups, library scanner, Linux-related work, updater changes, and many other modules. Any remaining SMD-derived parts remain credited to their original authors/contributors and are not claimed as original SteaMidra code.
+
+**LumaCore** – Windows DLL hook library bundled with SteaMidra. Injects into Steam at startup via a `dwmapi.dll` proxy, reads Lua files from `Steam/config/stplug-in/`, and patches Steam's in-memory license tables so games appear owned without AppList files or Steam restarts. [LumaCore](LumaCore/CREDITS.md)
+
+**CreamAPI** – DLC unlocker by **deadmau5**. Used/handled only as a third-party unlocker component. CreamAPI remains owned by its original author and is not licensed as SteaMidra code.
+
+**SmokeAPI / ScreamAPI** – DLC ownership emulation/unlocker projects by **Acidicoala**. Used/handled only as third-party unlocker components where applicable. These remain owned by their original author and are not licensed as SteaMidra code.
+
+**Uplay R1/R2 Unlocker** – Uplay unlocker projects by **Acidicoala**. Used/handled only as third-party unlocker components where applicable. These remain owned by their original author and are not licensed as SteaMidra code.
+
+**CreamInstaller** – The DLC Unlockers feature is inspired by and compatible with CreamInstaller-style behavior. SteaMidra does not ship CreamInstaller itself; it provides its own implementation for managing compatible unlocker setups. Credit to CreamInstaller and its maintainers for the original tool/flow inspiration.
 
 **gbe_fork** – The "Crack a game" feature uses **gbe_fork**, a Steam emulator for running games offline. License in `third_party_licenses/gbe_fork.LICENSE`.
 
@@ -159,31 +173,37 @@ See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common problems and s
 
 **Steamless** – The "Remove SteamStub DRM" feature uses **Steamless** by Atom0s for stripping Steam DRM from executables. License in `third_party_licenses/steamless.LICENSE`.
 
-**fzf** – Used for fuzzy search in menus (CLI). License in `third_party_licenses/fzf.LICENSE`.
+**fzf** – Used for fuzzy search in menus. License in `third_party_licenses/fzf.LICENSE`.
 
 **SteamAutoCrack** – The SteamAutoCrack feature uses the **SteamAutoCrack CLI** by oureveryday. Bundled in `third_party/SteamAutoCrack/cli/`. License in `third_party_licenses/SteamAutoCrack.LICENSE`.
 
-**DDMod (DepotDownloaderMod)** – The Direct Download via DDMod feature uses **DepotDownloaderMod** by **oureveryday**. License in `third_party_licenses/DDMod.license`.
+**DDMod / DepotDownloaderMod** – The Direct Download via DDMod feature uses **DepotDownloaderMod** by **oureveryday**. License in `third_party_licenses/DDMod.license`.
 
-**ManifestHub** – The ManifestHub source uses the manifest archive maintained by **oureveryday**.
+**ManifestHub** – The ManifestHub source uses the manifest archive/API maintained by **oureveryday**.
 
 **rclone** – Cloud Saves uses **rclone** for transfers to remote storage providers. License in `third_party_licenses/rclone.LICENSE`.
 
-**CreamInstaller** – The DLC Unlockers feature is inspired by and compatible with CreamInstaller. SteaMidra does not ship CreamInstaller; it provides its own implementation that follows similar behavior.
+**online-fix.me** – The multiplayer fix feature can download fixes from online-fix.me when the user provides their own account. SteaMidra is not affiliated with online-fix.me, and online-fix.me files remain owned/controlled by their respective authors/maintainers.
 
-**online-fix.me** – The multiplayer fix feature downloads fixes from online-fix.me. SteaMidra is not affiliated with online-fix.me. An account on that site is required.
+**GBE Token Generator** – Goldberg Emulator configuration generation based on work by **Detanup01** (`gbe_fork`), **NickAntaris**, and **Oureveryday** (`generate_game_info`).
 
-**GBE Token Generator** – Goldberg Emulator configuration generation based on work by **Detanup01** ([gbe_fork](https://github.com/Detanup01/gbe_fork)), **NickAntaris**, and **Oureveryday** ([generate_game_info](https://github.com/oureveryday/Goldberg-generate_game_info)).
-
-**Hubcap Manifest** – Store browser and manifest library API provided by **Hubcap Manifest** ([hubcapmanifest.com](https://hubcapmanifest.com)).
+**Hubcap Manifest** – Store browser and manifest library API provided by **Hubcap Manifest**.
 
 **RedPaper** – Credit to RedPaper for the Broken Moon MIDI cover, originally arranged by U2 Akiyama and used in Touhou 7.5: Immaterial and Missing Power. Touhou 7.5 and its assets are owned by Team Shanghai Alice and Twilight Frontier. SteaMidra is not affiliated with or endorsed by either party. All trademarks belong to their respective owners.
 
-**Tutorials** – Setup walkthrough by **@yensnc** (https://youtu.be/PQ1FqK8NJ44). API key tutorial by **@novoagain** (https://imgur.com/a/ubLeqer).
+**Tutorials** – Setup walkthrough by **@yensnc**. API key tutorial by **@novoagain**.
 
-README rewrite assisted by **itsphox**.
+README editing help by **itsphox**.
 
-SteaMidra is licensed under the GNU General Public License v3.0 (see LICENSE file).
+See `third_party_licenses/` and `THIRD_PARTY_NOTICES.md` for third-party license and provenance details.
+
+## License scope
+
+SteaMidra is licensed under the GNU General Public License v3.0 for SteaMidra’s own source code.
+
+This license does not relicense third-party tools, binaries, unlockers, emulators, assets, APIs, services, or external projects used by, bundled with, downloaded by, or integrated with SteaMidra. Those components remain under their original authorship, licenses, and terms.
+
+If any third-party credit, license notice, or ownership note is missing or unclear, please open an issue with the exact file/component and it will be reviewed.
 
 ## Disclaimer
 

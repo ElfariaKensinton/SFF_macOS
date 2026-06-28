@@ -57,7 +57,7 @@ class LumaCoreManager(AppInjectionManager):
     def add_ids(
         self, data: Union[int, list, LuaParsedInfo], skip_check: bool = False
     ):
-        pass
+        raise NotImplementedError("LumaCore add_ids is not yet implemented")
 
     def dlc_check(self, provider, base_id, auto_add_depot_dlcs: bool = False):
         from sff.steam_store import get_dlc_list_from_store, get_dlc_names_from_store

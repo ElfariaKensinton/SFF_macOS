@@ -49,7 +49,23 @@ _DEPOT_DEC_KEY_REGEX = re.compile(
 )
 _GENERAL_ADDAPPID_REGEX = re.compile(r"^\s*addappid\s*\(\s*(\d+)", flags=re.MULTILINE)
 _SETMANIFESTID_REGEX = re.compile(
-    r"^\s*setManifestid\s*\(\s*(\d+)\s*,\s*[\"'](\d+)[\"']\s*\)",
+    r"^\s*setManifestid\s*\(\s*(\d+)\s*,\s*[\"'](\d+)[\"']\s*(?:,\s*\d+\s*)?\)",
+    flags=re.MULTILINE,
+)
+_SETMANIFESTID_LINE_REGEX = re.compile(
+    r"^(\s*)setManifestid\s*\(\s*(\d+)\s*,\s*[\"']\d+[\"']\s*(?:,\s*\d+\s*)?\)\s*$",
+    flags=re.IGNORECASE,
+)
+_COMMENTED_SETMANIFESTID_REGEX = re.compile(
+    r"^\s*--\s*setManifestid\s*\(",
+    flags=re.IGNORECASE,
+)
+_KEYED_ADDAPPID_LINE_REGEX = re.compile(
+    r"addappid\s*\(\s*(\d+)\s*,\s*\d\s*,\s*(?:\"|\')\S+(?:\"|\')\s*\)",
+    flags=re.IGNORECASE,
+)
+_ADDTOKEN_REGEX = re.compile(
+    r"^\s*addtoken\s*\(\s*(\d+)\s*,\s*[\"']([^\"']+)[\"']\s*\)",
     flags=re.MULTILINE,
 )
 
@@ -69,7 +85,54 @@ def parse_lua_contents(contents, path):
     depot_pairs = [DepotKeyPair(*x) for x in depot_dec_key]
     depot_pairs.extend([DepotKeyPair(x, "") for x in ids_with_no_key])
     manifest_overrides = dict(_SETMANIFESTID_REGEX.findall(contents))
-    return LuaParsedInfo(path, contents, app_id, depot_pairs, manifest_overrides)
+    token_overrides = dict(_ADDTOKEN_REGEX.findall(contents))
+    return LuaParsedInfo(path, contents, app_id, depot_pairs, manifest_overrides, token_overrides)
+
+
+def write_manifest_pins_to_lua(path: Path, manifest_map: dict) -> int:
+    pins = {
+        str(depot): str(gid)
+        for depot, gid in (manifest_map or {}).items()
+        if str(depot).isdigit() and str(gid).isdigit()
+    }
+    if not pins:
+        return 0
+
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    rewritten: list[str] = []
+    written: set[str] = set()
+
+    for line in lines:
+        if _COMMENTED_SETMANIFESTID_REGEX.match(line):
+            continue
+
+        manifest_line = _SETMANIFESTID_LINE_REGEX.match(line)
+        if manifest_line:
+            indent, depot_id = manifest_line.groups()
+            if depot_id in pins:
+                rewritten.append(f'{indent}setManifestid({depot_id}, "{pins[depot_id]}")')
+                written.add(depot_id)
+            else:
+                rewritten.append(line)
+            continue
+
+        rewritten.append(line)
+        addappid = _KEYED_ADDAPPID_LINE_REGEX.search(line)
+        if addappid:
+            depot_id = addappid.group(1)
+            if depot_id in pins and depot_id not in written:
+                rewritten.append(f'setManifestid({depot_id}, "{pins[depot_id]}")')
+                written.add(depot_id)
+
+    for depot_id in sorted(set(pins) - written, key=int):
+        rewritten.append(f'setManifestid({depot_id}, "{pins[depot_id]}")')
+        written.add(depot_id)
+
+    new_text = "\n".join(rewritten).rstrip() + "\n"
+    if new_text != text:
+        path.write_text(new_text, encoding="utf-8")
+    return len(written)
 
 
 class LuaManager:
