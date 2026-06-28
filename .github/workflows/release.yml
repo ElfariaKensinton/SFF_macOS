@@ -43,7 +43,8 @@ jobs:
           PY
       - name: Verify Google Drive support
         run: |
-          python3 -m pip install google-auth google-auth-oauthlib google-api-python-client
+          python3 -m pip install --upgrade pip
+          python3 -m pip install vdf google-auth google-auth-oauthlib google-api-python-client
           python3 - <<'PY'
           import sff._gc
           from sff.google_drive import is_available
@@ -102,7 +103,7 @@ jobs:
             echo ERROR: Qt6Core.dll missing from _internal — PyInstaller produced a hollow build.
             exit /b 1
           )
-          powershell -NoProfile -Command "$bad = Get-ChildItem -LiteralPath 'dist\SteaMidra_GUI' -Recurse -File | Where-Object { $_.Name -like '*.so*' -or $_.FullName -match 'linux|x86_64-linux-gnu' }; if ($bad) { $bad | Select-Object -First 40 FullName; throw 'Linux files leaked into Windows package' }"
+          powershell -NoProfile -Command "$bad = Get-ChildItem -LiteralPath 'dist\SteaMidra_GUI' -Recurse -File | Where-Object { $_.Name -match '\.so(\..*)?$' -or $_.FullName -match '(?i)(^|[\\/])x86_64-linux-gnu([\\/]|$)' -or $_.FullName -match '(?i)(^|[\\/])linux_x86_64([\\/]|$)' }; if ($bad) { $bad | Select-Object -First 40 FullName; throw 'Linux binary files leaked into Windows package' }"
       - name: Create portable Windows zip
         shell: pwsh
         run: |

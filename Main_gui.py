@@ -211,13 +211,22 @@ def main():
         from sff.i18n import set_language
         set_language(str(lang))
 
+    _pending_file = None
+    for i, arg in enumerate(sys.argv):
+        if arg in ("-f", "--file") and i + 1 < len(sys.argv):
+            _pending_file = sys.argv[i + 1]
+            break
+
     app = QApplication(sys.argv)
     app.setApplicationName("SteaMidra")
     app.setApplicationDisplayName("SteaMidra")
 
     from sff.single_instance import SingleInstanceGuard
     _guard = SingleInstanceGuard()
-    if _guard.try_activate_existing():
+    if _pending_file:
+        if _guard.try_activate_existing(f"FILE:{_pending_file}"):
+            sys.exit(0)
+    elif _guard.try_activate_existing():
         sys.exit(0)
 
     _app_icon = QIcon()
@@ -349,6 +358,12 @@ def main():
         window.setWindowIcon(_app_icon)
     window.show()
 
+    if _pending_file:
+        try:
+            ui.process_lua_full(Path(_pending_file))
+        except Exception:
+            pass
+
     from sff.tray_icon import TrayIcon
     # Parent the tray to the QApplication, not the window. The tray
     # must outlive any single window destroy/create cycle. The window
@@ -424,7 +439,16 @@ def main():
         window.activateWindow()
         window.raise_()
 
-    _guard.start_server(_on_show_from_second_instance)
+    def _on_file_from_second_instance(path_str):
+        try:
+            window.showNormal()
+            window.activateWindow()
+            window.raise_()
+            ui.process_lua_full(Path(path_str))
+        except Exception:
+            pass
+
+    _guard.start_server(_on_show_from_second_instance, on_file=_on_file_from_second_instance)
     app.aboutToQuit.connect(_guard.cleanup)
 
     from sff.uri_handler import UriHandler

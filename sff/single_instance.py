@@ -43,41 +43,48 @@ class SingleInstanceGuard:
     def __init__(self):
         self._server: Optional[QLocalServer] = None
 
-    def try_activate_existing(self) -> bool:
+    def try_activate_existing(self, message: str = "SHOW") -> bool:
         """
         Try to connect to an already-running SteaMidra instance.
-        Sends 'SHOW' and returns True if one was found.
+        Sends *message* and returns True if one was found.
         """
         sock = QLocalSocket()
         sock.connectToServer(_SERVER_NAME)
         if sock.waitForConnected(_CONNECT_TIMEOUT_MS):
-            sock.write(b"SHOW")
+            sock.write(message.encode("utf-8"))
             sock.flush()
             sock.waitForBytesWritten(500)
             sock.disconnectFromServer()
-            logger.info("Existing SteaMidra instance found — forwarding show request")
+            logger.info("Existing SteaMidra instance found — forwarding %s request", message)
             return True
         return False
 
-    def start_server(self, on_show: Callable[[], None]) -> None:
+    def start_server(self, on_show: Callable[[], None], on_file: Optional[Callable[[str], None]] = None) -> None:
         """
         Start the IPC server. Calls on_show() whenever a second instance connects.
+        Calls on_file(path) when the message starts with 'FILE:'.
         Removes any stale server socket left from a previous crash first.
         """
         QLocalServer.removeServer(_SERVER_NAME)
         self._server = QLocalServer()
-        self._server.newConnection.connect(lambda: self._handle_connection(on_show))
+        self._server.newConnection.connect(lambda: self._handle_connection(on_show, on_file))
         if not self._server.listen(_SERVER_NAME):
             logger.debug("SingleInstanceGuard: could not start server — %s", self._server.errorString())
         else:
             logger.debug("SingleInstanceGuard: listening on %s", _SERVER_NAME)
 
-    def _handle_connection(self, on_show: Callable[[], None]) -> None:
+    def _handle_connection(self, on_show: Callable[[], None], on_file: Optional[Callable[[str], None]] = None) -> None:
         conn = self._server.nextPendingConnection()
         if conn is None:
             return
-        conn.readyRead.connect(lambda: on_show())
-        conn.readyRead.connect(conn.deleteLater)
+        def _on_ready():
+            msg = bytes(conn.readAll()).decode("utf-8", errors="replace").strip()
+            if msg.startswith("FILE:") and on_file:
+                on_file(msg[5:])
+            else:
+                on_show()
+            conn.deleteLater()
+        conn.readyRead.connect(_on_ready)
 
     def cleanup(self) -> None:
         if self._server:

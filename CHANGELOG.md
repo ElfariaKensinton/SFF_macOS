@@ -28,6 +28,7 @@
 - Skeleton card CSS had two overlapping definitions with dual animations. Merged.
 - Provider depot key lookups in the Lua generator now load the JSON once per render instead of once per depot.
 - `datetime.utcnow()` calls replaced with`datetime.now(UTC)` in depot history caching.
+- Right-click "Add to SteaMidra" now actually processes the file. The frozen build was ignoring the `-f` argument because `Main_gui.py` never parsed it, so right-clicking a `.lua` or `.zip` opened SteaMidra and did nothing. Now it forwards the file to a running instance via IPC, or processes it fresh on launch. The `SingleInstanceGuard` carries the file path alongside the show request so the running window acts on it.
 
 ## 6.3.3
 
