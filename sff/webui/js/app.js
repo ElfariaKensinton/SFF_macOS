@@ -21,6 +21,7 @@ window.App = (function() {
         _initSidebar();
         _initLogPanel();
         _initEacGuideButton();
+        _initHintToggle();
         _initGlobalListeners();
         if (window.DlcCheck) DlcCheck.init();
 
@@ -281,6 +282,15 @@ window.App = (function() {
             _resetEacPages();
         });
         _wireEacTabs();
+    }
+
+    function _initHintToggle() {
+        var banner = document.getElementById('home-hint-banner');
+        var btn = document.getElementById('home-hint-toggle');
+        if (!banner || !btn) return;
+        btn.addEventListener('click', function() {
+            banner.classList.toggle('collapsed');
+        });
     }
 
     function _resetEacPages() {

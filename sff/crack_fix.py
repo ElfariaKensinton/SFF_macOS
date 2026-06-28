@@ -78,7 +78,13 @@ def apply_crack_fix(game_name: str, game_folder) -> bool:
 
     def _fmt(g: dict) -> str:
         summary = _badge_summary(g)
-        return f"{g['name']}  [{summary}]" if summary else g["name"]
+        buildid = str(g.get("buildid") or "")
+        parts = [g["name"]]
+        if buildid:
+            parts.append(f"[Build {buildid}]")
+        if summary:
+            parts.append(f"[{summary}]")
+        return "  ".join(parts)
 
     if not matches:
         print(Fore.YELLOW + f"No match for '{game_name}'. Select manually." + Style.RESET_ALL)

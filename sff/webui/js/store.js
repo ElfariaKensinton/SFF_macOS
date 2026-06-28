@@ -93,6 +93,17 @@ window.Store = (function() {
             });
         }
 
+        var disconnectHubcapBtn = document.getElementById('store-disconnect-hubcap');
+        if (disconnectHubcapBtn) {
+            disconnectHubcapBtn.addEventListener('click', function() {
+                Bridge.call('store_disconnect');
+                _apiKeyConnected = false;
+                _showConnectBanner();
+                Components.showToast('info', 'Hubcap disconnected — using Steam fallback search.');
+                _fetchGames();
+            });
+        }
+
         var genreChips = document.querySelectorAll('.genre-chip');
         genreChips.forEach(function(chip) {
             chip.addEventListener('click', function() {
@@ -148,6 +159,8 @@ window.Store = (function() {
                 _updatePagination();
                 if (data.has_hubcap || data.has_fallback_data) {
                     _hideConnectBanner();
+                    var discBtn = document.getElementById('store-disconnect-hubcap');
+                    if (discBtn) discBtn.classList.remove('hidden');
                 } else {
                     _showConnectBanner();
                     var msgEl = document.getElementById('store-banner-msg');

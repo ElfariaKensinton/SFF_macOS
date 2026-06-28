@@ -1,5 +1,44 @@
 # Changelog
 
+## 6.3.4
+
+### Home page
+
+- The yellow hint banner on the home page now has a collapsible arrow button. Tuck the SteamStub / EAC / Content Still Encrypted wall of text away and bring it back with one click. Defaults to expanded.
+- DLC Unlockers card moved to the bottom with Quick Tools. DLC Check is the primary DLC tool now, the unlocker stays available when you need CreamAPI or SmokeAPI.
+- Let Updates renamed to Auto Update on the button.
+
+### Crack Files
+
+- Build ID from crackfiles.json shown next to each game name when picking a fix so you can match it against your installed version.
+
+### Bug fixes
+
+- Bulk import cancel now hides the progress bar when you cancel. It used to linger on screen.
+- The GMRC HTTPS mirror cascade had a name mismatch that broke the fallback decrypt step. Fixed.
+- `download_game_fastest` was referencing an undefined variable on success. Cleaned up.
+- Bridge call queuing lost arguments when the bridge had not loaded yet. Queued calls now replay with the correct method and args.
+- GDrive status check in Cloud Saves always read as disconnected. Now shows the real state.
+- Provider depot key cache was never cleared after a refresh, making the update useless until restart. Clears on every provider update now.
+- LumaCore `add_ids` was a silent no-op. Now raises NotImplementedError so callers can log it.
+- The `os.access()` permission check in DLC unlocker validation never actually checked the result. Fixed.
+- Update checker was collecting depot tokens but dropping them at the return boundary. Now returned alongside games.
+- Settings file and libraryfolders.vdf writes now use atomic temp-file-then-rename. Crashing during a save no longer corrupts settings or Steam's library list.
+- Store tab now guards against double-clicking Search, which was spawning duplicate threads.
+- Skeleton card CSS had two overlapping definitions with dual animations. Merged.
+- Provider depot key lookups in the Lua generator now load the JSON once per render instead of once per depot.
+- `datetime.utcnow()` calls replaced with`datetime.now(UTC)` in depot history caching.
+
+## 6.3.3
+
+### Linux
+
+- Fixed a Linux crash where the GUI tried to import a class that did not exist in steam_path.py. norduk reported it, the finder class now wraps the existing steam path probe so Ubuntu, Arch, CachyOS, and Flatpak installs launch again.
+
+### Store / search
+
+- A Disconnect Hubcap button lands in the web Store tab next to the NSFW toggle. Click it to drop the Hubcap API connection and fall back to bare Steam search without reloading.
+
 ## 6.3.2
 
 ### Provider / Lua

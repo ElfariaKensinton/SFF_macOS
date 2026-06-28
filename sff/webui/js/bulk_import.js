@@ -190,6 +190,10 @@
 
     function _onTaskFinished(payload) {
         if (!payload || payload.task !== 'bulk_import') return;
+        // Hide aggregate bar on cancel/failure
+        if (!payload.success) {
+            _resetUI();
+        }
         // Use the bridge-side summary as the source of truth for the
         // final render; replace any partial UI rows the per-file
         // progress events might have produced.

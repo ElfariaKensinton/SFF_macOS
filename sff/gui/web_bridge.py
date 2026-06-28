@@ -3721,6 +3721,20 @@ class WebBridge(QObject):
         set_setting(Settings.HUBCAP_KEY, api_key)
         self.task_finished.emit(json.dumps({"task": "api_key_connected"}))
 
+    @pyqtSlot()
+    def store_disconnect(self):
+        """Disconnect Hubcap store — clear key and fall back to Steam search."""
+        self._store_client = None
+        self._api_key = None
+        self._hubcap_unavailable = True
+        try:
+            from sff.storage.settings import clear_setting
+            from sff.structs import Settings
+            clear_setting(Settings.HUBCAP_KEY)
+        except Exception:
+            pass
+        self.task_finished.emit(json.dumps({"task": "store_disconnected"}))
+
     @pyqtSlot(str)
     def save_ryuu_key(self, key):
         """Save Ryuu API key to settings."""

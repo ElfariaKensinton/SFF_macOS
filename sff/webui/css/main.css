@@ -358,6 +358,34 @@ a:hover { text-decoration: underline; }
     color: #fff;
 }
 
+.hint-toggle-btn {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid rgba(240, 192, 64, 0.3);
+    border-radius: 4px;
+    background: transparent;
+    color: #f0c040;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    transition: transform 0.2s;
+    margin-top: 2px;
+}
+
+.hint-toggle-btn:hover {
+    background: rgba(240, 192, 64, 0.15);
+}
+
+.hint-banner.collapsed .hint-text {
+    display: none;
+}
+
+.hint-banner.collapsed .hint-toggle-btn {
+    transform: rotate(180deg);
+}
+
 /* ── EAC fix modal tabs ─────────────────────────────── */
 
 .eac-tab {
