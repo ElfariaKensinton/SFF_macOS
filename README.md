@@ -183,7 +183,9 @@ SteaMidra’s GPL license applies to SteaMidra’s own source code only. It does
 
 **rclone** – Cloud Saves uses **rclone** for transfers to remote storage providers. License in `third_party_licenses/rclone.LICENSE`.
 
-**online-fix.me** – The multiplayer fix feature can download fixes from online-fix.me when the user provides their own account. SteaMidra is not affiliated with online-fix.me, and online-fix.me files remain owned/controlled by their respective authors/maintainers.
+**online-fix.me** – The Multiplayer Fix feature searches online-fix.me for the selected game and opens the result in your browser. No credentials needed. SteaMidra is not affiliated with online-fix.me; files remain owned by their respective maintainers.
+
+**Ludusavi** — The cloud save custom-path feature uses the **Ludusavi manifest** game-save-location database maintained by **mtkennerly** (<https://github.com/mtkennerly/ludusavi-manifest>). Bundled as `sff/data/manifest.yaml`.
 
 **GBE Token Generator** – Goldberg Emulator configuration generation based on work by **Detanup01** (`gbe_fork`), **NickAntaris**, and **Oureveryday** (`generate_game_info`).
 

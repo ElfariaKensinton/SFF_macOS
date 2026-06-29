@@ -263,6 +263,7 @@ window.App = (function() {
 
         // Trigger page-specific init if needed
         switch(pageId) {
+            case 'home': _populateGameDropdown(); break;
             case 'store': Store.onPageEnter(); break;
             case 'library': Library.onPageEnter(); break;
             case 'downloads': Downloads.onPageEnter(); break;

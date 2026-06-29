@@ -1,5 +1,22 @@
 # Changelog
 
+## 6.3.6
+
+### Bug fixes
+
+- Remove DRM button from the web UI no longer crashes SteaMidra. It was running on a background thread and trying to create QThreads from there, which Qt6 rejects. Now routed to the main thread like SteamAutoCrack.
+- The `add_ids` warning is gone. LumaCoreManager writes minimal lua stubs for each app ID instead of throwing NotImplementedError on every download. No more crash during local imports either.
+- Home tab game dropdown refreshes when you navigate back to it. It used to only refresh on a 10-minute timer, so newly installed games wouldn't appear until you restarted or waited.
+- Hubcap key decryption failures log at startup so you can tell when the encryption key changed and your stored API key became unreadable.
+
+### Cloud saves
+
+- Custom save paths for games that save outside Steam userdata are now backed up. Uses the Ludusavi manifest database covering 22k+ games. For example, Lies of P saves under the game folder at `LiesofP/Saved/SaveGames/` are included alongside the Steam remote data.
+
+### Settings
+
+- Removed online-fix.me username and password fields from Settings. The feature doesn't auto-download anymore so credentials are dead weight.
+
 ## 6.3.5
 
 ### Bug fixes

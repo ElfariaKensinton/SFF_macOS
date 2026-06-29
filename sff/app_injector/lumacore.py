@@ -57,7 +57,23 @@ class LumaCoreManager(AppInjectionManager):
     def add_ids(
         self, data: Union[int, list, LuaParsedInfo], skip_check: bool = False
     ):
-        raise NotImplementedError("LumaCore add_ids is not yet implemented")
+        folder = self.stplug_in
+        folder.mkdir(parents=True, exist_ok=True)
+        if isinstance(data, int):
+            data = [data]
+        elif isinstance(data, LuaParsedInfo):
+            data = [int(data.app_id)]
+        changes = 0
+        for app_id in data:
+            lua_path = folder / f"{app_id}.lua"
+            if lua_path.exists():
+                continue
+            lua_path.write_text(f"addappid({app_id})\n", encoding="utf-8")
+            changes += 1
+        if changes:
+            logger.debug("LumaCore add_ids: wrote %d lua stub(s)", changes)
+        else:
+            logger.debug("LumaCore add_ids: all ids already present")
 
     def dlc_check(self, provider, base_id, auto_add_depot_dlcs: bool = False):
         from sff.steam_store import get_dlc_list_from_store, get_dlc_names_from_store

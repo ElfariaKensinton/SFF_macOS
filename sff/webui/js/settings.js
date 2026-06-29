@@ -486,13 +486,11 @@ window.Settings = (function() {
                 _setInputVal('setting-steam-path', settings.steam_path);
                 _setInputVal('setting-steam-user', settings.steam_user);
                 _setInputVal('setting-steam32-id', settings.steam32_id);
-                _setInputVal('setting-onlinefix-user', settings.online_fix_user);
                 _setInputVal('setting-dlc-cache-dir', settings.dlc_unlocker_cache);
                 // Password fields — only set placeholder text for encrypted values
                 _setPasswordField('setting-hubcap-key', settings.morrenus_key);
                 _setPasswordField('setting-ryuu-key', settings.ryuu_key);
                 _setPasswordField('setting-steam-pass', settings.steam_pass);
-                _setPasswordField('setting-onlinefix-pass', settings.online_fix_pass);
                 _setPasswordField('setting-steam-web-api-key', settings.steam_web_api_key);
                 _setPasswordField('setting-manifesthub-key', settings.manifesthub_api_key);
                 // Selects

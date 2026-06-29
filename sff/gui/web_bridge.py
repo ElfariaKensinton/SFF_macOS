@@ -2050,6 +2050,20 @@ class WebBridge(QObject):
 
             return
 
+        # Steamless / Remove DRM must also run on the main thread.
+        # _run_steamless_for_acf calls _start_worker internally which
+        # creates QThreads — doing that from _run_async's background
+        # thread is unsafe and crashes Qt6.
+        if action == "steamstub":
+            acf = self._resolve_acf(app_id)
+            if acf is None:
+                self._emit_task_result("steamstub", False, "No game found for the selected App ID")
+                return
+            parent = self.parent()
+            if parent and hasattr(parent, "_run_steamless_for_acf"):
+                parent._run_steamless_for_acf(acf)
+            return
+
         def _do():
             from sff.structs import MainMenu, MainReturnCode
 
@@ -2112,19 +2126,6 @@ class WebBridge(QObject):
             acf = self._resolve_acf(app_id)
             if acf is None:
                 return f"No game found for App ID: {app_id}"
-
-            # Steamless / Remove DRM: route through the same Qt-side helper
-            # the classic Library button uses, so the user sees a single file
-            # dialog rooted at the game folder and gets the (success, message)
-            # tuple back. Avoids the "explorer window + drag-drop dialog" mess
-            # the menu fallback path used to produce.
-            if action == "steamstub":
-                parent = self.parent()
-                if parent and hasattr(parent, "_run_steamless_for_acf"):
-                    parent._run_steamless_for_acf(acf)
-                    return "__handled_no_toast__"
-                # Fall through to default dispatch if the helper is missing
-                # (e.g. running headless / non-GUI tests).
 
             try:
                 result = self._ui.run_game_action_with_selection(menu_choice, acf)
@@ -3400,6 +3401,12 @@ class WebBridge(QObject):
                 # Qt-side double-prompt for this single delegate call.
                 setattr(parent, '_skip_next_achievement_warn', True)
                 parent._run_steam_auto_with_acf(acf)
+            return
+
+        if action == "steamstub":
+            parent = self.parent()
+            if parent and hasattr(parent, "_run_steamless_for_acf"):
+                parent._run_steamless_for_acf(acf)
             return
 
         def _do():

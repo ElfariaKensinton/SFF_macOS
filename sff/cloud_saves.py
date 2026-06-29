@@ -49,6 +49,22 @@ def _normalize_path(path_val) -> Path | None:
         return None
 
 
+def _find_game_install_dir(steam_path, app_id):
+    try:
+        from sff.storage.vdf import get_steam_libs, vdf_load
+        libs = get_steam_libs(Path(steam_path))
+        for lib in libs:
+            acf = lib / "steamapps" / f"appmanifest_{app_id}.acf"
+            if acf.is_file():
+                data = vdf_load(acf)
+                installdir = data.get("AppState", {}).get("installdir", "")
+                if installdir:
+                    return str(lib / "steamapps" / "common" / installdir)
+    except Exception:
+        pass
+    return None
+
+
 # module-level cache for all_games.txt — parsed once per session
 _ALL_GAMES_CACHE = None
 
@@ -537,6 +553,33 @@ class CloudSaves:
                     file_count += 1
                     total_size += f.stat().st_size
             log(f"✓ Backed up {file_count} file(s) ({self._format_size(total_size)}) → {dest}")
+            # Also back up any custom save paths from the manifest (Lies of P, etc.)
+            _backed_custom = 0
+            try:
+                from sff.cloud_save_paths import get_save_paths
+                base = _find_game_install_dir(steam_path, app_id)
+                if base:
+                    for save_path in get_save_paths(app_id, base):
+                        sp = Path(save_path)
+                        if not sp.exists():
+                            continue
+                        custom_dest = dest.parent / "custom_saves" / sp.name
+                        if sp.is_dir():
+                            for cf in sp.rglob("*"):
+                                if cf.is_file():
+                                    rel = cf.relative_to(sp)
+                                    tgt = custom_dest / rel
+                                    tgt.parent.mkdir(parents=True, exist_ok=True)
+                                    shutil.copy2(cf, tgt)
+                                    _backed_custom += 1
+                        elif sp.is_file():
+                            custom_dest.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(sp, custom_dest)
+                            _backed_custom += 1
+                if _backed_custom:
+                    log(f"✓ Backed up {_backed_custom} custom save file(s)")
+            except Exception:
+                logger.debug("Custom save path backup skipped", exc_info=True)
             return str(dest.parent)
         except Exception as e:
             log(f"Backup failed: {e}")
