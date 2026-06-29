@@ -1390,12 +1390,19 @@ start YourGame-Shipping.exe</pre>
                 </div>
                 <div style="margin-top:8px; padding-left:4px;">
                     <div style="font-size:11px; opacity:0.7; margin-bottom:4px;">Depot OS:</div>
-                    <select id="dl-target-os" style="width:100%; font-size:12px;">
+                    <select id="dl-target-os" style="display:none">
                         <option value="">Auto</option>
                         <option value="windows">Windows</option>
                         <option value="linux">Linux</option>
                         <option value="all">All depots</option>
                     </select>
+                    <div class="custom-select" id="dl-target-os-ui">
+                        <div class="custom-select-display">
+                            <span class="custom-select-text">Auto</span>
+                            <span class="custom-select-arrow">&#9662;</span>
+                        </div>
+                        <div class="custom-select-dropdown hidden"></div>
+                    </div>
                 </div>
                 <div style="margin-top:8px; padding-left:4px;">
                     <div style="font-size:11px; opacity:0.7; margin-bottom:4px;">DDMod download location:</div>
@@ -1636,12 +1643,19 @@ start YourGame-Shipping.exe</pre>
                 </div>
                 <div style="margin-bottom:10px;">
                     <div style="font-size:11px; opacity:0.7; margin-bottom:4px;">Depot OS:</div>
-                    <select id="ddmod-home-target-os" style="width:100%; font-size:13px;">
+                    <select id="ddmod-home-target-os" style="display:none">
                         <option value="">Auto</option>
                         <option value="windows">Windows</option>
                         <option value="linux">Linux</option>
                         <option value="all">All depots</option>
                     </select>
+                    <div class="custom-select" id="ddmod-home-target-os-ui">
+                        <div class="custom-select-display">
+                            <span class="custom-select-text">Auto</span>
+                            <span class="custom-select-arrow">&#9662;</span>
+                        </div>
+                        <div class="custom-select-dropdown hidden"></div>
+                    </div>
                 </div>
                 <div style="margin-bottom:10px;">
                     <div style="font-size:11px; opacity:0.7; margin-bottom:4px;">Download location:</div>

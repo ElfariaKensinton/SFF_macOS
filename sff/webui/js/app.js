@@ -17,6 +17,9 @@ window.App = (function() {
         new Components.CustomSelect('fixgame-game-select', 'fixgame-game-select-ui');
         new Components.CustomSelect('store-sort', 'store-sort-ui');
         new Components.CustomSelect('setting-language', 'setting-language-ui');
+        new Components.CustomSelect('dl-target-os', 'dl-target-os-ui');
+        new Components.CustomSelect('ddmod-home-target-os', 'ddmod-home-target-os-ui');
+        new Components.CustomSelect('library-drive-select', 'library-drive-select-ui');
         Tooltips.init();
         _initSidebar();
         _initLogPanel();

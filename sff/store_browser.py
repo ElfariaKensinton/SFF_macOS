@@ -169,7 +169,7 @@ class StoreApiClient:
             resp = self._get_client().get("/user/stats")
             return resp.status_code == 200
         except Exception as e:
-            logger.warning("API key test failed: %s", e)
+            logger.warning("API key test failed: %r", e)
             return False
 
     # --- library browsing ---
@@ -234,11 +234,11 @@ class StoreApiClient:
         except Exception as e:
             err_str = str(e)
             if isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
-                logger.debug("hubcap library unreachable (network): %s", e)
+                logger.debug("hubcap library unreachable (network): %r", e)
             elif "Name or service not known" in err_str or "getaddrinfo" in err_str.lower():
-                logger.debug("hubcap library dns resolution failed: %s", e)
+                logger.debug("hubcap library dns resolution failed: %r", e)
             else:
-                logger.warning("Failed to get library: %s", e)
+                logger.warning("Failed to get library: %r", e)
             return LibraryPage()
 
     def search_library(
@@ -286,7 +286,7 @@ class StoreApiClient:
             logger.debug("hubcap search status err %s: %s", e.response.status_code, e)
             return []
         except Exception as e:
-            logger.error("Search failed: %s", e)
+            logger.error("Search failed: %r", e)
             return []
 
     def get_all_games(self):
@@ -303,7 +303,7 @@ class StoreApiClient:
                 for item in items
             ]
         except Exception as e:
-            logger.error("Failed to get all games: %s", e)
+            logger.error("Failed to get all games: %r", e)
             return []
 
     # --- game status ---
@@ -327,7 +327,7 @@ class StoreApiClient:
             self._status_cache[app_id] = status
             return status
         except Exception as e:
-            logger.warning("Failed to get status for %d: %s", app_id, e)
+            logger.warning("Failed to get status for %d: %r", app_id, e)
             return GameStatus(app_id=app_id, status="error", message=str(e))
 
     # --- downloads ---
@@ -338,7 +338,7 @@ class StoreApiClient:
             resp.raise_for_status()
             return resp.content
         except Exception as e:
-            logger.error("Failed to download manifest for %d: %s", app_id, e)
+            logger.error("Failed to download manifest for %d: %r", app_id, e)
             return None
 
     def get_lua_content(self, app_id):
@@ -347,7 +347,7 @@ class StoreApiClient:
             resp.raise_for_status()
             return resp.text
         except Exception as e:
-            logger.error("Failed to get lua for %d: %s", app_id, e)
+            logger.error("Failed to get lua for %d: %r", app_id, e)
             return None
 
     def get_workshop_manifest(self, workshop_id):
@@ -356,7 +356,7 @@ class StoreApiClient:
             resp.raise_for_status()
             return resp.content
         except Exception as e:
-            logger.error("Failed to get workshop manifest for %d: %s", workshop_id, e)
+            logger.error("Failed to get workshop manifest for %d: %r", workshop_id, e)
             return None
 
     # --- depot helpers ---
@@ -384,7 +384,7 @@ class StoreApiClient:
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
-            logger.error("Failed to get user stats: %s", e)
+            logger.error("Failed to get user stats: %r", e)
             return None
 
 

@@ -148,6 +148,7 @@ class WebBridge(QObject):
         self._api_key = None
         self._store_client = None
         self._hubcap_unavailable = False
+        self._get_store_client()
         self._hubcap_check_timer = QTimer(self)
         self._hubcap_check_timer.setInterval(15_000)
         self._hubcap_check_timer.timeout.connect(self._check_hubcap_key)
@@ -3711,11 +3712,16 @@ class WebBridge(QObject):
     @pyqtSlot(str)
     def connect_store(self, api_key):
         """Validates and stores Hubcap API key."""
+        if not api_key or not api_key.strip():
+            self._emit_task_result("store_connect", False, "API key is empty")
+            return
         from sff.store_browser import StoreApiClient
+        if not StoreApiClient.validate_api_key(api_key):
+            self._emit_task_result("store_connect", False, "Invalid API key — must start with smm_ and be at least 10 characters")
+            return
         self._api_key = api_key
         self._store_client = StoreApiClient(api_key)
         self._hubcap_unavailable = False
-        # Save to settings
         from sff.storage.settings import set_setting
         from sff.structs import Settings
         set_setting(Settings.HUBCAP_KEY, api_key)

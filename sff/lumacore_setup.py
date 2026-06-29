@@ -271,17 +271,20 @@ def _fetch_release_asset(variant: str = "release") -> Optional[tuple[str, str]]:
     try:
         resp = httpx.get(
             _LUMACORE_RELEASE_API,
-            headers={"Accept": "application/vnd.github+json"},
+            headers={"Accept": "application/vnd.github+json", "Cache-Control": "no-cache"},
             timeout=10,
             follow_redirects=True,
         )
         resp.raise_for_status()
-        assets = resp.json().get("assets", [])
+        release_data = resp.json()
+        assets = release_data.get("assets", [])
+        tag_name = release_data.get("tag_name", "?")
 
         primary_names = (f"{variant_lower}.zip", f"{variant_lower}.rar")
         for priority_name in primary_names:
             for asset in assets:
                 if asset.get("name", "").lower() == priority_name:
+                    logger.debug("LumaCore release asset: %s (tag=%s)", asset["name"], tag_name)
                     return asset["browser_download_url"], asset["name"]
 
         # Loose match: any zip whose filename starts with the variant
@@ -289,13 +292,17 @@ def _fetch_release_asset(variant: str = "release") -> Optional[tuple[str, str]]:
         for asset in assets:
             name_lower = asset.get("name", "").lower()
             if name_lower.endswith(".zip") and name_lower.startswith(variant_lower):
+                logger.debug("LumaCore release asset (loose match): %s (tag=%s)", asset["name"], tag_name)
                 return asset["browser_download_url"], asset["name"]
 
-        # Final fallback: any zip. Only triggers when the maintainer
-        # forgot to upload the requested variant.
+        # Final fallback: any zip that is not a source-code tarball.
+        # GitHub auto-generates "Source code (zip)" for every release
+        # tag and picking that would give us headers + .cpp but no DLLs.
         for asset in assets:
-            if asset.get("name", "").lower().endswith(".zip"):
-                return asset["browser_download_url"], asset["name"]
+            name = asset.get("name", "")
+            if name.lower().endswith(".zip") and "source code" not in name.lower():
+                logger.debug("LumaCore release asset (fallback): %s (tag=%s)", name, tag_name)
+                return asset["browser_download_url"], name
 
     except Exception as exc:
         logger.warning("GitHub release fetch failed: %s", exc)
@@ -319,7 +326,7 @@ def _extract_zip(archive: Path, steam_path: Path,
             for dll in _LC_DLLS:
                 member = _dll_name_match(names, dll)
                 if member is None:
-                    logger.error("DLL not found in ZIP: %s", dll)
+                    logger.error("DLL not found in ZIP: %s (names=%s)", dll, names)
                     return False
                 (steam_path / dll).write_bytes(zf.read(member))
                 _progress(f"Installed {dll}", callback)

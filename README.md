@@ -11,7 +11,7 @@ SteaMidra helps you set up games to work with Steam using Lua scripts, manifests
 
 Need help? Chat with us on our Discord server: https://discord.gg/V8aZqnbB84
 
-**SteaMidra setup tutorial:** [Full walkthrough by @yensnc](https://youtu.be/PQ1FqK8NJ44)
+**SteaMidra setup tutorial:** [Full walkthrough by @yensnc](https://www.reddit.com/user/YensNC/comments/1ttw2mm/tutorial_guide_on_installing_steamidra/?utm_source=share&utm_medium=web3x&utm_name=web3xcss&utm_term=1)
 
 **API key tutorial:** [Step-by-step screenshots by @novoagain](https://imgur.com/a/ubLeqer)
 

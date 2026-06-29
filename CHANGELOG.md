@@ -1,5 +1,35 @@
 # Changelog
 
+## 6.3.5
+
+### Bug fixes
+
+- Right-click "Add to SteaMidra" actually works now. The frozen build was ignoring the `-f` argument, so right-clicking a `.lua`/`.zip` opened the window and did nothing. Now forwards the file to a running instance via IPC and processes it immediately on fresh launch. Lucas559-noob reported it.
+- Hubcap API key no longer silently vanishes between restarts. The settings decryption layer now logs a clear warning when the encryption key has changed, and the web bridge preloads the key at startup instead of waiting for the first search to fail.
+- Hubcap key saving was accepting any garbage string including entire log dumps. connect_store now validates the key format before writing it to settings.
+- The Depot OS dropdown in the download modals had a white-rectangle rendering glitch on dark themes. Both selects now use the app's custom dropdown system instead of native Chromium popups, and the library drive picker is wired up too.
+- Hubcap game names with em dashes or other Unicode characters no longer crash the store search with an ASCII encoding error. All exception loggers in store_browser use repr formatting now.
+- Bulk import cancel button now reliably hides the progress bar.
+
+### LumaCore setup
+
+- LC Auto Setup was sometimes picking a stale release or the `Source code (zip)` tarball instead of the actual DLL archive. GitHub API calls now bust the CDN cache and the fallback skips source archives.
+- When a DLL is missing from the downloaded archive, the zip file listing is logged alongside the error so the problem is immediately visible.
+
+### Home page
+
+- The yellow hint banner collapsed by default, saving vertical space for regular users. Click the arrow to expand.
+- DLC Unlockers card moved to the bottom, next to Quick Tools.
+- Let Updates renamed to Auto Update.
+
+### Store / search
+
+- A Disconnect Hubcap button sits next to the NSFW toggle. Drop the Hubcap API connection and fall back to bare Steam search without reloading.
+
+### Crack Files
+
+- Build ID from crackfiles.json shown next to game names when picking a fix.
+
 ## 6.3.4
 
 ### Home page

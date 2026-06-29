@@ -79,7 +79,13 @@ def load_all_settings():
 
 def get_setting(key):
     value = load_all_settings().get(key.key_name)
-    return keyring_decrypt(value) if (value and key.hidden) else value
+    if value and key.hidden:
+        try:
+            return keyring_decrypt(value)
+        except Exception:
+            logger.warning("Failed to decrypt hidden setting %s — encryption key may have changed", key.clean_name)
+            return None
+    return value
 
 
 def set_setting(key, value):
