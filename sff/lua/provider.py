@@ -40,6 +40,7 @@ PROVIDER_URLS = [
 SUBMIT_URL = "https://stea-provider-api.steamidra.workers.dev/submit"
 ALLOWED_FIELDS = {"id", "key", "name", "kind", "parent_appid", "parent_name"}
 ALLOWED_KINDS = {"game", "software", "dlc", "depot", "dlc_depot", "unknown"}
+ROOT_KINDS = {"game", "software"}
 MAX_ITEMS_PER_REQUEST = 1000
 MAX_BODY_BYTES = 200_000
 
@@ -106,6 +107,14 @@ def _clean_text(value) -> str:
     return text[:160]
 
 
+def _strip_parent_for_root(item: dict) -> dict:
+    kind = str(item.get("kind") or "unknown").strip().lower()
+    if kind in ROOT_KINDS:
+        item.pop("parent_appid", None)
+        item.pop("parent_name", None)
+    return item
+
+
 def normalize_entry(item_id: str, value) -> dict | None:
     if not is_valid_id(str(item_id)):
         return None
@@ -126,6 +135,9 @@ def normalize_entry(item_id: str, value) -> dict | None:
     }
     if out["parent_appid"] and not is_valid_id(out["parent_appid"]):
         out["parent_appid"] = ""
+    if out["kind"] in ROOT_KINDS:
+        out["parent_appid"] = ""
+        out["parent_name"] = ""
     return out
 
 
@@ -138,10 +150,11 @@ def validate_provider_data(data) -> dict[str, dict]:
         if entry is None:
             continue
         out = {k: entry[k] for k in ("key", "name", "kind")}
-        if entry.get("parent_appid"):
-            out["parent_appid"] = entry["parent_appid"]
-        if entry.get("parent_name"):
-            out["parent_name"] = entry["parent_name"]
+        if entry.get("kind") not in ROOT_KINDS:
+            if entry.get("parent_appid"):
+                out["parent_appid"] = entry["parent_appid"]
+            if entry.get("parent_name"):
+                out["parent_name"] = entry["parent_name"]
         cleaned[entry["id"]] = out
     return dict(sorted(cleaned.items(), key=lambda kv: int(kv[0])))
 
@@ -254,13 +267,15 @@ def update_cache_from_lua_bytes(lua_bytes: bytes, app_id: str = "", app_name: st
         existing = data.get(depot_id) or {}
         if existing.get("key"):
             continue
-        data[depot_id] = {
+        is_root = str(app_id or "") == str(depot_id) and bool(app_name)
+        entry = {
             "key": key.lower(),
-            "name": existing.get("name") or f"Depot {depot_id}",
-            "kind": existing.get("kind") or "depot",
-            "parent_appid": existing.get("parent_appid") or str(app_id or ""),
-            "parent_name": existing.get("parent_name") or _clean_text(app_name),
+            "name": existing.get("name") or (_clean_text(app_name) if is_root else f"Depot {depot_id}"),
+            "kind": existing.get("kind") or ("game" if is_root else "depot"),
+            "parent_appid": "" if is_root else (existing.get("parent_appid") or str(app_id or "")),
+            "parent_name": "" if is_root else (existing.get("parent_name") or _clean_text(app_name)),
         }
+        data[depot_id] = _strip_parent_for_root(entry)
         added += 1
     if added:
         atomic_save_provider(data)
@@ -314,6 +329,9 @@ def collect_submit_candidates(steam_path: Path | None = None) -> dict:
         item["kind"] = str(item.get("kind") or "unknown").strip().lower()
         if item["kind"] not in ALLOWED_KINDS:
             item["kind"] = "unknown"
+        if item["kind"] in ROOT_KINDS:
+            item.pop("parent_appid", None)
+            item.pop("parent_name", None)
         if not is_valid_id(item["id"]) or not is_valid_key(item["key"]):
             invalid += 1
             return
@@ -355,13 +373,14 @@ def collect_submit_candidates(steam_path: Path | None = None) -> dict:
             if not keyed:
                 continue
             depot_id, key, comment = keyed.groups()
+            is_root_app = bool(parent_appid) and str(depot_id) == str(parent_appid)
             add({
                 "id": depot_id,
                 "key": key,
-                "name": _clean_text(comment) or f"Depot {depot_id}",
-                "kind": "depot",
-                "parent_appid": parent_appid,
-                "parent_name": parent_name,
+                "name": (_clean_text(comment) or parent_name or f"App {depot_id}") if is_root_app else (_clean_text(comment) or f"Depot {depot_id}"),
+                "kind": "game" if is_root_app else "depot",
+                "parent_appid": "" if is_root_app else parent_appid,
+                "parent_name": "" if is_root_app else parent_name,
             })
 
     saved_lua_root = Path.cwd() / "saved_lua"
@@ -423,6 +442,33 @@ def enrich_submit_items_with_steam_appinfo(items: list[dict], max_parents: int =
             all_parent_ids.append(parent)
     parent_ids = all_parent_ids[:max_parents]
 
+    # Resolve parent_appid for orphan depots from the provider database.
+    # Config.vdf keys and lua files without a plain addappid line carry
+    # no parent info — but the bundled provider knows which app most
+    # shared depots belong to (e.g. depot 228988 → app 228980 for
+    # Steamworks Common Redistributables).
+    provider_db = load_provider()
+    for item in items:
+        if item.get("kind") in ROOT_KINDS:
+            item.pop("parent_appid", None)
+            item.pop("parent_name", None)
+            continue
+        if not item.get("parent_appid"):
+            dep_entry = provider_db.get(item["id"])
+            if isinstance(dep_entry, dict):
+                if dep_entry.get("kind") in ROOT_KINDS:
+                    item["kind"] = dep_entry.get("kind")
+                    item.pop("parent_appid", None)
+                    item.pop("parent_name", None)
+                    continue
+                if dep_entry.get("parent_appid"):
+                    parent = str(dep_entry["parent_appid"]).strip()
+                    if parent not in seen and is_valid_id(parent):
+                        seen.add(parent)
+                        all_parent_ids.append(parent)
+                    item["parent_appid"] = parent
+    parent_ids = all_parent_ids[:max_parents]
+
     stats = {
         "enabled": True,
         "parents_checked": 0,
@@ -472,10 +518,14 @@ def enrich_submit_items_with_steam_appinfo(items: list[dict], max_parents: int =
             if parent_name and not item.get("parent_name"):
                 item["parent_name"] = parent_name
                 changed = True
-            target_kind = "dlc_depot" if str(depot_data.get("dlcappid") or "").strip().isdigit() else "depot"
-            if item.get("kind") in ("", "unknown", "depot") and item.get("kind") != target_kind:
-                item["kind"] = target_kind
-                changed = True
+            if str(depot_id) == str(parent) and item.get("kind") in ("game", "software"):
+                item.pop("parent_appid", None)
+                item.pop("parent_name", None)
+            else:
+                target_kind = "dlc_depot" if str(depot_data.get("dlcappid") or "").strip().isdigit() else "depot"
+                if item.get("kind") in ("", "unknown", "depot") and item.get("kind") != target_kind:
+                    item["kind"] = target_kind
+                    changed = True
             if changed:
                 stats["items_enriched"] += 1
     return stats
@@ -485,6 +535,7 @@ def chunk_submit_items(items: list[dict]) -> list[list[dict]]:
     chunks: list[list[dict]] = []
     cur: list[dict] = []
     for item in items:
+        item = _strip_parent_for_root(dict(item))
         clean = {k: v for k, v in item.items() if k not in ("parent_appid", "parent_name") or v}
         probe = cur + [clean]
         body = {"tool_version": VERSION, "type": "tool_keys", "items": probe}

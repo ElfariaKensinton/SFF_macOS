@@ -20,6 +20,13 @@ _SKIP_NAMES = {
     "letupdate_override.lua",
 }
 
+_REDIST_DEPOTS: frozenset[int] = frozenset({
+    228500, 228980, 228981, 228982, 228983, 228984, 228985, 228986,
+    228987, 228988, 228989, 228990, 229000, 229001, 229002, 229003,
+    229004, 229005, 229006, 229007, 229010, 229011, 229012, 229020,
+    229030, 229031, 229032, 229033,
+})
+
 
 def stplugin_root(steam_path: str | os.PathLike[str] | None) -> Path | None:
     if not steam_path:
@@ -273,7 +280,10 @@ def apply_selection(
         for game in games:
             app_id = str(game.get("app_id") or "")
             if app_id not in allowed:
-                excluded_depots.update(str(x) for x in game.get("pin_depots") or [] if str(x).isdigit())
+                excluded_depots.update(
+                    str(x) for x in game.get("pin_depots") or []
+                    if str(x).isdigit() and int(x) not in _REDIST_DEPOTS
+                )
         global_ok = install_with_exclusions(steam_path, excluded_depots)
     except Exception as exc:
         errors.append({"app_id": "", "path": "00_LetUpdate_override.lua", "error": str(exc)})

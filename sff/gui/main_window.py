@@ -266,6 +266,7 @@ class SFFMainWindow(QMainWindow):
         self._web_view.page().settings().setAttribute(
             QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
         )
+        self._web_view.page().renderProcessTerminated.connect(self._on_render_crash)
         self._install_web_splash()
         saved_ui_mode = get_setting(_S.USE_MODERN_UI)
         self._web_ui_active = True if saved_ui_mode is None else bool(saved_ui_mode)
@@ -908,8 +909,24 @@ class SFFMainWindow(QMainWindow):
 
     def _on_web_view_load_finished(self, ok: bool):
         if not ok:
-            return
+            self._web_view.setHtml(
+                "<html><body style='background:#1a1a1a;color:#ccc;display:flex;"
+                "align-items:center;justify-content:center;height:100vh;"
+                "font-family:sans-serif;text-align:center'>"
+                "<div><h2 style='color:#f0c040'>SteaMidra UI failed to load</h2>"
+                "<p>Try restarting or switching to Classic UI in Settings.</p></div>"
+                "</body></html>"
+            )
         self.dismiss_splash()
+
+    def _on_render_crash(self, status):
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning("QWebEngine render process crashed (status=%s), reloading once", status)
+        try:
+            self._web_view.reload()
+        except Exception:
+            pass
 
     def dismiss_splash(self):
         splash = getattr(self, "_web_splash", None)

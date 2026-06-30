@@ -52,6 +52,12 @@ from sff.structs import (  # type: ignore
     Settings,
 )
 from sff.zip import read_nth_file_from_zip_bytes, extract_manifests_from_zip_bytes
+
+_GITHUB_MANIFEST_REPOS = (
+    ("qwe213312/k25FCdfEOoEJ42S6", "qwe213312"),
+    ("mejikuhibiniu1/k25FCdfEOoEJ42S6", "mejikuhibiniu1"),
+    ("Sainan/k25FCdfEOoEJ42S6", "Sainan"),
+)
 from sff.steam_tools_compat import sync_manifest_to_config_depotcache
 from typing import cast
 
@@ -240,50 +246,50 @@ class ManifestDownloader:
     def _try_github_manifest_direct(
         self, app_id: str, depot_id: str, manifest_id: str, target: Path
     ):
-        url = (
-            f"https://raw.githubusercontent.com/qwe213312/k25FCdfEOoEJ42S6"
-            f"/main/{depot_id}_{manifest_id}.manifest"
-        )
-        try:
-            resp = httpx.get(url, timeout=30, follow_redirects=True)
-            if resp.status_code == 200 and resp.content:
-                target.write_bytes(resp.content)
-                print(
-                    Fore.GREEN
-                    + f"\u2705 GitHub mirror: got manifest for depot {depot_id}"
-                    + Style.RESET_ALL
-                )
-                return True
-            if resp.status_code == 404:
-                logger.debug(f"GitHub mirror: manifest not found for depot {depot_id}")
-            else:
-                logger.debug(f"GitHub mirror returned HTTP {resp.status_code} for depot {depot_id}")
-        except Exception as e:
-            logger.debug(f"GitHub mirror download failed for depot {depot_id}: {e}")
+        for repo, label in _GITHUB_MANIFEST_REPOS:
+            url = (
+                f"https://raw.githubusercontent.com/{repo}"
+                f"/main/{depot_id}_{manifest_id}.manifest"
+            )
+            try:
+                resp = httpx.get(url, timeout=30, follow_redirects=True)
+                if resp.status_code == 200 and resp.content:
+                    target.write_bytes(resp.content)
+                    print(
+                        Fore.GREEN
+                        + f"\u2705 GitHub mirror ({label}): got manifest for depot {depot_id}"
+                        + Style.RESET_ALL
+                    )
+                    return True
+                if resp.status_code == 404:
+                    continue
+                logger.debug(f"GitHub mirror ({label}) returned HTTP {resp.status_code} for depot {depot_id}")
+            except Exception as e:
+                logger.debug(f"GitHub mirror ({label}) download failed for depot {depot_id}: {e}")
         return False
 
     def _try_github_manifest_bytes(
         self, app_id: str, depot_id: str, manifest_id: str
     ):
-        url = (
-            f"https://raw.githubusercontent.com/qwe213312/k25FCdfEOoEJ42S6"
-            f"/main/{depot_id}_{manifest_id}.manifest"
-        )
-        try:
-            resp = httpx.get(url, timeout=30, follow_redirects=True)
-            if resp.status_code == 200 and resp.content:
-                print(
-                    Fore.GREEN
-                    + f"\u2705 GitHub mirror: got manifest for depot {depot_id}"
-                    + Style.RESET_ALL
-                )
-                return resp.content
-            if resp.status_code == 404:
-                logger.debug(f"GitHub mirror: manifest not found for depot {depot_id}")
-            else:
-                logger.debug(f"GitHub mirror returned HTTP {resp.status_code} for depot {depot_id}")
-        except Exception as e:
-            logger.debug(f"GitHub mirror fetch failed for depot {depot_id}: {e}")
+        for repo, label in _GITHUB_MANIFEST_REPOS:
+            url = (
+                f"https://raw.githubusercontent.com/{repo}"
+                f"/main/{depot_id}_{manifest_id}.manifest"
+            )
+            try:
+                resp = httpx.get(url, timeout=30, follow_redirects=True)
+                if resp.status_code == 200 and resp.content:
+                    print(
+                        Fore.GREEN
+                        + f"\u2705 GitHub mirror ({label}): got manifest for depot {depot_id}"
+                        + Style.RESET_ALL
+                    )
+                    return resp.content
+                if resp.status_code == 404:
+                    continue
+                logger.debug(f"GitHub mirror ({label}) returned HTTP {resp.status_code} for depot {depot_id}")
+            except Exception as e:
+                logger.debug(f"GitHub mirror ({label}) fetch failed for depot {depot_id}: {e}")
         return None
 
     def _try_manifesthub_combined(
@@ -429,40 +435,35 @@ class ManifestDownloader:
         # Step 1: Try the 3 GMRC mirrors (opensteamtool, steam.run, wudrm)
         #          directly. Each returns a request code; we pull the manifest
         #          from Steam CDN with it. HTTPS before HTTP.
-        # Step 2: Fall back to the encrypted GMRC endpoint + CDN.
+        # Step 2: Fall back to the 3 GitHub raw mirror repos.
         # Step 3: ManifestHub API (auto-prompts for key if none cached).
-        # Step 4: GitHub raw mirror.
+        # Step 4: Encrypted GMRC endpoint + CDN (last resort).
         # Step 1: Hit the 3 mirror endpoints (opensteamtool, steam.run, wudrm)
         #          to get a request code and download from steampipe CDN.
         mirror_result = self._try_mirror_endpoints(depot_id, manifest_id)
         if mirror_result is not None:
             return mirror_result
-        # Step 2: Try the encrypted GMRC endpoint for a request code,
-        #          then download from steampipe CDN with it.
-        req_code = asyncio.run(get_gmrc(manifest_id, silent=True))
-        if req_code is not None:
-            pipe_url = f"http://steampipe.akamaized.net/depot/{depot_id}/manifest/{manifest_id}/5/{req_code}"
-            result = get_request_raw(pipe_url)
-            if result is not None:
-                return result
-        # Try ManifestHub before
-        # giving up so users with a key configured don't get blocked when
-        # the primary endpoint goes down. Same provider that the hubcap
-        # path uses, just runs as a fallback here instead of as the second
-        # tier. Returns None silently if no key is set so the caller falls
-        # through to the interactive CDN prompt.
-        mh_result = self._try_manifesthub(depot_id, manifest_id)
-        if mh_result is not None:
-            return mh_result
-        # Last sequential step: github raw mirror. Same source the hubcap
-        # combined path races; here it's a strict fallback so we only hit
-        # it when manifesthub is blank too. one host at a time, fast-fail.
+        # Step 2: Try all 3 GitHub raw manifest mirrors in sequence.
+        #          Each hosts the same k25FCdfEOoEJ42S6 manifest set.
         try:
             gh_result = self._try_github_manifest_bytes(app_id, depot_id, manifest_id)
             if gh_result is not None:
                 return gh_result
         except Exception as e:
             logger.debug("oureveryday github fallback failed: %s", e)
+        # Step 3: Try ManifestHub API. Returns None silently if no key
+        #          is set so we fall through to the last step.
+        mh_result = self._try_manifesthub(depot_id, manifest_id)
+        if mh_result is not None:
+            return mh_result
+        # Step 4: Last resort — encrypted GMRC endpoint for a request
+        #          code, then download from steampipe CDN.
+        req_code = asyncio.run(get_gmrc(manifest_id, silent=True))
+        if req_code is not None:
+            pipe_url = f"http://steampipe.akamaized.net/depot/{depot_id}/manifest/{manifest_id}/5/{req_code}"
+            result = get_request_raw(pipe_url)
+            if result is not None:
+                return result
         return None
 
     def resolve_gmrc(self, manifest_id):

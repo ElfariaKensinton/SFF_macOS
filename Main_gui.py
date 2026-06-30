@@ -96,7 +96,7 @@ else:
     _LINUX_CHROMIUM_FALLBACK_APPLIED = False
 os.environ.setdefault(
     'QTWEBENGINE_CHROMIUM_FLAGS',
-    '--no-sandbox --ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy',
+    '--no-sandbox --ignore-gpu-blocklist',
 )
 
 import PyQt6.QtWebEngineWidgets  # noqa: F401 - must import before QCoreApplication

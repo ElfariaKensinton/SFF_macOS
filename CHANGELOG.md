@@ -1,5 +1,27 @@
 # Changelog
 
+## 6.3.7
+
+### Bug fixes
+
+- Remove DRM button from the web UI no longer crashes. It was running on a background thread and trying to spawn QThreads from there, which Qt6 rejects. Now routed to the main thread.
+- Auto Update checkboxes no longer cross-contaminate between games. Shared redist depots (DX, VC++, .NET runtimes) were leaking into the global override file and unchecking one game would silently uncheck others sharing those depots. Redist depots are now filtered out of the exclusion set.
+- Provider metadata enrichment now resolves parent app IDs for orphan depots from the bundled provider database. Depots from config.vdf and lua files without a plain addappid line get proper names, kinds, and parent info instead of staying as generic "Depot 12345" entries.
+- Modern GUI blank/grey screen on some NVIDIA/AMD setups fixed. Removed `--enable-zero-copy` and `--enable-gpu-rasterization` from the default Chromium flags. Added renderer crash recovery that auto-reloads the page once, and a dark error page when the page fails to load entirely.
+
+### Oureveryday / manifest download
+
+- Added three GitHub manifest mirror repos to the oureveryday cascade: mejikuhibiniu1/k25FCdfEOoEJ42S6 and Sainan/k25FCdfEOoEJ42S6 join the existing qwe213312 repo. All three are tried in sequence after the GMRC mirrors, so if one is down the others catch it.
+- Cascade reordered: mirrors → GitHub repos → ManifestHub → encrypted GMRC endpoint as last resort. ManifestHub no longer blocks GitHub access when it is down.
+
+### Cloud saves
+
+- Custom save paths from the Ludusavi manifest database (22k+ games) are now backed up alongside Steam userdata. Games like Lies of P that save outside the Steam remote folder are included.
+
+### Settings
+
+- Removed online-fix.me username and password fields. The feature doesn't auto-download anymore so the credentials were dead weight.
+
 ## 6.3.6
 
 ### Bug fixes
