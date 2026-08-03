@@ -1,5 +1,36 @@
 # Changelog
 
+## 6.6.0
+
+### Fixed
+
+- **Store tab infinite loading on disconnect / reconnect** — `search_games` had an in-memory dedup cache (`_search_dedup_cache`, 2s TTL) that returned cached JSON directly without emitting the `search_results` signal. On disconnect, the cache still held stale `has_hubcap` values; on reconnect, the post-disconnect cache (Steam-only) was hit before the new Hubcap search could run. Both paths left the spinner stuck forever. Cache removed entirely — every search now goes through `_run_async → _on_done → search_results.emit`.
+- **Hubcap API key wiped on disconnect** — `store_disconnect` called `clear_setting(Settings.HUBCAP_KEY)`, deleting the key from settings. User had to re-enter it every reconnect. Key now persists in settings; only in-memory flags (`_store_client = None`, `_hubcap_unavailable = True`) and the disabled flag are set.
+- **Hubcap reconnect always prompts for key** — Connect button in the store tab always fired `window.prompt()`. Now checks for a saved key via `get_setting('morrenus_key')` first and reconnects silently. Only prompts when no key is saved.
+- **Settings page shows empty Hubcap key field** — Hidden keys like `morrenus_key` are stored encrypted and displayed as `[ENCRYPTED]` → placeholder text only. Added a green `✓ Saved` badge next to encrypted fields so users can see the key is persisted.
+- **Auto-update popup fires when auto-update already enabled** — Download success `window.confirm()` popup now checks `auto_enable_updates_new_games` before appearing. When the setting is ON, the popup is skipped (backend's `_apply_auto_update_default` has already silently applied the update). Popup only appears when the setting is OFF.
+- **Store pagination** — pages 2+ no longer show the same results as page 1. The merged Hubcap + Steam catalog results were always slicing from index 0 regardless of the requested page offset.
+- **Linux "Purchase" instead of "Play"** — `patch_slssteam_config()` is now called during every game download, ensuring `PlayNotOwnedGames: yes` is always set in SLSsteam config. Without this flag, SLSsteam does not grant ownership for non-owned games and Steam shows "Purchase" on the library card.
+- **Linux config templates** — `_init_config_with_app()` and `_SLSSTEAM_REQUIRED_FIELDS` now include `PlayNotOwnedGames: yes` so fresh configs and auto-repaired configs always carry the ownership flag.
+- **Critical crash on Linux DDMod** — `NameError: name 'parsed' is not defined` in `download_game_ddmod._on_done` callback. Game data is now stored on `self._current_game_data` inside the worker and safely read with `getattr` in the callback, providing proper game name for Downloads tab tracking. Was preventing ACF writes, SLSsteam config updates, and library registration.
+- **CreamAPI ini orgapi path** — `steam_api.dll_o.dll` → `steam_api_o.dll`. The `_generate_ini_config()` writer was using string concatenation instead of `.replace(".dll", BACKUP_SUFFIX)`. The fix already existed in `generate_config()` but was never applied to the INI writer code path.
+- **ACF writer crash on Linux** — added missing `import sys` to `sff/linux/acf_writer.py`.
+- **`run.sh` entry point** — changed `Main.py` → `Main_gui.py` in `steamidra_install.sh` generated script.
+
+### Added
+
+- **DDMod terminal output capture** — `LoggerStream` intercepts `sys.stdout`/`sys.stderr` inside the download worker thread, piping DDMod progress output to `logger.debug` instead of the terminal. Scoped to the download thread only; does not affect the wider bridge or replicate the old signal firehose issue.
+- **Provider "Reset Submitted Keys" button** — clears the submitted-key tracking in `contributor_state.json` so all keys can be resubmitted. Previously there was no UI to reset this.
+- **Provider rate limit plan selector** — DepotBox plan (Starter 60/min or Pro 120/min) now stored and editable in Settings via dropdown.
+
+### Improved
+
+- **Download tracking** — DDMod and Fastest downloads now register with `DownloadManager` and appear in the Downloads tab.
+- **Steam read-only unlock** — `attrib -r` runs on Steam/library root folders before download on Windows to prevent "Disk Write Error". No longer recursive — only top-level folders processed.
+- **Stdout signal firehose removed** — `_run_async` no longer redirects `sys.stdout`/`sys.stderr` to `StreamEmitter`, preventing GUI freeze from thousands of DDMod progress line signal emissions per second.
+- **Store tab UX** — disconnect no longer wipes saved Hubcap key. Reconnect reuses saved key silently (no prompt). Search dedup cache removed to prevent infinite spinner on disconnect/reconnect.
+- **Settings page UX** — encrypted keys now show a green `✓ Saved` badge so users can see their Hubcap key is persisted.
+
 ## 6.5.9
 
 ### Added

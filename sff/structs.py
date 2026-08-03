@@ -183,6 +183,7 @@ class SettingItem(NamedTuple):
 class Settings(Enum):
     ADVANCED_MODE = SettingItem("advanced_mode", "Advanced Mode", False, bool)
     HUBCAP_KEY = SettingItem("morrenus_key", "Hubcap API Key", True, str)
+    HUBCAP_DISABLED = SettingItem("hubcap_disabled", "Hubcap Store Disabled", False, bool)
     RYUU_KEY = SettingItem("ryuu_key", "Ryuu Reseller Key", True, str)
     RYUU_API_KEY = SettingItem("ryuu_api_key", "Ryuu API Key (premium)", True, str)
     DEPOTBOX_KEY = SettingItem("depotbox_key", "DepotBox API Key", True, str)

@@ -92,7 +92,7 @@
             // even though bulk providers may skip depots. The download
             // buttons handle depots separately through DDMod.
             var disabled = '';
-            var checked = (!dlc.in_applist) ? 'checked' : '';
+            var checked = '';
             var cb = '<input type="checkbox" class="dlc-row-cb" data-appid="' + _escape(dlc.id) + '" ' + checked + ' ' + disabled + '>';
             return (
                 '<tr>' +

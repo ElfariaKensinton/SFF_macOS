@@ -1,21 +1,32 @@
-SteaMidra v6.5.9
+SteaMidra v6.6.0
 
 What's new:
 
 ### New features
 
-* Added **DepotBox** as a new download provider. DepotBox integrates directly with SteaMidra using its `/api/direct-lua` API, supports both **Starter** and **Pro** plans, and can be configured through the Settings page with your API key and subscription tier.
-* DepotBox is now available as a download source in all three download dialogs alongside the existing providers.
-* SteaMidra now automatically removes the **read-only** attribute from Steam library folders on Windows before downloads begin, helping prevent common **Disk Write Error** issues.
-* Downloads are now registered with the built-in **Download Manager**, allowing active downloads to appear in the Downloads tab for easier tracking.
+* Added a **Reset Submitted Keys** button to the Provider page, allowing you to clear the submitted-key history and resubmit all provider keys without manually editing configuration files.
+* Added a **DepotBox plan selector** to Settings. You can now switch between **Starter** and **Pro** rate limit plans directly from the application.
+* DDMod terminal output is now captured directly into SteaMidra's logging system, keeping download diagnostics available without cluttering the terminal.
+
+### Improvements
+
+* Downloads are now fully integrated with the **Download Manager**. Both **Download through Steam (Fastest)** and **DepotDownloaderMod** downloads now appear in the Downloads tab with proper progress tracking.
+* On Windows, SteaMidra now automatically removes the **read-only** attribute from Steam library root folders before downloading, helping prevent **Disk Write Error** issues while avoiding unnecessary recursive scanning.
+* Greatly improved download responsiveness by removing the old stdout/stderr signal forwarding mechanism that could overwhelm the UI with thousands of progress updates per second.
+* Improved the Store experience when disconnecting and reconnecting Hubcap. Saved API keys are now reused automatically, reconnects happen without unnecessary prompts, and search reliability has been improved.
+* Settings now clearly indicate when encrypted API keys have been saved by displaying a green **✓ Saved** badge next to protected fields.
 
 ### Fixes
 
-* Fixed a critical Windows freeze when using **Download through Steam (Fastest)**. An unnecessary manifest download step could block the application for 20–45 seconds while waiting on Steam, even when running in the background. The redundant operation has been removed, making Steam-native downloads start immediately.
-* Greatly improved download responsiveness by removing excessive stdout/stderr forwarding during DepotDownloaderMod downloads. Progress updates now use dedicated progress events instead of flooding the UI with thousands of log signals every second.
-* Fixed a Linux ACF writer crash caused by a missing `sys` import that could prevent ACF generation on Linux.
-* Fixed CreamAPI configuration generation writing an invalid backup DLL path (`steam_api.dll_o.dll`). Backup DLL paths are now generated correctly.
-* Fixed Linux installation scripts generating a `run.sh` launcher that pointed to the wrong application entry point.
-* Optimized the Windows read-only folder fix. Instead of recursively scanning the entire Steam installation, SteaMidra now updates only the required Steam library root folders, significantly reducing unnecessary work before downloads begin.
+* Fixed an issue where the Store tab could become stuck loading forever after disconnecting and reconnecting a provider. All searches now consistently follow the same asynchronous update path.
+* Fixed Hubcap API keys being deleted when disconnecting. Disconnecting now only ends the active session while keeping your saved credentials intact.
+* Fixed Hubcap reconnects unnecessarily prompting for an API key even when one was already saved.
+* Fixed Store pagination so pages beyond the first now correctly display their own results instead of repeating page one.
+* Fixed the automatic **Enable Steam Updates** prompt appearing even when automatic updates for newly downloaded games were already enabled.
+* Fixed Linux installations sometimes showing **Purchase** instead of **Play** by ensuring SLSsteam ownership settings are always applied and preserved.
+* Fixed a critical Linux DepotDownloaderMod crash that prevented downloads from completing, ACF files from being written, SLSsteam configuration from updating, and downloaded games from being registered in the library.
+* Fixed CreamAPI configuration generation writing an incorrect backup DLL path.
+* Fixed a Linux ACF writer crash caused by a missing `sys` import.
+* Fixed generated Linux `run.sh` launchers pointing to the wrong application entry point.
 
 Full detailed changelog is in CHANGELOG.md

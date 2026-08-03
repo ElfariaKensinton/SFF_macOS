@@ -136,7 +136,7 @@ class GameStatus:
 class StoreApiClient:
     """Morrenus manifest API. Needs a Bearer token (smm_ key)."""
 
-    def __init__(self, api_key, timeout = 30.0):
+    def __init__(self, api_key, timeout = 8.0):
         self.api_key = api_key
         self.timeout = timeout
         self._status_cache: dict[int, GameStatus] = {}
@@ -163,7 +163,11 @@ class StoreApiClient:
 
     @staticmethod
     def validate_api_key(api_key):
-        return bool(api_key and api_key.strip().startswith("smm") and len(api_key.strip()) > 10)
+        """Test the key against the Hubcap API to see if it's valid."""
+        if not api_key or not str(api_key).strip():
+            return False
+        client = StoreApiClient(str(api_key).strip())
+        return client.test_api_key()
 
     def test_api_key(self):
         try:

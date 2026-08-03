@@ -178,19 +178,25 @@ window.App = (function() {
                         Components.showToast('success', addedMsg);
                         _populateGameDropdown();
                         if (result.is_windows && result.app_id) {
-                            var fastAutoUpdateMsg = 'Game downloaded successfully.\n\nWould you like to enable auto-updates for this game?\n(Keeps the Steam Update button visible for this game.)';
-                            if (window.confirm(fastAutoUpdateMsg)) {
-                                Bridge.call('let_updates_add_game', String(result.app_id));
-                            }
+                            Bridge.callWithCallback('get_setting', 'auto_enable_updates_new_games', function(val) {
+                                if (val === 'True') return;
+                                var fastAutoUpdateMsg = 'Game downloaded successfully.\n\nWould you like to enable auto-updates for this game?\n(Keeps the Steam Update button visible for this game.)';
+                                if (window.confirm(fastAutoUpdateMsg)) {
+                                    Bridge.call('let_updates_add_game', String(result.app_id));
+                                }
+                            });
                         }
                     }
                     if (result.task === 'download_ddmod' && result.success) {
                         _populateGameDropdown();
                         if (result.is_windows && result.app_id) {
-                            var autoUpdateMsg = 'Game downloaded successfully.\n\nWould you like to enable auto-updates for this game?\n(Keeps the Steam Update button visible for this game.)';
-                            if (window.confirm(autoUpdateMsg)) {
-                                Bridge.call('let_updates_add_game', String(result.app_id));
-                            }
+                            Bridge.callWithCallback('get_setting', 'auto_enable_updates_new_games', function(val) {
+                                if (val === 'True') return;
+                                var autoUpdateMsg = 'Game downloaded successfully.\n\nWould you like to enable auto-updates for this game?\n(Keeps the Steam Update button visible for this game.)';
+                                if (window.confirm(autoUpdateMsg)) {
+                                    Bridge.call('let_updates_add_game', String(result.app_id));
+                                }
+                            });
                         }
                     }
                     if (result.task === 'auto_lc_setup') {
@@ -2123,6 +2129,14 @@ window.App = (function() {
         if (action === 'provider_update') {
             _setHomeProviderStatus('Updating provider cache...');
             Bridge.call('provider_update_now');
+            return;
+        }
+
+        if (action === 'provider_reset') {
+            if (window.confirm('Reset submitted-keys tracking?\n\nThis will clear the record of previously submitted keys so you can resubmit all of them again.')) {
+                _setHomeProviderStatus('Resetting submitted keys...');
+                Bridge.call('provider_reset_submitted');
+            }
             return;
         }
 

@@ -28,7 +28,6 @@ Need help? Chat with us on our Discord server: https://discord.gg/V8aZqnbB84
 - **LC Online Fix** — toggle `-onlinefix` on a chosen App ID in `localconfig.vdf`. Closes Steam first, picks the active SteamID3 from `loginusers.vdf`, navigates the VDF tree case-insensitively. LumaCore handles the appid-480 redirect at launch so the overlay, Steam Input, and screenshots still tag the real game.
 - **Multiplayer Fix** — searches **online-fix.me** for the selected game and opens the result in your browser. SteaMidra no longer stores online-fix credentials or downloads files from the site.
 - **Fixes & Bypasses** — searches a curated list from the CrakFiles repo on GitHub and applies the chosen fix to the game folder. No API key, no account. Achievement-safe — only adds bypass DLLs, leaves the Steam API intact.
-- **HyperVisor Cracks (HV Auto)** — download HyperVisor bypasses for Denuvo-protected games. Includes VBS.cmd to prepare your system. See the [HyperVisor Guide](docs/HV_GUIDE.md) before use.
 - DLC status check, cracking (gbe_fork), SteamStub DRM removal (Steamless), and DLC Unlockers (CreamInstaller-style: SmokeAPI, CreamAPI, Uplay).
 - **Multi-language GUI** — English and Portuguese built-in; add more via `sff/locales/`.
 - Parallel downloads, backups, recent files, and settings export/import.
@@ -88,17 +87,15 @@ For the full walkthrough (supported distros, troubleshooting, what files go wher
 
 SteaMidra has a full graphical interface with a **Modern UI** and the classic Qt interface.
 
-**Modern UI** — the new default interface, built with QWebEngine. Accessible from a clean sidebar with 8 tabs: Home (game picker with auto-refresh), Store (search/browse Hubcap, grid/list, pagination), Library (installed games), Downloads (live progress + history), Fix Game (full emulator pipeline), Tools (GBE Token Generator, VDF Extractor, Workshop), Cloud Saves (scan/backup/restore, Google Drive, rclone with 17 provider shortcuts, All Save Locations), and Settings. Supports 11+ themes, tooltips, and toast notifications.
+**Modern UI** — the new default interface, built with QWebEngine. Accessible from a clean sidebar with 7 tabs: Home (game picker with auto-refresh), Store (search/browse Hubcap, grid/list, pagination), Library (installed games), Downloads (live progress + history), Fix Game (full emulator pipeline), Cloud Saves (scan/backup/restore, Google Drive, rclone with 17 provider shortcuts, All Save Locations), and Settings. Supports 11+ themes, tooltips, and toast notifications.
 
 **What the GUI gives you:**
 - **Tabbed interface** — Main, Store, Downloads, Fix Game, Tools, and Cloud Saves tabs.
 - Pick your game from a dropdown (all Steam libraries scanned) or set a path for games outside Steam.
-- All actions as buttons: crack, DRM removal, DLC check, workshop items, multiplayer fix, **Fixes & Bypasses**, DLC unlockers, and more.
+- All actions as buttons: crack, DRM removal, DLC check, multiplayer fix, **Fixes & Bypasses**, DLC unlockers, and more.
 - **Store browser** — search and browse the Hubcap Manifest library with pagination. Download opens a version picker with full depot/manifest history, and the Depot Keys button refreshes the local provider cache. **Force Refresh** bypasses cache to rebuild historical manifests.
 - **Fix Game pipeline** — automate emulator application (Goldberg, ColdClient, ColdLoader) with SteamStub unpacking.
-- **GBE Token Generator** — generate full Goldberg emulator configs with achievements, DLCs, stats, and icons.
 - **Cloud Saves** — Steam userdata plus Ludusavi save-path backup/restore. Multiple save folders for the same App ID are grouped into one backup with per-source restore details and a safety backup before overwrites. Supports local folder, **Google Drive** (sign in once), and **rclone** (Dropbox, OneDrive, MEGA, S3, Backblaze B2, SFTP, and 70+ other backends).
-- **VDF Key Extractor** — extract depot decryption keys from Steam's config.vdf.
 - Lua/manifest processing and library tools all accessible from buttons.
 - Full settings dialog where you can edit, delete, export, and import all settings.
 - **11+ themes** including Dracula, Nord, Cyberpunk, and more.
@@ -130,8 +127,6 @@ Full changelog: [CHANGELOG.md](CHANGELOG.md)
 [Fixes & Bypasses](docs/CRACK_FIX.md) – Searching and applying community-maintained fixes from the CrakFiles repo. No API key, no account.
 
 [CrakFiles — Fixes & Bypasses source](docs/CRACK_FILES.md) – What the CrakFiles repository is, how SteaMidra fetches and uses `crackfiles.json`, and a breakdown of every field in the fix list.
-
-[HyperVisor Guide](docs/HV_GUIDE.md) – How HV cracks work, security implications, and step-by-step setup for Denuvo HyperVisor bypasses.
 
 [DLC Unlockers](docs/dlc_unlockers/README.md) – Using DLC unlockers (CreamInstaller-style).
 
@@ -188,8 +183,6 @@ SteaMidra’s GPL license applies to SteaMidra’s own source code only. It does
 **online-fix.me** – The Multiplayer Fix feature searches online-fix.me for the selected game and opens the result in your browser. No credentials needed. SteaMidra is not affiliated with online-fix.me; files remain owned by their respective maintainers.
 
 **Ludusavi** — The cloud save custom-path feature uses the **Ludusavi manifest** game-save-location database maintained by **mtkennerly** (<https://github.com/mtkennerly/ludusavi-manifest>). Bundled as `sff/data/manifest.yaml`.
-
-**GBE Token Generator** – Goldberg Emulator configuration generation based on work by **Detanup01** (`gbe_fork`), **NickAntaris**, and **Oureveryday** (`generate_game_info`).
 
 **Hubcap Manifest** – Store browser and manifest library API provided by **Hubcap Manifest**.
 

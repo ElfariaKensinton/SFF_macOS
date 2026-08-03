@@ -89,6 +89,8 @@ window.Store = (function() {
         var disconnectHubcapBtn = document.getElementById('store-disconnect-hubcap');
         if (disconnectHubcapBtn) {
             disconnectHubcapBtn.addEventListener('click', function() {
+                if (this.disabled) return;
+                this.disabled = true;
                 Bridge.call('store_disconnect');
                 _apiKeyConnected = false;
                 disconnectHubcapBtn.classList.add('hidden');
@@ -96,26 +98,41 @@ window.Store = (function() {
                 if (connectBtn) connectBtn.classList.remove('hidden');
                 _showConnectBanner();
                 Components.showToast('info', 'Hubcap disconnected — using Steam fallback search.');
-                _fetchGames();
+                setTimeout(function() { _fetchGames(); }, 200);
+                setTimeout(function() { disconnectHubcapBtn.disabled = false; }, 2000);
             });
         }
 
         var connectHubcapBtn = document.getElementById('store-connect-hubcap');
         if (connectHubcapBtn) {
             connectHubcapBtn.addEventListener('click', function() {
-                var input = document.getElementById('api-key-input');
-                var key = input ? input.value.trim() : '';
-                if (!key) {
-                    Components.showToast('warning', 'Please enter an API key above');
-                    return;
-                }
-                Bridge.call('connect_store', key);
-                _apiKeyConnected = true;
-                connectHubcapBtn.classList.add('hidden');
-                if (disconnectHubcapBtn) disconnectHubcapBtn.classList.remove('hidden');
-                _hideConnectBanner();
-                _fetchGames();
-                Components.showToast('success', 'API key saved. Loading store...');
+                var btn = this;
+                if (btn.disabled) return;
+                btn.disabled = true;
+                Bridge.callWithCallback('get_setting', 'morrenus_key', function(savedKey) {
+                    var key = (savedKey && String(savedKey).trim()) ? savedKey.trim() : null;
+                    if (key) {
+                        Bridge.call('connect_store', key);
+                        _apiKeyConnected = true;
+                        connectHubcapBtn.classList.add('hidden');
+                        if (disconnectHubcapBtn) disconnectHubcapBtn.classList.remove('hidden');
+                        _hideConnectBanner();
+                        _fetchGames();
+                        Components.showToast('success', 'Reconnected using saved API key.');
+                    } else {
+                        key = window.prompt('Paste your Hubcap API key (starts with smm_):');
+                        if (!key || !key.trim()) { btn.disabled = false; return; }
+                        key = key.trim();
+                        Bridge.call('connect_store', key);
+                        _apiKeyConnected = true;
+                        connectHubcapBtn.classList.add('hidden');
+                        if (disconnectHubcapBtn) disconnectHubcapBtn.classList.remove('hidden');
+                        _hideConnectBanner();
+                        _fetchGames();
+                        Components.showToast('success', 'API key saved. Loading store...');
+                    }
+                    btn.disabled = false;
+                });
             });
         }
 
@@ -184,12 +201,17 @@ window.Store = (function() {
                 _total = data.total || games.length;
                 _totalPages = Math.max(1, Math.ceil(_total / _perPage));
                 _updatePagination();
+                var discBtn = document.getElementById('store-disconnect-hubcap');
+                var connBtn = document.getElementById('store-connect-hubcap');
                 if (data.has_hubcap || data.has_fallback_data) {
                     _hideConnectBanner();
-                    var discBtn = document.getElementById('store-disconnect-hubcap');
-                    var connBtn = document.getElementById('store-connect-hubcap');
-                    if (discBtn) discBtn.classList.remove('hidden');
-                    if (connBtn) connBtn.classList.add('hidden');
+                    if (data.has_hubcap) {
+                        if (discBtn) discBtn.classList.remove('hidden');
+                        if (connBtn) connBtn.classList.add('hidden');
+                    } else {
+                        if (discBtn) discBtn.classList.add('hidden');
+                        if (connBtn) connBtn.classList.remove('hidden');
+                    }
                 } else {
                     _showConnectBanner();
                     var msgEl = document.getElementById('store-banner-msg');

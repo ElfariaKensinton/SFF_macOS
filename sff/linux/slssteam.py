@@ -692,6 +692,87 @@ def fix_hash_mismatch(steam_path: Path, print_fn=print) -> bool:
     return True
 
 
+def migrate_existing_games(print_fn=print) -> int:
+    """Scan existing Lua files and ACFs for game IDs, add them to SLSsteam config.
+    Runs once per install via marker file. Returns number of games migrated.
+    Preserves config from tools like ACCELA when users switch to SteaMidra."""
+    if not _IS_LINUX:
+        return 0
+    from pathlib import Path as _Path
+    import shutil as _shutil
+
+    steam_type = detect_steam_type()
+    config_dir = get_slssteam_config_dir(steam_type)
+    config_path = config_dir / "config.yaml"
+    marker = config_dir / ".sm_migrated"
+
+    if marker.exists():
+        return 0
+    if not config_path.exists():
+        return 0
+
+    steam_path = _Path.home() / ".steam" / "steam"
+    if steam_type == "flatpak":
+        steam_path = _Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / ".steam" / "steam"
+
+    found: set[str] = set()
+
+    # scan stplug-in lua files
+    stplugin = steam_path / "config" / "stplug-in"
+    if stplugin.exists():
+        for lua in stplugin.glob("*.lua"):
+            app_id = lua.stem
+            if app_id.isdigit() and app_id != "0":
+                found.add(app_id)
+
+    # scan ACF files from Steam libraries
+    try:
+        from sff.storage.vdf import get_steam_libs
+        libs = get_steam_libs(steam_path) if steam_path else []
+        for lib in libs:
+            acf_dir = lib / "steamapps"
+            if not acf_dir.exists():
+                continue
+            for acf in acf_dir.glob("appmanifest_*.acf"):
+                aid = acf.stem.replace("appmanifest_", "")
+                if aid.isdigit() and aid != "0":
+                    found.add(aid)
+    except Exception:
+        pass
+
+    if not found:
+        marker.write_text("ok\n", encoding="utf-8")
+        return 0
+
+    try:
+        from sff.app_injector.sls import SLSManager
+        from sff.ui import UI
+        # use add_additional_app directly to avoid creating a full UI/Manager
+        from sff.linux.yaml_config import add_additional_app
+        imported = 0
+        for app_id in sorted(found):
+            try:
+                if add_additional_app(config_path, app_id, "migrated from existing install"):
+                    imported += 1
+            except Exception:
+                pass
+        if imported:
+            from sff.linux.yaml_config import _patch_missing_slssteam_fields
+            try:
+                text = config_path.read_text(encoding="utf-8")
+                patched = _patch_missing_slssteam_fields(config_path, text)
+                if patched:
+                    config_path.write_text(patched, encoding="utf-8")
+            except Exception:
+                pass
+        print_fn(Fore.GREEN + f"[migrate] Added {imported} existing game(s) to SLSsteam config." + Style.RESET_ALL)
+    except Exception:
+        pass
+
+    marker.write_text("ok\n", encoding="utf-8")
+    return len(found)
+
+
 def install_from_github(steam_path: Path, print_fn=print) -> bool:
     if not _IS_LINUX:
         return False

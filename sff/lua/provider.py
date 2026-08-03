@@ -393,6 +393,13 @@ def _mark_fingerprints_sent(items: list[dict]) -> None:
     write_contributor_state(state)
 
 
+def reset_contributor_state() -> None:
+    """Clear all submitted-key tracking so the user can resubmit all keys."""
+    state = read_contributor_state()
+    state.pop("sent_items", None)
+    write_contributor_state(state)
+
+
 def collect_submit_candidates(steam_path: Path | None = None) -> dict:
     entries: list[dict] = []
     invalid = 0

@@ -40,9 +40,6 @@ Using the community fix list as an alternative or supplement to online-fix.me. N
 [CrakFiles — Fix list source](CRACK_FILES.md)  
 What the CrakFiles repository is, how SteaMidra fetches crackfiles.json, and a breakdown of every field including source_crack and original_download.
 
-[HyperVisor Guide](HV_GUIDE.md)  
-How HV cracks work, what Windows security features they require you to disable, security implications, and step-by-step setup. Read before using HV Auto.
-
 [DLC Unlockers](dlc_unlockers/README.md)  
 Using SteaMidra to install DLC unlockers (CreamInstaller-style). Credits for CreamInstaller are on that page.
 

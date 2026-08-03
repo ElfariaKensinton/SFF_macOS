@@ -33,6 +33,10 @@ import subprocess
 import sys
 import unicodedata as _ud
 from functools import lru_cache
+import urllib
+import urllib.request as _req
+import urllib.parse as _urlparse
+import urllib.error as _urlerror
 
 _ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
 _DDMOD_PCT_RE = re.compile(r"^\s*(\d{1,3}(?:\.\d+)?)%\s")
@@ -232,7 +236,7 @@ class WebBridge(QObject):
         self._active_library = None
         self._api_key = None
         self._store_client = None
-        self._hubcap_unavailable = False
+        self._hubcap_unavailable = self._is_hubcap_disabled()
         self._get_store_client()
         self._hubcap_check_timer = QTimer(self)
         self._hubcap_check_timer.setInterval(15_000)
@@ -340,6 +344,11 @@ class WebBridge(QObject):
 
     def _track_download(self, app_id, game_name, success):
         try:
+            if not game_name or game_name == f"App {app_id}":
+                from sff.game_list_fallback import search_name_fallback
+                fallback_name = search_name_fallback(app_id)
+                if fallback_name:
+                    game_name = fallback_name
             if hasattr(self._ui, 'download_manager') and self._ui.download_manager:
                 dl_id = self._ui.download_manager.track_external(
                     app_id=str(app_id),
@@ -543,6 +552,14 @@ class WebBridge(QObject):
         except Exception as exc:
             logger.debug("auto-update default skipped for %s: %s", app_id, exc)
 
+    def _is_hubcap_disabled(self):
+        try:
+            from sff.storage.settings import get_setting
+            from sff.structs import Settings
+            return get_setting(Settings.HUBCAP_DISABLED) is True
+        except Exception:
+            return False
+
     def _get_store_client(self):
         if self._store_client is None and not self._hubcap_unavailable:
             if not self._api_key:
@@ -614,16 +631,6 @@ class WebBridge(QObject):
 
         When tag is set with no query, uses games.json tag search instead.
         """
-        import time as _d_time
-        _cache_key = (query, offset, per_page, sort_by, tag)
-        _cached = getattr(self, '_search_dedup_cache', {})
-        _now = _d_time.time()
-        if _cached:
-            _stale = [k for k, (_r, _t) in list(_cached.items()) if _now - _t > 2.0]
-            for k in _stale:
-                _cached.pop(k, None)
-        if _cache_key in _cached:
-            return _cached[_cache_key][0]
         def _do():
             block_nsfw = _store_blocks_nsfw()
             if block_nsfw and _looks_nsfw_by_name(query):
@@ -1083,7 +1090,7 @@ class WebBridge(QObject):
             total = len(merged)
             if not query and not tag:
                 total = max(total, int(result.get('total') or 0))
-            page_games = merged[0:per_page]
+            page_games = merged[offset:offset + per_page]
             if not result.get('games') and any(g.get('source') == 'hubcap' for g in page_games):
                 result['fallback_source'] = 'hubcap'
             result['games'] = page_games
@@ -1109,11 +1116,7 @@ class WebBridge(QObject):
             return result
 
         def _on_done(data):
-            _cache_key = (query, offset, per_page, sort_by, tag)
-            _cached = getattr(self, '_search_dedup_cache', {})
             _rjson = json.dumps(_attach_store_request_id(data, request_id))
-            _cached[_cache_key] = (_rjson, _d_time.time())
-            self._search_dedup_cache = _cached
             self.search_results.emit(_rjson)
 
         self._run_async(_do, on_done=_on_done)
@@ -3523,6 +3526,7 @@ class WebBridge(QObject):
                 **{k: v for k, v in result.items() if k != "ok"})
         self._run_async(_do, on_done=_on_done)
 
+    @pyqtSlot(str)
     def lure_fix_acf(self, app_id):
         """Patch the game's ACF with the latest Steam CM manifest IDs and buildid.
         No files are downloaded — pure ACF update to suppress Steam's update prompt.
@@ -4112,26 +4116,30 @@ class WebBridge(QObject):
             return
         from sff.store_browser import StoreApiClient
         if not StoreApiClient.validate_api_key(api_key):
-            self._emit_task_result("store_connect", False, "Invalid API key — must start with smm_ and be at least 10 characters")
+            self._emit_task_result("store_connect", False, "API key rejected by Hubcap. Check your key or try again.")
             return
         self._api_key = api_key
         self._store_client = StoreApiClient(api_key)
         self._hubcap_unavailable = False
-        from sff.storage.settings import set_setting
+        from sff.storage.settings import set_setting, clear_setting
         from sff.structs import Settings
         set_setting(Settings.HUBCAP_KEY, api_key)
+        try:
+            clear_setting(Settings.HUBCAP_DISABLED)
+        except Exception:
+            pass
         self.task_finished.emit(json.dumps({"task": "api_key_connected"}))
 
     @pyqtSlot()
     def store_disconnect(self):
-        """Disconnect Hubcap store — clear key and fall back to Steam search."""
+        """Disconnect Hubcap store — fall back to Steam search (key stays saved)."""
         self._store_client = None
         self._api_key = None
         self._hubcap_unavailable = True
         try:
-            from sff.storage.settings import clear_setting
+            from sff.storage.settings import set_setting
             from sff.structs import Settings
-            clear_setting(Settings.HUBCAP_KEY)
+            set_setting(Settings.HUBCAP_DISABLED, True)
         except Exception:
             pass
         self.task_finished.emit(json.dumps({"task": "store_disconnected"}))
@@ -4426,6 +4434,16 @@ class WebBridge(QObject):
         self._run_async(_do, on_done=_on_done)
 
     @pyqtSlot()
+    def provider_reset_submitted(self):
+        """Clear the submitted-keys tracking so all keys can be resubmitted."""
+        try:
+            from sff.lua.provider import reset_contributor_state
+            reset_contributor_state()
+            self._emit_task_result("provider_reset", True, "Submitted keys tracking has been reset. All keys can now be resubmitted.")
+        except Exception as e:
+            self._emit_task_result("provider_reset", False, str(e))
+
+    @pyqtSlot()
     def provider_update_now(self):
         """Download the latest provider JSON to the AppData cache."""
         def _do():
@@ -4482,6 +4500,14 @@ class WebBridge(QObject):
                 if not ok:
                     log_lines.append("headcrab failed, falling back to direct SLSsteam install...")
                     install_from_github(steam_path, log_lines.append)
+                # Migrate any existing games from ACCELA or other tools
+                try:
+                    from sff.linux.slssteam import migrate_existing_games
+                    migrated = migrate_existing_games(log_lines.append)
+                    if migrated:
+                        log_lines.append(f"Migrated {migrated} existing game(s) to SLSsteam config.")
+                except Exception as _mig_err:
+                    pass
                 ensure_dotnet_9(print_fn=log_lines.append)
                 return (True, "\n".join(str(x) for x in log_lines) or "Linux setup completed.")
             except Exception as exc:
@@ -5053,10 +5079,37 @@ class WebBridge(QObject):
             }))
             self._unlock_steam_readonly()
             try:
+                import io
+                import sys
                 from pathlib import Path as _Path
                 from sff.lua.endpoints import get_hubcap, get_oureverday, get_ryuu, get_depotbox
                 from sff.lua.manager import parse_lua_contents
                 from sff.depot_downloader import run_download, filter_depots_by_os
+
+                class LoggerStream(io.StringIO):
+                    def __init__(self, logger_func):
+                        super().__init__()
+                        self.logger_func = logger_func
+                        self._line_buffer = ""
+                    def write(self, string):
+                        self._line_buffer += string
+                        if "\n" in self._line_buffer:
+                            lines = self._line_buffer.split("\n")
+                            self._line_buffer = lines.pop()
+                            for line in lines:
+                                if line.strip():
+                                    self.logger_func(line)
+                        return len(string)
+                    def flush(self):
+                        if self._line_buffer.strip():
+                            self.logger_func(self._line_buffer)
+                            self._line_buffer = ""
+
+                log_stream = LoggerStream(logger.debug)
+                old_stdout = sys.stdout
+                old_stderr = sys.stderr
+                sys.stdout = log_stream
+                sys.stderr = log_stream
 
                 steam_path = self._steam_path
                 dest = _Path(self._active_library) if self._active_library else steam_path
@@ -5203,6 +5256,14 @@ class WebBridge(QObject):
                             self._ui.sls_man.add_ids(parsed)
                     except Exception as _sle:
                         logger.warning("sls_man.add_ids failed (non-fatal): %s", _sle)
+
+                    # Ensure PlayNotOwnedGames is enabled so SLSsteam grants
+                    # ownership and Steam shows "Play" instead of "Purchase".
+                    try:
+                        from sff.linux.slssteam import detect_steam_type, patch_slssteam_config
+                        patch_slssteam_config(detect_steam_type(), lambda _: None)
+                    except Exception as _pnog:
+                        pass
 
                     try:
                         from sff.lua.writer import ConfigVDFWriter as _CVF2
@@ -5375,6 +5436,7 @@ class WebBridge(QObject):
                     "installdir": installdir,
                     "buildid": buildid,
                 }
+                self._current_game_data = game_data
 
                 selected_depots = list(depots_dict.keys())
                 if not selected_depots:
@@ -5515,17 +5577,22 @@ class WebBridge(QObject):
             except Exception as e:
                 logger.exception("download_game_ddmod failed: %s", e)
                 return (False, str(e))
+            finally:
+                log_stream.flush()
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
 
         def _on_done(result):
             if isinstance(result, tuple):
-                ok, msg = result
+                ok, msg = result[0], result[1]
             else:
                 ok, msg = False, "Download failed"
             if ok and source in ("hubcap", "ryuu"):
                 QTimer.singleShot(1000, self._maybe_auto_contribute_provider)
-            # Track in download manager so it shows in Downloads tab
+            game_data = getattr(self, '_current_game_data', None)
             if isinstance(result, tuple) and result[0]:
-                self._track_download(app_id, parsed.get("game_name", f"App {app_id}") if parsed else f"App {app_id}", ok)
+                game_name = game_data.get("game_name", f"App {app_id}") if game_data else f"App {app_id}"
+                self._track_download(app_id, game_name, ok)
             self._emit_task_result("download_ddmod", ok, msg, app_id=app_id,
                                    is_windows=sys.platform == "win32")
 

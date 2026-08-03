@@ -794,11 +794,23 @@ window.Settings = (function() {
     function _setPasswordField(id, val) {
         var el = document.getElementById(id);
         if (!el) return;
+        var savedBadge = document.getElementById(id + '-saved');
         if (val === '[ENCRYPTED]') {
             el.placeholder = '(encrypted - saved)';
             el.value = '';
+            el.parentElement.style.position = el.parentElement.style.position || 'relative';
+            if (!savedBadge) {
+                savedBadge = document.createElement('span');
+                savedBadge.id = id + '-saved';
+                savedBadge.textContent = '✓ Saved';
+                savedBadge.style.cssText = 'position:absolute;right:8px;top:50%;transform:translateY(-50%);color:#4caf50;font-size:11px;font-weight:600;pointer-events:none;';
+                el.parentElement.appendChild(savedBadge);
+            }
         } else if (val) {
             el.value = val;
+            if (savedBadge) savedBadge.remove();
+        } else {
+            if (savedBadge) savedBadge.remove();
         }
     }
 
