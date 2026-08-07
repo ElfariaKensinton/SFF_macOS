@@ -103,9 +103,9 @@ import PyQt6.QtWebEngineWidgets  # noqa: F401 - must import before QCoreApplicat
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from sff.steam_path import validate_steam_path
-from sff.storage.settings import get_setting, set_setting
-from sff.structs import OSType, Settings
-from sff.utils import root_folder, sff_data_dir
+from sff.core.storage.settings import get_setting, set_setting
+from sff.core.structs import OSType, Settings
+from sff.core.utils import root_folder, sff_data_dir
 
 try:
     _root = root_folder(outside_internal=True)
@@ -166,7 +166,7 @@ if _LINUX_CHROMIUM_FALLBACK_APPLIED:
 # timeout and logs progress to the file logger above.
 def _kick_dotnet_check():
     try:
-        from sff.dotnet_utils import get_dotnet_path, ensure_dotnet_9
+        from sff.downloads.dotnet_utils import get_dotnet_path, ensure_dotnet_9
         if get_dotnet_path():
             return
         # Not present. Run the installer on a worker thread so the GUI
@@ -363,14 +363,14 @@ def main():
     # Don't touch per-game lua files or depot lists — those are managed
     # by the Steam Updates modal in the Home tab.
     try:
-        from sff.update_prompt_override import migrate_old_format
+        from sff.game.update_prompt_override import migrate_old_format
         migrate_old_format(steam_path)
     except Exception:
         pass
 
     from steam.client import SteamClient
-    from sff.steam_client import SteamInfoProvider
-    from sff.ui import UI
+    from sff.network.steam_client import SteamInfoProvider
+    from sff.ui.ui import UI
     from sff.gui import SFFMainWindow
 
     client = SteamClient()
@@ -391,7 +391,7 @@ def main():
         except Exception:
             pass
 
-    from sff.tray_icon import TrayIcon
+    from sff.ui.tray_icon import TrayIcon
     tray = TrayIcon(parent=app)
     tray.setup(_app_icon if not _app_icon.isNull() else app.windowIcon())
     window.set_tray(tray)
@@ -503,7 +503,7 @@ def main():
         # the window. The 6s defer keeps it off the critical path.
         def _maybe_install_dotnet_9_linux():
             try:
-                from sff.dotnet_utils import get_dotnet_path, ensure_dotnet_9
+                from sff.downloads.dotnet_utils import get_dotnet_path, ensure_dotnet_9
                 if get_dotnet_path():
                     return
                 logger.info("Linux: .NET 9 not found, installing in background...")

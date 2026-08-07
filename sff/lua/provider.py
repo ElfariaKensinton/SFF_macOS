@@ -30,8 +30,8 @@ from typing import Iterable
 
 import httpx
 
-from sff.strings import VERSION
-from sff.utils import sff_data_dir
+from sff.core.strings import VERSION
+from sff.core.utils import sff_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -263,8 +263,8 @@ def _provider_epoch(value) -> int:
 
 
 def provider_update_state(now: int | None = None) -> dict:
-    from sff.storage.settings import get_setting
-    from sff.structs import Settings
+    from sff.core.storage.settings import get_setting
+    from sff.core.structs import Settings
 
     now = int(time.time()) if now is None else int(now)
     last_attempt = _provider_epoch(get_setting(Settings.PROVIDER_LAST_UPDATE_ATTEMPT))
@@ -286,8 +286,8 @@ def provider_update_due(now: int | None = None) -> bool:
 
 
 def _record_provider_update_attempt(result: dict, attempted_at: int | None = None) -> dict:
-    from sff.storage.settings import set_setting
-    from sff.structs import Settings
+    from sff.core.storage.settings import set_setting
+    from sff.core.structs import Settings
 
     attempted_at = int(time.time()) if attempted_at is None else int(attempted_at)
     ok = bool(result.get("ok"))
@@ -562,7 +562,7 @@ def enrich_submit_items_with_steam_appinfo(items: list[dict], max_parents: int =
 
     by_id = {str(item.get("id")): item for item in items if is_valid_id(str(item.get("id") or ""))}
     try:
-        from sff.steam_client import create_provider_for_current_thread
+        from sff.network.steam_client import create_provider_for_current_thread
         provider = create_provider_for_current_thread()
     except Exception as exc:
         stats["errors"] += 1
@@ -697,7 +697,7 @@ def write_contributor_state(state: dict) -> None:
 def contributor_due() -> bool:
     state = read_contributor_state()
     last = float(state.get("last_submit_at") or 0)
-    return time.time() - last >= 24 * 60 * 60
+    return time.time() - last >= 3 * 60 * 60
 
 
 def mark_contributor_run() -> None:

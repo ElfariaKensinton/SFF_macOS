@@ -23,18 +23,18 @@ import threading
 import time
 import webbrowser
 
-from sff.prompts import prompt_text
+from sff.ui.prompts import prompt_text
 
 logger = logging.getLogger(__name__)
 
-_KEY_URL = "https://manifesthub1.filegear-sg.me"
+_KEY_URL = "https://manifesthub2.filegear-sg.me"
 _EXPIRY_SECONDS = 86_400  # 24 h
 _renewal_lock = threading.Lock()
 
 
 def _key_is_valid():
-    from sff.storage.settings import get_setting
-    from sff.structs import Settings
+    from sff.core.storage.settings import get_setting
+    from sff.core.structs import Settings
 
     key = get_setting(Settings.MANIFESTHUB_API_KEY)
     expiry_str = get_setting(Settings.MANIFESTHUB_KEY_EXPIRY)
@@ -47,8 +47,8 @@ def _key_is_valid():
 
 
 def _save_key(key):
-    from sff.storage.settings import set_setting
-    from sff.structs import Settings
+    from sff.core.storage.settings import set_setting
+    from sff.core.structs import Settings
 
     set_setting(Settings.MANIFESTHUB_API_KEY, key)
     set_setting(Settings.MANIFESTHUB_KEY_EXPIRY, str(time.time() + _EXPIRY_SECONDS))
@@ -56,8 +56,8 @@ def _save_key(key):
 
 def get_manifesthub_api_key():
     """Get a valid key; opens the generator page in the user's browser if renewal needed."""
-    from sff.storage.settings import get_setting
-    from sff.structs import Settings
+    from sff.core.storage.settings import get_setting
+    from sff.core.structs import Settings
 
     if _key_is_valid():
         return get_setting(Settings.MANIFESTHUB_API_KEY)

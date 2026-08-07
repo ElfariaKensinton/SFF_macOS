@@ -28,12 +28,12 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from sff.steam_client import (
+from sff.network.steam_client import (
     SteamInfoProvider,
     ParsedDLC,
     create_provider_for_current_thread,
 )
-from sff.structs import DLCTypes
+from sff.core.structs import DLCTypes
 
 logger = logging.getLogger(__name__)
 

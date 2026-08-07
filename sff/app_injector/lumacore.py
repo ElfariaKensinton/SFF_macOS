@@ -25,8 +25,8 @@ from typing import Union
 from colorama import Fore, Style
 
 from sff.app_injector.base import AppInjectionManager
-from sff.steam_client import SteamInfoProvider
-from sff.structs import LuaParsedInfo
+from sff.network.steam_client import SteamInfoProvider
+from sff.core.structs import LuaParsedInfo
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +76,8 @@ class LumaCoreManager(AppInjectionManager):
             logger.debug("LumaCore add_ids: all ids already present")
 
     def dlc_check(self, provider, base_id, auto_add_depot_dlcs: bool = False):
-        from sff.steam_store import get_dlc_list_from_store, get_dlc_names_from_store
-        from sff.structs import MainReturnCode
+        from sff.network.steam_store import get_dlc_list_from_store, get_dlc_names_from_store
+        from sff.core.structs import MainReturnCode
 
         print(Fore.CYAN + f"\nFetching DLC list for App ID {base_id}..." + Style.RESET_ALL)
         try:

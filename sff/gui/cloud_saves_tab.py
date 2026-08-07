@@ -28,9 +28,9 @@ from PyQt6.QtWidgets import (
     QHeaderView, QTextEdit, QFileDialog, QFrame,
 )
 
-from sff.cloud_saves import CloudSaves
-from sff.storage.settings import get_setting, set_setting
-from sff.structs import Settings
+from sff.cloud.cloud_saves import CloudSaves
+from sff.core.storage.settings import get_setting, set_setting
+from sff.core.structs import Settings
 
 logger = logging.getLogger(__name__)
 

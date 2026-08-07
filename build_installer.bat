@@ -3,11 +3,11 @@ setlocal
 
 set NSIS=C:\Program Files (x86)\NSIS\makensis.exe
 
-:: Extract version from sff/strings.py
-for /f "tokens=3" %%v in ('findstr "^VERSION" sff\strings.py') do set APP_VERSION=%%v
+:: Extract version from sff/core/strings.py
+for /f "tokens=3" %%v in ('findstr "^VERSION" sff\core\strings.py') do set APP_VERSION=%%v
 set APP_VERSION=%APP_VERSION:"=%
 if "%APP_VERSION%"=="" (
-    echo Could not read VERSION from sff\strings.py
+    echo Could not read VERSION from sff\core\strings.py
     pause
     exit /b 1
 )

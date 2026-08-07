@@ -19,8 +19,8 @@
 
 from abc import ABC, abstractmethod
 
-from sff.steam_client import SteamInfoProvider
-from sff.structs import LuaParsedInfo
+from sff.network.steam_client import SteamInfoProvider
+from sff.core.structs import LuaParsedInfo
 from typing import Union
 
 

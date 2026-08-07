@@ -27,10 +27,10 @@ from sff.linux import acf_writer, depot_downloader, permissions, slscheevo, slss
 from sff.linux.dotnet import ensure_dotnet_9
 from sff.linux.depot_downloader import MANIFESTS_TMP
 from sff.lua.manager import LuaManager
-from sff.prompts import prompt_confirm, prompt_dir, prompt_select
-from sff.steam_store import get_app_name_from_store
-from sff.storage.vdf import ensure_library_has_app, get_steam_libs
-from sff.structs import OSType
+from sff.ui.prompts import prompt_confirm, prompt_dir, prompt_select
+from sff.network.steam_store import get_app_name_from_store
+from sff.core.storage.vdf import ensure_library_has_app, get_steam_libs
+from sff.core.structs import OSType
 
 
 _MANIFEST_ID_RE = re.compile(
@@ -49,7 +49,7 @@ def _get_manifests_from_staging() -> dict:
     # silently invisible to the DDMod forwarder, _build_game_data
     # returned an empty manifests dict, and DDMod fell back to "fetch
     # from Steam CDN anonymously" -> 401.
-    from sff.utils import manifests_staging_dir
+    from sff.core.utils import manifests_staging_dir
     staging = manifests_staging_dir()
     result: dict = {}
     if not staging.exists():
@@ -79,7 +79,7 @@ def _build_game_data(lua_parsed, steam_path: Path) -> dict:
 
     buildid = "0"
     try:
-        from sff.steam_client import create_provider_for_current_thread
+        from sff.network.steam_client import create_provider_for_current_thread
         provider = create_provider_for_current_thread()
         app_data = provider.get_single_app_info(int(appid))
         bid = (
@@ -159,8 +159,8 @@ def _add_to_slssteam(game_data: dict, selected_depots: list, steam_path: Path, p
 
         token = game_data.get("token")
         if token:
-            from sff.storage.settings import get_setting
-            from sff.structs import Settings
+            from sff.core.storage.settings import get_setting
+            from sff.core.structs import Settings
             try:
                 import yaml
                 config_path = sls.sls_config_path
@@ -385,7 +385,7 @@ def handle_linux_achievements(steam_path: Path) -> None:
 
     app_ids = []
     if raw == "manual":
-        from sff.prompts import prompt_text
+        from sff.ui.prompts import prompt_text
         appid_str = prompt_text(
             "Enter App ID(s) separated by commas:",
             validator=lambda x: all(p.strip().isdigit() for p in x.split(",") if p.strip()),

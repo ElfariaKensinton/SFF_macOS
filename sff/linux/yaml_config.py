@@ -292,15 +292,44 @@ def ensure_slssteam_api_enabled(config_path: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 def _init_config_with_app(config_path: Path, app_id: str, comment: str) -> bool:
-    """Create a minimal config with just AdditionalApps.
-    SLSsteam fills in its own defaults for missing fields at runtime.
-    Kept minimal so a stray write never wipes a user's full existing config."""
+    """Create a config with the official SLSsteam default template + the first AdditionalApp."""
+    template = (
+        f"DisableFamilyShareLock: yes\n"
+        f"UseWhitelist: no\n"
+        f"AppIds:\n"
+        f"AdditionalApps:\n"
+        f"  - {app_id}"
+        + (f"   # {comment}" if comment else "") + "\n"
+        f"DlcData:\n"
+        f"AppTokens:\n"
+        f"FakeOffline:\n"
+        f"FakeAppIds:\n"
+        f"ManifestIds:\n"
+        f"DepotBlacklist:\n"
+        f"IdleStatus:\n"
+        f"  AppId: 0\n"
+        f"  Title: \"\"\n"
+        f"GameTitles:\n"
+        f"SubscriptionTimestamps:\n"
+        f"DenuvoGames:\n"
+        f"SteamIdOverride:\n"
+        f"MaxSchemaTries: 10\n"
+        f"SafeMode: no\n"
+        f"Notifications: yes\n"
+        f"WarnHashMissmatch: no\n"
+        f"NotifyInit: yes\n"
+        f"API: no\n"
+        f"DisableCloud: yes\n"
+        f"DisableUpdates: yes\n"
+        f"FakeName: \"\"\n"
+        f"FakeEmail: \"\"\n"
+        f"FakeWalletBalance: 0\n"
+        f"LogLevel: 2\n"
+        f"DumpClientInterfaces: no\n"
+        f"ExtendedLogging: no\n"
+    )
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    entry = f"AdditionalApps:\n  - {app_id}"
-    if comment:
-        entry += f"   # {comment}"
-    entry += "\n"
-    if _atomic_write(config_path, entry):
+    if _atomic_write(config_path, template):
         logger.info(f"Created config with AppID '{app_id}' in {config_path}")
         return True
     return False
@@ -337,13 +366,16 @@ _SLSSTEAM_REQUIRED_FIELDS = (
     "UseWhitelist: no\n"
     "DisableCloud: yes\n"
     "DisableUpdates: yes\n"
-    "PlayNotOwnedGames: yes\n"
     "SteamIdOverride:\n"
     "MaxSchemaTries: 10\n"
     "SafeMode: no\n"
+    "WarnHashMissmatch: no\n"
     "Notifications: yes\n"
     "NotifyInit: yes\n"
+    "API: no\n"
     "LogLevel: 2\n"
+    "DumpClientInterfaces: no\n"
+    "ExtendedLogging: no\n"
 )
 
 

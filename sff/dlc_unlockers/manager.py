@@ -26,8 +26,8 @@ from sff.dlc_unlockers.smokeapi import SmokeAPIUnlocker
 from sff.dlc_unlockers.creamapi import CreamAPIUnlocker
 from sff.dlc_unlockers.uplay_r1 import UplayR1Unlocker
 from sff.dlc_unlockers.uplay_r2 import UplayR2Unlocker
-from sff.storage.settings import load_all_settings, set_setting
-from sff.structs import Settings
+from sff.core.storage.settings import load_all_settings, set_setting
+from sff.core.structs import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ class UnlockerManager:
         # We need to save it directly
         settings[Settings.ACTIVE_UNLOCKER_PER_GAME.key_name] = unlocker_map
         import msgpack
-        from sff.storage.settings import SETTINGS_FILE
+        from sff.core.storage.settings import SETTINGS_FILE
         with SETTINGS_FILE.open("wb") as f:
             f.write(msgpack.packb(settings))
         logger.info(f"Set active unlocker for app {app_id} to {unlocker_type.value}")

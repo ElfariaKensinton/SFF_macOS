@@ -16,6 +16,6 @@
 # You should have received a copy of the GNU General Public License
 # along with SteaMidra.  If not, see <https://www.gnu.org/licenses/>.
 
-from sff.dotnet_utils import ensure_dotnet_9, get_dotnet_path
+from sff.downloads.dotnet_utils import ensure_dotnet_9, get_dotnet_path
 
 __all__ = ["get_dotnet_path", "ensure_dotnet_9"]

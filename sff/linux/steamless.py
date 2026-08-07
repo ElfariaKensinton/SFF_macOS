@@ -24,7 +24,7 @@ from pathlib import Path
 from colorama import Fore, Style
 
 from sff.linux import dotnet
-from sff.utils import root_folder
+from sff.core.utils import root_folder
 
 SKIP_PATTERNS = [
     re.compile(p, re.IGNORECASE) for p in [

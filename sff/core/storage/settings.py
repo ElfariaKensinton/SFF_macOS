@@ -1,0 +1,234 @@
+# SteaMidra - Steam game setup and manifest tool (SFF)
+# Copyright (c) 2025-2026 Midrag (https://github.com/Midrags)
+#
+# This file is part of SteaMidra.
+#
+# SteaMidra is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# SteaMidra is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with SteaMidra.  If not, see <https://www.gnu.org/licenses/>.
+
+import json
+import logging
+import tempfile
+import threading
+from pathlib import Path
+
+import msgpack  # type: ignore
+
+from sff.core.secret_store import keyring_decrypt, keyring_encrypt
+from sff.core.structs import SettingCustomTypes, Settings
+from sff.core.utils import root_folder, sff_data_dir
+from typing import cast
+
+logger = logging.getLogger(__name__)
+
+SETTINGS_FILE = sff_data_dir() / "settings.bin"
+SETTINGS_VERSION = "1.1.0"  # For migration tracking
+
+
+_SETTINGS_CACHE: dict | None = None
+_settings_lock = threading.Lock()
+
+
+def _invalidate_cache():
+    global _SETTINGS_CACHE
+    _SETTINGS_CACHE = None
+
+
+def _atomic_write_settings(data: dict) -> None:
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix="settings.", suffix=".tmp", dir=SETTINGS_FILE.parent)
+    try:
+        with open(tmp_fd, "wb") as f:
+            f.write(msgpack.packb(data))  # type: ignore
+        Path(tmp_path).replace(SETTINGS_FILE)
+    finally:
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def load_all_settings():
+    global _SETTINGS_CACHE
+    if _SETTINGS_CACHE is not None:
+        return _SETTINGS_CACHE
+
+    try:
+        SETTINGS_FILE.touch(exist_ok=True)
+        with SETTINGS_FILE.open("rb") as f:
+            data = f.read()
+    except Exception:
+        logger.exception("Failed to read settings file — resetting to defaults")
+        _SETTINGS_CACHE = {}
+        return _SETTINGS_CACHE
+    try:
+        settings = (
+            cast("dict[Any, Any]", msgpack.unpackb(data))  # type: ignore
+            if data
+            else {}
+        )
+    except Exception:
+        logger.exception("Failed to unpack settings — resetting to defaults")
+        settings = {}
+
+    settings = migrate_settings(settings)
+    _SETTINGS_CACHE = settings
+    return settings
+
+
+def get_setting(key):
+    value = load_all_settings().get(key.key_name)
+    if value and key.hidden:
+        try:
+            return keyring_decrypt(value)
+        except Exception:
+            logger.warning("Failed to decrypt hidden setting %s — encryption key may have changed", key.clean_name)
+            return None
+    return value
+
+
+def set_setting(key, value):
+    if not isinstance(value, (str, bool, dict)):
+        raise ValueError("Invalid type used for set_setting")
+
+    logger.debug(f"set_setting: {key.clean_name} -> {str(value)}")
+    with _settings_lock:
+        settings = load_all_settings()
+        settings[key.key_name] = (
+            keyring_encrypt(value) if key.hidden and isinstance(value, str) else value
+        )
+        _atomic_write_settings(settings)
+
+
+def clear_setting(key):
+    logger.debug(f"clear_setting: {key.clean_name}")
+    with _settings_lock:
+        settings = load_all_settings()
+        if key.key_name in settings:
+            settings.pop(key.key_name)
+            _atomic_write_settings(settings)
+
+
+def resolve_advanced_mode():
+    adv_mode = get_setting(Settings.ADVANCED_MODE)
+    if adv_mode is None or isinstance(adv_mode, str):
+        adv_mode = False
+        set_setting(Settings.ADVANCED_MODE, adv_mode)
+    return adv_mode
+
+
+def export_settings(export_path, include_sensitive = False):
+    try:
+        settings = load_all_settings()
+        export_data = {
+            "version": SETTINGS_VERSION,
+            "settings": {}
+        }
+        for setting in Settings:
+            key = setting.key_name
+            if key in settings:
+                value = settings[key]
+                if setting.hidden and not include_sensitive:
+                    continue
+                if setting.hidden:
+                    if isinstance(value, bytes):
+                        try:
+                            value = keyring_decrypt(value)
+                        except Exception as e:
+                            logger.warning(f"Failed to decrypt {key}: {e}")
+                            continue
+                    elif isinstance(value, str):
+                        value = value
+                export_data["settings"][key] = value
+        with export_path.open("w", encoding="utf-8") as f:
+            json.dump(export_data, f, indent=2)
+        logger.info(f"Settings exported to {export_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to export settings: {e}", exc_info=True)
+        return False
+
+
+def import_settings(import_path):
+    try:
+        if not import_path.exists():
+            return False, f"File not found: {import_path}"
+        with import_path.open("r", encoding="utf-8") as f:
+            import_data = json.load(f)
+        if "version" not in import_data or "settings" not in import_data:
+            return False, "Invalid settings file format: missing version or settings"
+        if not isinstance(import_data["settings"], dict):
+            return False, "Invalid settings file format: settings must be a dictionary"
+        imported_count = 0
+        errors = []
+        for key, value in import_data["settings"].items():
+            setting = None
+            for s in Settings:
+                if s.key_name == key:
+                    setting = s
+                    break
+            if setting is None:
+                errors.append(f"Unknown setting: {key}")
+                continue
+            if setting.type == bool and not isinstance(value, bool):
+                errors.append(f"{key}: expected bool, got {type(value).__name__}")
+                continue
+            elif (
+                setting.type == str
+                or setting.type in (SettingCustomTypes.DIR, SettingCustomTypes.FILE)
+            ) and not isinstance(value, str):
+                errors.append(f"{key}: expected str, got {type(value).__name__}")
+                continue
+            elif setting.type == dict and not isinstance(value, dict):
+                errors.append(f"{key}: expected dict, got {type(value).__name__}")
+                continue
+            try:
+                set_setting(setting, value)
+                imported_count += 1
+            except Exception as e:
+                errors.append(f"{key}: {str(e)}")
+        if errors:
+            error_msg = f"Imported {imported_count} settings with errors: " + "; ".join(errors)
+            logger.warning(error_msg)
+            return True, error_msg
+        logger.info(f"Successfully imported {imported_count} settings from {import_path}")
+        return True, f"Successfully imported {imported_count} settings"
+
+    except json.JSONDecodeError as e:
+        return False, f"Invalid JSON file: {e}"
+    except Exception as e:
+        logger.error(f"Failed to import settings: {e}", exc_info=True)
+        return False, f"Import failed: {e}"
+
+
+def migrate_settings(settings):
+    current_version = settings.get("_version", "0.0.0")
+
+    if current_version == SETTINGS_VERSION:
+        return settings
+
+    logger.info(f"Migrating settings from version {current_version} to {SETTINGS_VERSION}")
+
+    # Add migration logic here as needed in future versions
+    if current_version < "1.1.0":
+        if "provider_contribute_keys" not in settings:
+            settings["provider_contribute_keys"] = True
+        if "provider_enrich_steam_metadata" not in settings:
+            settings["provider_enrich_steam_metadata"] = True
+
+    settings["_version"] = SETTINGS_VERSION
+    _atomic_write_settings(settings)
+    _invalidate_cache()
+
+    logger.info("Settings migration completed")
+    return settings

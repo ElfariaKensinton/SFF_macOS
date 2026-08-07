@@ -375,7 +375,7 @@ class BulkImportQueue:
         # All registration helpers are imported from the existing modules
         # so the single-file path and the bulk path stay byte-identical.
         from sff.lua.writer import ACFWriter, ConfigVDFWriter
-        from sff.storage.vdf import ensure_library_has_app
+        from sff.core.storage.vdf import ensure_library_has_app
 
         if sys.platform == "win32":
             from sff.steam_tools_compat import install_lua_to_steam
@@ -470,8 +470,8 @@ class BulkImportQueue:
         """
 
         from sff.lua.writer import ACFWriter
-        from sff.storage.vdf import ensure_library_has_app
-        from sff.structs import DepotKeyPair, LuaParsedInfo
+        from sff.core.storage.vdf import ensure_library_has_app
+        from sff.core.structs import DepotKeyPair, LuaParsedInfo
 
         steam_path = self._steam_path
         lib_path = self._active_library or steam_path

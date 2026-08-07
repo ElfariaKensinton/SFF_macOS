@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QProgressBar, QMessageBox,
 )
 
-from sff.download_manager import DownloadManager, DownloadStatus
+from sff.downloads.download_manager import DownloadManager, DownloadStatus
 
 logger = logging.getLogger(__name__)
 

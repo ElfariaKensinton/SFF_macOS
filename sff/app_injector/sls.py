@@ -26,13 +26,13 @@ from colorama import Fore, Style
 from sff.app_injector.base import AppInjectionManager
 from sff.lua.writer import ConfigVDFWriter
 from sff.manifest.downloader import ManifestDownloader
-from sff.prompts import prompt_confirm, prompt_file, prompt_select, prompt_text
-from sff.steam_client import ParsedDLC, SteamInfoProvider
-from sff.steam_store import get_dlc_list_from_store, get_dlc_names_from_store
-from sff.storage.settings import get_setting, set_setting
-from sff.storage.yaml import YAMLParser
-from sff.structs import InjectionChoice, DLCTypes, LuaParsedInfo, MainReturnCode, Settings
-from sff.utils import enter_path
+from sff.ui.prompts import prompt_confirm, prompt_file, prompt_select, prompt_text
+from sff.network.steam_client import ParsedDLC, SteamInfoProvider
+from sff.network.steam_store import get_dlc_list_from_store, get_dlc_names_from_store
+from sff.core.storage.settings import get_setting, set_setting
+from sff.core.storage.yaml import YAMLParser
+from sff.core.structs import InjectionChoice, DLCTypes, LuaParsedInfo, MainReturnCode, Settings
+from sff.core.utils import enter_path
 from typing import Union
 
 logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ class SLSManager(AppInjectionManager):
             ids = [int(data.app_id)]
             # Also add DLC app IDs from the lua so they show in Steam properties
             try:
-                from sff.steam_client import create_provider_for_current_thread
+                from sff.network.steam_client import create_provider_for_current_thread
                 provider = create_provider_for_current_thread()
                 app_info = provider.get_single_app_info(int(data.app_id))
                 depots = app_info.get("depots", {})
@@ -104,7 +104,14 @@ class SLSManager(AppInjectionManager):
                             if dlc_id not in ids:
                                 ids.append(dlc_id)
                             # Register DLC relationship in DlcData
-                            dlc_name = depot_meta.get("name", "") or app_info.get("common", {}).get("name", "")
+                            dlc_name = ""
+                            try:
+                                dlc_info = provider.get_single_app_info(dlc_id)
+                                dlc_name = (dlc_info.get("common") or {}).get("name", "")
+                            except Exception:
+                                pass
+                            if not dlc_name:
+                                dlc_name = depot_meta.get("name", "") or (app_info.get("common") or {}).get("name", "")
                             add_dlc_data(self.sls_config_path, str(data.app_id), str(dlc_id), dlc_name)
             except Exception as e:
                 logger.debug("add_ids: DLC lookup failed for %s: %s", data.app_id, e)
@@ -117,6 +124,22 @@ class SLSManager(AppInjectionManager):
                 changes += 1
             else:
                 print(f"{new_app_id} already in SLSSteam config.")
+            # Try to register DlcData for this ID if it's a DLC
+            try:
+                from sff.network.steam_client import create_provider_for_current_thread
+                _provider = create_provider_for_current_thread()
+                _info = _provider.get_single_app_info(int(new_app_id))
+                _depots = _info.get("depots", {})
+                if isinstance(_depots, dict):
+                    for _did, _dmeta in _depots.items():
+                        if isinstance(_dmeta, dict) and _dmeta.get("dlcappid") == str(new_app_id):
+                            _parent = _dmeta.get("depotfromapp")
+                            if _parent:
+                                _dlc_name = (_info.get("common") or {}).get("name", "")
+                                add_dlc_data(self.sls_config_path, str(_parent), str(new_app_id), _dlc_name)
+                            break
+            except Exception:
+                pass
 
     def _dlc_check_via_store(self, base_id):
         """DLC check using Steam Store API only (no Steam client login). Fallback when Steam API fails."""

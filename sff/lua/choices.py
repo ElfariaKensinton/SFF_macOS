@@ -27,21 +27,21 @@ import httpx
 from colorama import Fore, Style
 
 from sff.fzf import run_fzf
-from sff.http_utils import download_to_tempfile
+from sff.network.http_utils import download_to_tempfile
 
 logger = logging.getLogger(__name__)
-from sff.lua.endpoints import get_hubcap, get_oureverday, get_ryuu
-from sff.prompts import prompt_confirm, prompt_file, prompt_select, prompt_text
-from sff.storage.settings import get_setting, set_setting
-from sff.strings import STEAM_WEB_API_KEY
-from sff.structs import (
+from sff.lua.endpoints import get_hubcap, get_oureverday, get_ryuu, get_depotbox
+from sff.ui.prompts import prompt_confirm, prompt_file, prompt_select, prompt_text
+from sff.core.storage.settings import get_setting, set_setting
+from sff.core.strings import STEAM_WEB_API_KEY
+from sff.core.structs import (
     LuaChoice,
     LuaChoiceReturnCode,
     LuaEndpoint,
     LuaResult,
     Settings,
 )
-from sff.utils import enter_path, root_folder
+from sff.core.utils import enter_path, root_folder
 from sff.zip import read_lua_from_zip
 
 APP_ID_RE = re.compile(r"(?<=store\.steampowered\.com/app/)\d+|\d+")
@@ -258,6 +258,8 @@ def _download_from_endpoint(dest, app_id, source, steam_path=None, request_updat
             depotcache=_depotcache_for(steam_path),
             request_update=request_update,
         )
+    if source == LuaEndpoint.DEPOTBOX:
+        return get_depotbox(dest, app_id)
     return None
 
 

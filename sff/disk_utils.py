@@ -142,7 +142,7 @@ def find_steam_libraries_on_disk() -> list[Path]:
     Safe: never throws on bad drives. Logs every skip reason.
     Returns deduplicated list of Paths that have a steamapps subdir.
     """
-    from sff.storage.vdf import get_steam_libs
+    from sff.core.storage.vdf import get_steam_libs
     found: list[Path] = []
     seen = set()
     for drive in iter_accessible_drives():

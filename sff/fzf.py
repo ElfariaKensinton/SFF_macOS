@@ -19,8 +19,8 @@
 import shutil
 import subprocess
 
-from sff.structs import OSType
-from sff.utils import root_folder
+from sff.core.structs import OSType
+from sff.core.utils import root_folder
 
 
 def _build_choices_text(choices) -> str:

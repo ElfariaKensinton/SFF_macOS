@@ -33,8 +33,8 @@ def open_older_version_browser(parent: QWidget, app_id: str, quiet: bool = False
     browser = QWebEngineView(window)
 
     if not quiet:
-        from sff.storage.settings import get_setting
-        from sff.structs import Settings
+        from sff.core.storage.settings import get_setting
+        from sff.core.structs import Settings
         quiet = str(get_setting(Settings.OLDER_VERSION_QUIET) or "").lower() in ("true", "1", "yes")
 
     timeout = QTimer(window)

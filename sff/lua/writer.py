@@ -33,15 +33,15 @@ from typing import Optional
 from pathvalidate import sanitize_filename
 
 
-from sff.http_utils import get_game_name
+from sff.network.http_utils import get_game_name
 
-from sff.prompts import prompt_confirm
+from sff.ui.prompts import prompt_confirm
 
-from sff.storage.vdf import VDFLoadAndDumper, vdf_dump, vdf_load
+from sff.core.storage.vdf import VDFLoadAndDumper, vdf_dump, vdf_load
 
-from sff.structs import LuaParsedInfo
+from sff.core.structs import LuaParsedInfo
 
-from sff.utils import enter_path
+from sff.core.utils import enter_path
 
 import logging
 

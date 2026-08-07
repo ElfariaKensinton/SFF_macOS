@@ -21,8 +21,8 @@ import re
 import httpx
 import json
 
-from sff.http_utils import get_request
-from sff.strings import VERSION
+from sff.network.http_utils import get_request
+from sff.core.strings import VERSION
 
 # Hardcoded to ensure updates always fetch from https://github.com/Midrags/SFF/releases
 

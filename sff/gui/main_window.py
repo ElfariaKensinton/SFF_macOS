@@ -54,13 +54,13 @@ from PyQt6.QtWidgets import (
 from sff.gui.log_window import GlobalLogWindow, QtLogHandler
 from sff.gui.themes import THEMES, theme_background
 from sff.i18n import T
-from sff.structs import MainMenu, MainReturnCode
+from sff.core.structs import MainMenu, MainReturnCode
 
 # Import preserver at module level so its dependency imports run
 # during Python's single-threaded import phase, not inside a background
 # thread where importlib concurrency can race with QtWebEngine init.
 try:
-    from sff.manifests.preserver import start_watcher as _start_watcher
+    from sff.manifest_watcher.preserver import start_watcher as _start_watcher
 except Exception:
     _start_watcher = None
 
@@ -142,8 +142,8 @@ class SFFMainWindow(QMainWindow):
         super().__init__()
         self.ui = ui
         self.steam_path = steam_path
-        from sff.storage.settings import get_setting
-        from sff.structs import Settings as _S
+        from sff.core.storage.settings import get_setting
+        from sff.core.structs import Settings as _S
         _saved_theme = get_setting(_S.THEME)
         self._current_theme = _saved_theme if (_saved_theme and _saved_theme in THEMES) else "dark"
         self._music_muted = False
@@ -364,7 +364,7 @@ class SFFMainWindow(QMainWindow):
             return
         self._classic_ui_built = True
 
-        from sff.download_manager import DownloadManager
+        from sff.downloads.download_manager import DownloadManager
         self._download_manager = DownloadManager()
         self.ui.download_manager = self._download_manager
 
@@ -720,8 +720,8 @@ class SFFMainWindow(QMainWindow):
             w.setVisible(not from_steam)
 
     def _refresh_game_list(self):
-        from sff.game_specific import GameHandler
-        from sff.storage.vdf import get_steam_libs
+        from sff.game.game_specific import GameHandler
+        from sff.core.storage.vdf import get_steam_libs
         self.game_combo.clear()
         self._game_list = []
         injection = self.ui.app_list_man or self.ui.sls_man
@@ -740,7 +740,7 @@ class SFFMainWindow(QMainWindow):
 
     def _quick_coldclient(self):
         """Switch to Fix Game tab with ColdClient mode pre-filled from the selected game."""
-        from sff.fix_game.service import EmuMode
+        from sff.game.fix_game.service import EmuMode
         acf = self._get_selected_acf()
         if acf is None:
             from PyQt6.QtWidgets import QMessageBox
@@ -757,7 +757,7 @@ class SFFMainWindow(QMainWindow):
                 break
 
     def _get_selected_acf(self):
-        from sff.game_specific import ACFInfo
+        from sff.game.game_specific import ACFInfo
         if self.radio_steam.isChecked():
             return self.game_combo.currentData()
         path_str = self.path_edit.text().strip()
@@ -774,8 +774,8 @@ class SFFMainWindow(QMainWindow):
 
     def _toggle_web_ui(self):
         self._web_ui_active = not self._web_ui_active
-        from sff.storage.settings import set_setting
-        from sff.structs import Settings as _S
+        from sff.core.storage.settings import set_setting
+        from sff.core.structs import Settings as _S
         set_setting(_S.USE_MODERN_UI, self._web_ui_active)
 
         if self._web_ui_active:
@@ -863,7 +863,7 @@ class SFFMainWindow(QMainWindow):
 
         for candidate in ("SFF.png", "SFF.ico"):
             try:
-                from sff.utils import root_folder as _root_folder
+                from sff.core.utils import root_folder as _root_folder
                 logo_path = _root_folder() / candidate
             except Exception:
                 logo_path = Path(candidate)
@@ -1079,7 +1079,7 @@ class SFFMainWindow(QMainWindow):
         self._start_worker(_runner, "Remove SteamStub (Steamless)", on_done=_show_result)
 
     def _run_game_action(self, choice):
-        from sff.structs import MainMenu
+        from sff.core.structs import MainMenu
         acf = self._get_selected_acf()
         if acf is None:
             QMessageBox.warning(
@@ -1134,8 +1134,8 @@ class SFFMainWindow(QMainWindow):
         string / unset means ask every time (the historical behaviour).
         """
         try:
-            from sff.storage.settings import get_setting
-            from sff.structs import Settings
+            from sff.core.storage.settings import get_setting
+            from sff.core.structs import Settings
             saved = (get_setting(Settings.STEAMAUTO_DEFAULT_MODE) or "").strip()
             if saved in ("full", "steamless_only"):
                 return saved
@@ -1166,7 +1166,7 @@ class SFFMainWindow(QMainWindow):
         return None
 
     def _run_steam_auto_gui(self):
-        from sff.steamauto import get_steamauto_cli_path, run_steamauto
+        from sff.game.steamauto import get_steamauto_cli_path, run_steamauto
         if get_steamauto_cli_path() is None:
             QMessageBox.critical(
                 self,
@@ -1201,7 +1201,7 @@ class SFFMainWindow(QMainWindow):
         When None (legacy callers), this falls back to the Qt mode picker.
         """
         import json
-        from sff.steamauto import run_steamauto
+        from sff.game.steamauto import run_steamauto
         if mode is None:
             mode = self._ask_steamauto_mode()
             if mode is None:
@@ -1256,8 +1256,8 @@ class SFFMainWindow(QMainWindow):
         if hasattr(self, 'game_combo') and self.game_combo is not None:
             self.game_combo._update_arrow()
         if save:
-            from sff.storage.settings import set_setting
-            from sff.structs import Settings as _S
+            from sff.core.storage.settings import set_setting
+            from sff.core.structs import Settings as _S
             set_setting(_S.THEME, key)
 
     def changeEvent(self, event):
@@ -1463,7 +1463,7 @@ class SFFMainWindow(QMainWindow):
     # ── Settings dialog ──────────────────────────────────────────
 
     def _show_settings(self):
-        from sff.storage.settings import (
+        from sff.core.storage.settings import (
             clear_setting,
             export_settings,
             get_setting,
@@ -1471,7 +1471,7 @@ class SFFMainWindow(QMainWindow):
             load_all_settings,
             set_setting,
         )
-        from sff.structs import SettingCustomTypes, Settings
+        from sff.core.structs import SettingCustomTypes, Settings
         dlg = QDialog(self)
         dlg.setWindowTitle("Settings")
         dlg.setMinimumSize(620, 500)
@@ -1616,9 +1616,9 @@ class SFFMainWindow(QMainWindow):
         dlg.exec()
 
     def _apply_setting_live(self, s, parent_widget=None):
-        from sff.structs import Settings
+        from sff.core.structs import Settings
         if s == Settings.PLAY_MUSIC:
-            from sff.storage.settings import get_setting
+            from sff.core.storage.settings import get_setting
             val = get_setting(Settings.PLAY_MUSIC)
             if val:
                 self.ui.kill_midi_player()
@@ -1634,7 +1634,7 @@ class SFFMainWindow(QMainWindow):
                 )
         elif s == Settings.LANGUAGE:
             from sff.i18n import set_language
-            from sff.storage.settings import get_setting
+            from sff.core.storage.settings import get_setting
             set_language(get_setting(Settings.LANGUAGE))
         elif s == Settings.SAVE_WATCHER_INTERVAL:
             self._start_save_watcher()
@@ -1644,8 +1644,8 @@ class SFFMainWindow(QMainWindow):
             # next time the user looks at their library the prompt state
             # matches the toggle.
             try:
-                from sff.update_prompt_override import apply_setting
-                from sff.storage.settings import get_setting
+                from sff.game.update_prompt_override import apply_setting
+                from sff.core.storage.settings import get_setting
                 from sff.steam_path import validate_steam_path
                 raw = get_setting(Settings.STEAM_PATH)
                 steam_path = Path(raw) if raw else None
@@ -1710,8 +1710,8 @@ class SFFMainWindow(QMainWindow):
         self.close()
 
     def closeEvent(self, event):
-        from sff.storage.settings import set_setting
-        from sff.structs import Settings as _S
+        from sff.core.storage.settings import set_setting
+        from sff.core.structs import Settings as _S
         try:
             set_setting(_S.WINDOW_GEOMETRY, self.saveGeometry().toHex().data().decode())
         except Exception:
@@ -1721,7 +1721,7 @@ class SFFMainWindow(QMainWindow):
         # CLOSE_TO_TRAY checkbox in Settings to make X quit instead.
         # Treat missing / empty / explicit-True values as ON; only
         # "False" / "false" / "0" disable tray behaviour.
-        from sff.storage.settings import get_setting
+        from sff.core.storage.settings import get_setting
         try:
             raw = get_setting(_S.CLOSE_TO_TRAY)
         except Exception:
@@ -1773,8 +1773,8 @@ class SFFMainWindow(QMainWindow):
     # ── Background save watcher ──────────────────────────────────
 
     def _start_save_watcher(self):
-        from sff.storage.settings import get_setting
-        from sff.structs import Settings as _S
+        from sff.core.storage.settings import get_setting
+        from sff.core.structs import Settings as _S
         try:
             interval_min = int(get_setting(_S.SAVE_WATCHER_INTERVAL) or 10)
         except (ValueError, TypeError):
@@ -1790,8 +1790,8 @@ class SFFMainWindow(QMainWindow):
 
     def _do_background_save_backup(self):
         import json
-        from sff.storage.settings import get_setting
-        from sff.structs import Settings as _S
+        from sff.core.storage.settings import get_setting
+        from sff.core.structs import Settings as _S
         steam32_id = get_setting(_S.STEAM32_ID)
         steam_path = getattr(self, 'steam_path', None)
         provider_config_raw = get_setting(_S.LAST_BACKUP_PROVIDER_CONFIG)
@@ -1807,7 +1807,7 @@ class SFFMainWindow(QMainWindow):
             logger.debug('Save watcher error', exc_info=True)
 
     def _local_save_backup(self, steam_path, steam32_id):
-        from sff.cloud_saves import CloudSaves
+        from sff.cloud.cloud_saves import CloudSaves
         userdata_dir = Path(steam_path) / 'userdata' / str(steam32_id)
         if not userdata_dir.exists():
             return
@@ -1834,7 +1834,7 @@ class SFFMainWindow(QMainWindow):
             logger.debug('Save watcher (local): backed up %d game(s)', backed_up)
 
     def _cloud_save_backup(self, cfg, steam_path, steam32_id):
-        from sff.cloud_saves import (
+        from sff.cloud.cloud_saves import (
             scan_all_save_locations,
             backup_save_location_local,
             backup_save_location_rclone,
@@ -1859,7 +1859,7 @@ class SFFMainWindow(QMainWindow):
             rclone_exe = cfg.get('rclone_exe', '')
             remote_dest = cfg.get('remote_dest', '')
             if not rclone_exe:
-                from sff.utils import root_folder
+                from sff.core.utils import root_folder
                 # Use the platform-aware folder: rclone (Windows) vs rclone_linux (Linux).
                 _bundle_dir = "rclone" if _sys.platform == "win32" else "rclone_linux"
                 _bundle_name = "rclone.exe" if _sys.platform == "win32" else "rclone"
@@ -1877,7 +1877,7 @@ class SFFMainWindow(QMainWindow):
                     except Exception:
                         pass
         elif provider == 'gdrive_api':
-            from sff.google_drive import get_service, get_backup_root, is_authenticated
+            from sff.cloud.google_drive import get_service, get_backup_root, is_authenticated
             from concurrent.futures import ThreadPoolExecutor, as_completed
             if not is_authenticated():
                 return
@@ -1903,7 +1903,7 @@ class SFFMainWindow(QMainWindow):
     # ── About ────────────────────────────────────────────────────
 
     def _show_about(self):
-        from sff.strings import VERSION
+        from sff.core.strings import VERSION
         QMessageBox.about(
             self,
             "About SteaMidra",
@@ -1929,7 +1929,7 @@ class SFFMainWindow(QMainWindow):
             return
 
         def _job():
-            from sff.lumacore_setup import install_lumacore
+            from sff.lumacore.lumacore_setup import install_lumacore
             install_lumacore(Path(steam_path), progress_callback=print)
 
         self._start_worker(_job, label="Install LumaCore")
@@ -1950,7 +1950,7 @@ class SFFMainWindow(QMainWindow):
             return
 
         def _job():
-            from sff.lumacore_setup import deactivate_lumacore
+            from sff.lumacore.lumacore_setup import deactivate_lumacore
             deactivate_lumacore(Path(steam_path), progress_callback=print)
 
         self._start_worker(_job, label="Deactivate LumaCore")
@@ -1963,7 +1963,7 @@ class SFFMainWindow(QMainWindow):
         result_box: dict = {}
 
         def _job():
-            from sff.lumacore_setup import check_for_lumacore_update
+            from sff.lumacore.lumacore_setup import check_for_lumacore_update
             result_box["result"] = check_for_lumacore_update(Path(steam_path), force=True)
 
         def _show():
@@ -2000,7 +2000,7 @@ class SFFMainWindow(QMainWindow):
             return
 
         def _job():
-            from sff.launch_options import toggle_online_fix
+            from sff.game.launch_options import toggle_online_fix
             ok, msg = toggle_online_fix(Path(steam_path), app_id)
             print(msg)
             return ok

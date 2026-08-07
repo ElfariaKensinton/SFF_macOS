@@ -385,7 +385,8 @@ def _setup_config_from_extracted(extract_dir: Path, steam_type: str = "native") 
 
 
 def patch_slssteam_config(steam_type: str, print_fn=print) -> bool:
-    """Patch SLSsteam config.yaml to enable PlayNotOwnedGames, SafeMode, and notifications.
+    """Patch SLSsteam config.yaml to enforce correct defaults for SafeMode,
+    notifications, DisableUpdates/DisableCloud/DisableFamilyShareLock.
     Also ensures all required SLSsteam fields exist. Mirrors h3adcr-b's editconfig() function.
     Skips if .headcrabd marker exists."""
     config_dir = get_slssteam_config_dir(steam_type)
@@ -401,11 +402,13 @@ def patch_slssteam_config(steam_type: str, print_fn=print) -> bool:
         import re
         text = config_path.read_text(encoding="utf-8")
         patches = {
-            r"^PlayNotOwnedGames:.*": "PlayNotOwnedGames: yes",
-            r"^SafeMode:.*":         "SafeMode: no",
-            r"^WarnHashMissmatch:.*": "WarnHashMissmatch: yes",
-            r"^NotifyInit:.*":       "NotifyInit: yes",
-            r"^Notifications:.*":    "Notifications: yes",
+            r"^SafeMode:.*":              "SafeMode: no",
+            r"^WarnHashMissmatch:.*":      "WarnHashMissmatch: no",
+            r"^NotifyInit:.*":            "NotifyInit: yes",
+            r"^Notifications:.*":         "Notifications: yes",
+            r"^DisableUpdates:.*":        "DisableUpdates: yes",
+            r"^DisableCloud:.*":          "DisableCloud: yes",
+            r"^DisableFamilyShareLock:.*": "DisableFamilyShareLock: yes",
         }
         for pattern, replacement in patches.items():
             text = re.sub(pattern, replacement, text, flags=re.MULTILINE)
@@ -416,7 +419,7 @@ def patch_slssteam_config(steam_type: str, print_fn=print) -> bool:
             text = patched
         config_path.write_text(text, encoding="utf-8")
         marker.write_text("patched by SteaMidra\n", encoding="utf-8")
-        print_fn(Fore.GREEN + "SLSsteam config.yaml patched (PlayNotOwnedGames, SafeMode off / WarnHashMissmatch on, Notifications enabled, missing fields filled)." + Style.RESET_ALL)
+        print_fn(Fore.GREEN + "SLSsteam config.yaml patched (SafeMode, WarnHashMissmatch, Notifications, DisableUpdates, DisableCloud, DisableFamilyShareLock, missing fields filled)." + Style.RESET_ALL)
         return True
     except Exception as e:
         print_fn(Fore.YELLOW + f"Could not patch SLSsteam config.yaml: {e}" + Style.RESET_ALL)
@@ -727,7 +730,7 @@ def migrate_existing_games(print_fn=print) -> int:
 
     # scan ACF files from Steam libraries
     try:
-        from sff.storage.vdf import get_steam_libs
+        from sff.core.storage.vdf import get_steam_libs
         libs = get_steam_libs(steam_path) if steam_path else []
         for lib in libs:
             acf_dir = lib / "steamapps"
@@ -746,7 +749,7 @@ def migrate_existing_games(print_fn=print) -> int:
 
     try:
         from sff.app_injector.sls import SLSManager
-        from sff.ui import UI
+        from sff.ui.ui import UI
         # use add_additional_app directly to avoid creating a full UI/Manager
         from sff.linux.yaml_config import add_additional_app
         imported = 0

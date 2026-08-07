@@ -25,9 +25,9 @@ from pathlib import Path
 
 from colorama import Fore, Style
 
-from sff.storage.settings import get_setting
-from sff.structs import Settings
-from sff.utils import root_folder
+from sff.core.storage.settings import get_setting
+from sff.core.structs import Settings
+from sff.core.utils import root_folder
 
 logger = logging.getLogger(__name__)
 

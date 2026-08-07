@@ -91,8 +91,8 @@ def create_acf(
     _now = str(int(_time.time()))
     _last_owner = "0"
     try:
-        from sff.storage.settings import get_setting
-        from sff.structs import Settings
+        from sff.core.storage.settings import get_setting
+        from sff.core.structs import Settings
         sid = get_setting(Settings.STEAM_ID)
         if sid and str(sid).strip():
             _last_owner = str(sid).strip()

@@ -26,7 +26,7 @@ from zipfile import ZipFile
 import httpx
 
 from sff.dlc_unlockers.base import UnlockerType
-from sff.http_utils import download_to_tempfile, get_request
+from sff.network.http_utils import download_to_tempfile, get_request
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +167,7 @@ class GitHubReleaseDownloader:
         return None
 
     def _get_local_resource(self, unlocker_type):
-        from sff.utils import root_folder
+        from sff.core.utils import root_folder
         resource_map = {
             UnlockerType.SMOKEAPI: "SmokeAPI",
             UnlockerType.CREAMAPI: "CreamAPI",

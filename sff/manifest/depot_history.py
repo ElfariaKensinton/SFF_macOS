@@ -478,7 +478,7 @@ def _fetch_steam_cm_entries(app_id):
     """Get depot IDs + current manifests with real dates from Steam CM."""
     result = {}
     try:
-        from sff.steam_client import create_provider_for_current_thread
+        from sff.network.steam_client import create_provider_for_current_thread
         prov = create_provider_for_current_thread()
         app_data = prov.get_single_app_info(int(app_id))
         if not app_data:

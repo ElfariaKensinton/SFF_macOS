@@ -93,7 +93,7 @@ _DLC_JSON_URLS = {
 }
 
 def _get_cache_dir() -> Path:
-    from sff.utils import sff_data_dir
+    from sff.core.utils import sff_data_dir
     path = sff_data_dir() / "store_metadata"
     path.mkdir(parents=True, exist_ok=True)
     return path

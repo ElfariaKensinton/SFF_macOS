@@ -803,7 +803,7 @@
   "Hubcap API key for store browsing": "用于商店浏览的 Hubcap API key",
   "Ryuu API key for Lua and manifest downloads": "用于 Lua 和 manifest 下载的 Ryuu API key",
   "Verify the saved Ryuu key by hitting the test endpoint with appid=440": "使用 appid=440 调用测试端点，以验证已保存的 Ryuu key",
-  "ManifestHub API key (manifesthub1.filegear-sg.me, 24h)": "ManifestHub API key（manifesthub1.filegear-sg.me，24 小时）",
+  "ManifestHub API key (manifesthub2.filegear-sg.me, 24h)": "ManifestHub API key（manifesthub2.filegear-sg.me，24 小时）",
   "Your Steam account username": "你的 Steam 账号用户名",
   "Your Steam account password (stored encrypted)": "你的 Steam 账号密码（加密存储）",
   "Your Steam32 ID (find at steamid.xyz)": "你的 Steam32 ID（可在 steamid.xyz 查询）",

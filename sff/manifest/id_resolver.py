@@ -21,9 +21,9 @@ from typing import Any, Protocol, Union
 
 from colorama import Fore, Style
 
-from sff.prompts import prompt_text
-from sff.steam_client import SteamInfoProvider
-from sff.utils import enter_path
+from sff.ui.prompts import prompt_text
+from sff.network.steam_client import SteamInfoProvider
+from sff.core.utils import enter_path
 
 
 def _dlc_ids_from_app_data(app_data: dict[str, Any]) -> list[int]:
@@ -78,7 +78,7 @@ def _public_manifest_from(app_data: dict[str, Any], depot_id: Union[str, int]):
 
 def _gui_prompting_disabled() -> bool:
     try:
-        from sff.prompts import _gui_backend
+        from sff.ui.prompts import _gui_backend
     except Exception:
         return False
     return _gui_backend is not None

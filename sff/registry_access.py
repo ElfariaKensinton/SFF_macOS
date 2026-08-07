@@ -22,7 +22,7 @@ from pathlib import Path
 
 from colorama import Fore, Style
 
-from sff.utils import root_folder
+from sff.core.utils import root_folder
 
 
 def _read_registry_value(hive, key_path, value_name):

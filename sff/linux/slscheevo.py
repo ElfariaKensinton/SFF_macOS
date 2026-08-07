@@ -23,7 +23,7 @@ from pathlib import Path
 
 from colorama import Fore, Style
 
-from sff.utils import root_folder
+from sff.core.utils import root_folder
 
 SUCCESS_CODES = (0, 10)
 

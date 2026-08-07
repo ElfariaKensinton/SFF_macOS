@@ -26,9 +26,9 @@ from pathlib import Path
 
 from colorama import Fore, Style
 
-from sff.storage.acf import ACFParser
-from sff.storage.vdf import get_steam_libs
-from sff.progress import create_progress_bar
+from sff.core.storage.acf import ACFParser
+from sff.core.storage.vdf import get_steam_libs
+from sff.downloads.progress import create_progress_bar
 from typing import List
 
 logger = logging.getLogger(__name__)

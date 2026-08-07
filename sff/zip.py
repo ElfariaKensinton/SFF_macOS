@@ -60,7 +60,7 @@ def read_lua_from_zip(
                 lua_contents = data
         elif lower.endswith(".manifest"):
             filename = Path(name).name
-            from sff.utils import manifests_staging_dir
+            from sff.core.utils import manifests_staging_dir
             manifests_dir = manifests_staging_dir()
             (manifests_dir / filename).write_bytes(data)
             if depotcache is not None:

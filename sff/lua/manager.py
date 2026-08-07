@@ -25,9 +25,9 @@ from typing import Optional
 from colorama import Fore, Style
 
 from sff.lua.choices import add_new_lua, download_lua, select_from_saved_luas
-from sff.prompts import prompt_select
-from sff.storage.named_ids import get_named_ids
-from sff.structs import (
+from sff.ui.prompts import prompt_select
+from sff.core.storage.named_ids import get_named_ids
+from sff.core.structs import (
     DepotKeyPair,
     LuaChoice,
     LuaChoiceReturnCode,

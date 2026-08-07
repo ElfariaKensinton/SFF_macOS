@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QTextEdit, QRadioButton, QButtonGroup, QScrollArea,
 )
 
-from sff.fix_game.service import FixGameService, EmuMode
+from sff.game.fix_game.service import FixGameService, EmuMode
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ def _scan_installed_games(steam_path = None):
 
     # Read libraryfolders.vdf from each root
     try:
-        from sff.storage.vdf import get_steam_libs
+        from sff.core.storage.vdf import get_steam_libs
         if candidates:
             for root in list(candidates):
                 for lib in get_steam_libs(root):
@@ -82,7 +82,7 @@ def _scan_installed_games(steam_path = None):
             continue
         for acf in steamapps.glob("appmanifest_*.acf"):
             try:
-                from sff.storage.vdf import vdf_load
+                from sff.core.storage.vdf import vdf_load
                 data = vdf_load(acf).get("AppState", {})
                 app_id = data.get("appid", "")
                 name = data.get("name", "")
@@ -377,8 +377,8 @@ class FixGameTab(QWidget):
         self._gse_group.setMaximumHeight(0)
         # pre-fill saved credentials
         try:
-            from sff.storage.settings import get_setting
-            from sff.structs import Settings
+            from sff.core.storage.settings import get_setting
+            from sff.core.structs import Settings
             sv = get_setting(Settings.STEAM_USER)
             if sv:
                 self._gse_user_edit.setText(str(sv))

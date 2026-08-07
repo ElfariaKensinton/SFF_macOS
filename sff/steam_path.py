@@ -24,9 +24,9 @@ from pathlib import Path
 
 from colorama import Fore, Style
 
-from sff.prompts import prompt_dir
-from sff.storage.settings import get_setting, set_setting
-from sff.structs import OSType, Settings
+from sff.ui.prompts import prompt_dir
+from sff.core.storage.settings import get_setting, set_setting
+from sff.core.structs import OSType, Settings
 
 if sys.platform == "win32":
     from sff.registry_access import find_steam_path_from_registry

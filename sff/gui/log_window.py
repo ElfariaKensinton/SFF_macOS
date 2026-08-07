@@ -40,8 +40,8 @@ _LEVEL_COLORS = {
 
 def _live_log_max_lines() -> int:
     try:
-        from sff.storage.settings import get_setting
-        from sff.structs import Settings
+        from sff.core.storage.settings import get_setting
+        from sff.core.structs import Settings
         raw = get_setting(Settings.LIVE_LOG_MAX_LINES)
         value = int(str(raw or "100").strip())
     except Exception:

@@ -29,12 +29,12 @@ import httpx
 
 from colorama import Fore, Style
 
-from sff.http_utils import download_to_tempfile, get_request
+from sff.network.http_utils import download_to_tempfile, get_request
 from sff.lua.generator import LuaDlc, render_grouped_lua
 from sff.lua.provider import download_provider_update, load_provider, update_cache_from_lua_bytes
-from sff.prompts import prompt_confirm, prompt_secret
-from sff.storage.settings import get_setting, set_setting
-from sff.structs import Settings
+from sff.ui.prompts import prompt_confirm, prompt_secret
+from sff.core.storage.settings import get_setting, set_setting
+from sff.core.structs import Settings
 from sff.zip import read_lua_from_zip
 
 logger = logging.getLogger(__name__)
@@ -133,7 +133,7 @@ def _build_lua_from_provider(app_id: str, app_name: str, depots: list[str], keys
 def get_oureverday(dest, app_id):
     import json
     import httpx as _httpx
-    from sff.steam_client import create_provider_for_current_thread
+    from sff.network.steam_client import create_provider_for_current_thread
 
     if not app_id or not str(app_id).strip().isdigit():
         print(Fore.RED + f"Invalid App ID: '{app_id}'" + Style.RESET_ALL)
@@ -159,7 +159,7 @@ def get_oureverday(dest, app_id):
         # the client + the hub on the same thread.
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FT
         def _fetch_app_info():
-            from sff.steam_client import create_provider_for_current_thread as _mk
+            from sff.network.steam_client import create_provider_for_current_thread as _mk
             _provider = _mk()
             return _provider.get_single_app_info(int(app_id))
         with ThreadPoolExecutor(max_workers=1) as _ex:
@@ -328,6 +328,8 @@ def get_hubcap(dest, app_id, depotcache = None, hubcap_key = None):
     url = f"https://hubcapmanifest.com/api/v1/manifest/{app_id}"
 
     # Loop to allow retry with new API key
+    _attempts = 0
+    _max_attempts = 3
     while True:
         if hubcap_key:
             pass  # pre-validated key passed in — skip prompt/validation
@@ -364,6 +366,10 @@ def get_hubcap(dest, app_id, depotcache = None, hubcap_key = None):
             return None
         if stats_resp.status_code == 401:
             print(Fore.RED + "\nHubcap API key is invalid or expired." + Style.RESET_ALL)
+            _attempts += 1
+            if _attempts >= _max_attempts:
+                print(Fore.YELLOW + f"Max API key entry attempts ({_max_attempts}) reached. Please update your key in Settings." + Style.RESET_ALL)
+                return None
             if prompt_confirm("Do you want to enter a new API key?"):
                 set_setting(Settings.HUBCAP_KEY, "")
                 continue
@@ -625,7 +631,7 @@ def get_depotbox(dest, app_id, depotbox_key=None):
         return None
 
     if not depotbox_key:
-        from sff.storage.settings import get_setting
+        from sff.core.storage.settings import get_setting
         depotbox_key = get_setting(Settings.DEPOTBOX_KEY)
         if not depotbox_key:
             depotbox_key = prompt_secret(
@@ -639,11 +645,11 @@ def get_depotbox(dest, app_id, depotbox_key=None):
             set_setting(Settings.DEPOTBOX_KEY, depotbox_key)
 
     # Check rate limit plan
-    from sff.storage.settings import get_setting
+    from sff.core.storage.settings import get_setting
     rate_limit_str = get_setting(Settings.DEPOTBOX_RATE_LIMIT) or ""
     rate_limit = int(rate_limit_str) if rate_limit_str.strip().isdigit() else None
     if rate_limit is None:
-        from sff.prompts import prompt_select
+        from sff.ui.prompts import prompt_select
         plan = prompt_select(
             "Select your DepotBox plan:",
             [("Starter — 60 requests / minute", 60), ("Pro — 120 requests / minute", 120)],

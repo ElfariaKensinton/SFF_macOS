@@ -29,7 +29,7 @@ from colorama import Fore, Style
 from steam.client.cdn import CDNClient, ContentServer  # type: ignore
 from tqdm import tqdm  # type: ignore
 
-from sff.http_utils import (
+from sff.network.http_utils import (
     MANIFEST_REQUEST_CODE_HEADERS,
     get_gmrc,
     get_request_raw,
@@ -46,11 +46,11 @@ from sff.manifest.id_resolver import (
     SharedDepotManifestStrategy,
     StandardManifestStrategy,
 )
-from sff.prompts import prompt_confirm, prompt_select, prompt_text
-from sff.steam_client import SteamInfoProvider, get_product_info
-from sff.storage.settings import get_setting
-from sff.utils import manifests_staging_dir
-from sff.structs import (  # type: ignore
+from sff.ui.prompts import prompt_confirm, prompt_select, prompt_text
+from sff.network.steam_client import SteamInfoProvider, get_product_info
+from sff.core.storage.settings import get_setting
+from sff.core.utils import manifests_staging_dir
+from sff.core.structs import (  # type: ignore
     DepotManifestMap,
     LuaParsedInfo,
     ManifestGetModes,
@@ -478,7 +478,7 @@ class ManifestDownloader:
         if not api_key:
             return None
         url = (
-            f"https://api.manifesthub1.filegear-sg.me/manifest"
+            f"https://api.manifesthub2.filegear-sg.me/manifest"
             f"?apikey={api_key}&depotid={depot_id}&manifestid={manifest_id}"
         )
         try:
@@ -494,7 +494,7 @@ class ManifestDownloader:
                 print(
                     Fore.YELLOW
                     + "ManifestHub: API key expired or invalid (keys last 24h)."
-                      " Renew at https://manifesthub1.filegear-sg.me — update in SFF Settings."
+                      " Renew at https://manifesthub2.filegear-sg.me — update in SFF Settings."
                     + Style.RESET_ALL
                 )
             elif resp.status_code == 404:

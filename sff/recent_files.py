@@ -23,7 +23,7 @@ import logging
 import threading
 from pathlib import Path
 
-from sff.utils import root_folder
+from sff.core.utils import root_folder
 
 logger = logging.getLogger(__name__)
 

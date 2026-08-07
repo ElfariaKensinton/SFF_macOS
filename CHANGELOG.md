@@ -1,5 +1,25 @@
 # Changelog
 
+## 6.6.1
+
+### Fixed
+
+- **Goldberg Emu [WinError 32] file-in-use crash** — `shutil.copy2()` overwriting `steam_api.dll`/`steam_api64.dll` now retries up to 4 times with exponential backoff (0.1s → 0.2s → 0.5s → 1s). Fixes Windows Defender real-time scan holding a transient file lock between the interface scan (`read_bytes()`) and the DLL replacement (`copy2()`). Applied to both regular mode and Linux `.so` replacement.
+- **Infinite Hubcap API key prompt loop** — `get_hubcap()` had a `while True` with no exit guard. If the user entered an invalid key, the re-prompt looped forever. Added `max_attempts = 3` counter (matching `get_ryuu()`). After 3 failed attempts, exits with instructions to update the key in Settings.
+- **DLC download `fromhex()` crash** — `download_dlc_oureveryday` loaded `fallback_depotkeys.json` as a nested dict `{"depot_id": {"key": "hex...", ...}}` but passed it directly to `bytes.fromhex()`, which expects a plain hex string. Dict leaked through to `native_downloader.py:332`. Added flattening logic (extracting the `"key"` field from inner dicts) matching `_provider_key_map()` in `endpoints.py`. Fixes the crash and the resulting empty DLC folders.
+- **DLC infinite "Update" loop on Linux** — DLC depot entries in the parent game's `appmanifest_{parent}.acf` were written without the `"dlcappid"` field. Steam treated them as base-game depots, failed to validate them, and queued an Update that never completed. Added `"dlcappid": str(dlc_appid)` to both new and existing ACF depot entries.
+- **SteamAutoCrack Permission denied on Linux AppImage** — the SAC CLI executable lives inside the read-only AppImage squashfs mount (`/tmp/.mount_*`), which Wine can't execute from. Now copied to a writable `sff_data_dir()/sac_runtime/` cache with `chmod 755` before `subprocess.Popen()`.
+- **Linux Setup silent hang** — `linux_setup_now` called `setup_via_headcrab()` with no progress output, leaving the user with "Running Linux setup..." toast and no feedback. Added 5 `download_progress.emit()` calls at each step (detect Steam, headcrab, SLSsteam fallback, migrate games, .NET 9) so the user sees live progress.
+- **DDMod stdout redirect crash on import failure** — `LoggerStream` variables were initialized inside the `try:` block. If imports failed before the initialization, the `finally` block referenced `NameError` (undefined variables), masking the real exception. Moved initialization before `try:` and added `is not None` guards to the `finally` block.
+- **APICache non-atomic writes** — `api_cache.json` was written with direct `json.dump()` without atomic safety. Crash mid-write left a truncated file, wiping the entire cache on next startup. Replaced with `tempfile.mkstemp()` + atomic `tmp_path.replace()` pattern matching all other JSON writers in the project.
+- **Library scanner DEBUG log spam removed** — `_request_app_info()` logged per-app "Getting app info..." for every installed game on startup (~50+ lines). Removed the verbose DEBUG lines; only timing and cache-hit logs remain.
+- **ManifestHub URL updated** — `manifesthub1.filegear-sg.me` → `manifesthub2.filegear-sg.me` across 7 files (API URL, key generator, settings label, translations).
+- **Fallback depotkey path broken in download_bridge** — `fallback_depotkeys.json` resolved relative to `sff/gui/` instead of `sff/` after code was extracted to `sff/gui/bridges/`. Fixed by adding one more `.parent`.
+
+### Improved
+
+- **Codebase restructured** — `web_bridge.py` split from 7,591-line God Object into 5 domain bridge modules (store, download, game, cloudsaves, misc) + 2,314-line facade delegating all 132 `@pyqtSlot` methods. Top-level `sff/` reorganized: `core/` (strings, structs, utils, cache, storage), `network/` (HTTP + Steam protocol), `downloads/` (depot pipeline), `game/` (fix_game, crack_fix, online_fix, steamauto). Empty `home/` and `tools/` directories removed, `manifests/` renamed to `manifest_watcher/`.
+
 ## 6.6.0
 
 ### Fixed
@@ -14,8 +34,6 @@
 - **Linux config templates** — `_init_config_with_app()` and `_SLSSTEAM_REQUIRED_FIELDS` now include `PlayNotOwnedGames: yes` so fresh configs and auto-repaired configs always carry the ownership flag.
 - **Critical crash on Linux DDMod** — `NameError: name 'parsed' is not defined` in `download_game_ddmod._on_done` callback. Game data is now stored on `self._current_game_data` inside the worker and safely read with `getattr` in the callback, providing proper game name for Downloads tab tracking. Was preventing ACF writes, SLSsteam config updates, and library registration.
 - **CreamAPI ini orgapi path** — `steam_api.dll_o.dll` → `steam_api_o.dll`. The `_generate_ini_config()` writer was using string concatenation instead of `.replace(".dll", BACKUP_SUFFIX)`. The fix already existed in `generate_config()` but was never applied to the INI writer code path.
-- **ACF writer crash on Linux** — added missing `import sys` to `sff/linux/acf_writer.py`.
-- **`run.sh` entry point** — changed `Main.py` → `Main_gui.py` in `steamidra_install.sh` generated script.
 
 ### Added
 

@@ -97,7 +97,7 @@ def _load_local_name_cache() -> dict[str, str]:
         return _LOCAL_NAME_CACHE
     names: dict[str, str] = {}
     try:
-        from sff.utils import sff_data_dir
+        from sff.core.utils import sff_data_dir
 
         cache_dir = sff_data_dir() / "store_metadata"
         paths = [
@@ -143,7 +143,7 @@ def _name_from_catalog(app_id: str) -> str:
 
 def helper_status(steam_path: str | os.PathLike[str] | None) -> dict:
     try:
-        from sff.update_prompt_override import _override_path, get_excluded_depots
+        from sff.game.update_prompt_override import _override_path, get_excluded_depots
 
         target = _override_path(Path(steam_path)) if steam_path else None
         exists = bool(target and target.exists())
@@ -182,7 +182,7 @@ def discover_games(steam_path: str | os.PathLike[str] | None) -> list[dict]:
         return []
 
     try:
-        from sff.update_prompt_override import get_excluded_depots
+        from sff.game.update_prompt_override import get_excluded_depots
 
         global_excluded = get_excluded_depots(steam_path)
     except Exception:
@@ -226,7 +226,7 @@ def discover_games(steam_path: str | os.PathLike[str] | None) -> list[dict]:
 
 def set_helper_enabled(steam_path: str | os.PathLike[str] | None, enabled: bool) -> dict:
     try:
-        from sff.update_prompt_override import install, remove
+        from sff.game.update_prompt_override import install, remove
 
         ok = install(Path(steam_path)) if enabled else remove(Path(steam_path))
         status = helper_status(steam_path)
@@ -293,7 +293,7 @@ def apply_selection(
 
     global_ok = False
     try:
-        from sff.update_prompt_override import install_with_exclusions
+        from sff.game.update_prompt_override import install_with_exclusions
 
         auto_update_depots: set[str] = set()
         for game in games:

@@ -391,7 +391,7 @@ class VersionPickerDialog(QDialog):
             ui = self._ui
             run_tool_fn = self._run_tool_fn
             self.accept()  # close version picker dialog
-            from sff.storage.vdf import get_steam_libs
+            from sff.core.storage.vdf import get_steam_libs
             steam_libs = get_steam_libs(self.steam_path)
             lib_path = steam_libs[0] if steam_libs else self.steam_path
             run_tool_fn(lambda: ui.process_from_store(app_id, manifest_override, use_hubcap, lib_path=lib_path))
@@ -438,7 +438,7 @@ class _ManifestDownloadWorker(QObject):
 
     def run(self):
         from sff.manifest.downloader import ManifestDownloader
-        from sff.steam_client import create_provider_for_current_thread
+        from sff.network.steam_client import create_provider_for_current_thread
         ok = 0
         total = len(self.selections)
         try:
@@ -524,8 +524,8 @@ class StoreTab(QWidget):
         layout.addWidget(key_group)
         # try to load saved key
         try:
-            from sff.storage.settings import get_setting
-            from sff.structs import Settings
+            from sff.core.storage.settings import get_setting
+            from sff.core.structs import Settings
             saved_key = get_setting(Settings.HUBCAP_KEY)
             if saved_key:
                 self._key_edit.setText(str(saved_key))
@@ -620,7 +620,7 @@ class StoreTab(QWidget):
                 QDesktopServices.openUrl(QUrl("https://hubcapmanifest.com/"))
             return
         try:
-            from sff.store_browser import StoreApiClient
+            from sff.network.store_browser import StoreApiClient
             if not StoreApiClient.validate_api_key(key):
                 QMessageBox.warning(self, "Invalid Key", "API key should start with 'smm_' and be at least 10 characters.")
                 return
@@ -629,8 +629,8 @@ class StoreTab(QWidget):
             self._connect_btn.setText("Reconnect")
             # save key
             try:
-                from sff.storage.settings import set_setting
-                from sff.structs import Settings
+                from sff.core.storage.settings import set_setting
+                from sff.core.structs import Settings
                 set_setting(Settings.HUBCAP_KEY, key)
             except Exception:
                 pass

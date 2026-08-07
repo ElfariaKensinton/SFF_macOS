@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with SteaMidra.  If not, see <https://www.gnu.org/licenses/>.
 
-from sff.depot_downloader import (
+from sff.downloads.depot_downloader import (
     KEYS_TMP,
     MANIFESTS_TMP,
     get_ddmod_dll,

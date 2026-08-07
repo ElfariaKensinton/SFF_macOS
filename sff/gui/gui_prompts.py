@@ -251,16 +251,16 @@ def install(parent_widget=None):
     global _invoker
     _invoker = _Invoker()
     backend = GUIPromptBackend(parent_widget)
-    from sff.prompts import set_gui_backend
+    from sff.ui.prompts import set_gui_backend
     set_gui_backend(backend)
 
 
 def update_parent(parent_widget):
-    from sff.prompts import _gui_backend
+    from sff.ui.prompts import _gui_backend
     if _gui_backend is not None:
         _gui_backend.set_parent(parent_widget)
 
 
 def uninstall():
-    from sff.prompts import set_gui_backend
+    from sff.ui.prompts import set_gui_backend
     set_gui_backend(None)

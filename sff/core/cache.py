@@ -1,0 +1,147 @@
+# SteaMidra - Steam game setup and manifest tool (SFF)
+# Copyright (c) 2025-2026 Midrag (https://github.com/Midrags)
+#
+# This file is part of SteaMidra.
+#
+# SteaMidra is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# SteaMidra is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with SteaMidra.  If not, see <https://www.gnu.org/licenses/>.
+
+"""Simple caching layer for Steam API responses"""
+
+import json
+import logging
+import time
+from pathlib import Path
+from typing import Any
+
+from sff.core.storage.settings import get_setting
+from sff.core.structs import Settings
+from sff.core.utils import root_folder
+
+logger = logging.getLogger(__name__)
+
+CACHE_FILE = root_folder(outside_internal=True) / "api_cache.json"
+DEFAULT_TTL = 3600  # 1 hour in seconds
+
+
+class APICache:
+
+    def __init__(self):
+        self.cache: dict[str, dict[str, Any]] = {}
+        self._last_save = 0.0
+        self._dirty = False
+        self.load()
+
+    def load(self):
+        try:
+            if CACHE_FILE.exists():
+                content = CACHE_FILE.read_text(encoding="utf-8").strip()
+                if not content:
+                    self.cache = {}
+                    return
+                self.cache = json.loads(content)
+                logger.debug(f"Loaded cache with {len(self.cache)} entries")
+        except Exception as e:
+            logger.error(f"Failed to load cache: {e}", exc_info=True)
+            self.cache = {}
+
+    def _save_if_dirty(self, force=False):
+        if not self._dirty:
+            return
+        if not force and time.time() - self._last_save < 5.0:
+            return
+        try:
+            import tempfile
+            fd, tmp_name = tempfile.mkstemp(prefix=CACHE_FILE.name + ".", suffix=".tmp", dir=str(CACHE_FILE.parent))
+            tmp_path = Path(tmp_name)
+            try:
+                with open(fd, "w", encoding="utf-8") as f:
+                    json.dump(self.cache, f)
+                tmp_path.replace(CACHE_FILE)
+            finally:
+                try:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                except Exception:
+                    pass
+            self._last_save = time.time()
+            self._dirty = False
+            logger.debug(f"Saved cache with {len(self.cache)} entries")
+        except Exception as e:
+            logger.error(f"Failed to save cache: {e}", exc_info=True)
+
+    def save(self, force=False):
+        self._dirty = True
+        self._save_if_dirty(force=force)
+
+    def get(self, key):
+        if key not in self.cache:
+            return None
+        entry = self.cache[key]
+        timestamp = entry.get("timestamp", 0)
+        ttl = entry.get("ttl", DEFAULT_TTL)
+        if time.time() - timestamp > ttl:
+            logger.debug(f"Cache expired for key: {key}")
+            del self.cache[key]
+            return None
+        logger.debug(f"Cache hit for key: {key}")
+        return entry.get("data")
+
+    def set(self, key, data, ttl = None):
+        if ttl is None:
+            ttl = DEFAULT_TTL
+        self.cache[key] = {
+            "data": data,
+            "timestamp": time.time(),
+            "ttl": ttl
+        }
+        logger.debug(f"Cached data for key: {key} (TTL: {ttl}s)")
+        self.save()
+
+    def invalidate(self, key = None):
+        if key is None:
+            self.cache = {}
+            logger.info("Invalidated entire cache")
+        elif key in self.cache:
+            del self.cache[key]
+            logger.info(f"Invalidated cache for key: {key}")
+        self.save(force=True)
+
+    def cleanup_expired(self):
+        current_time = time.time()
+        expired_keys = []
+        for key, entry in self.cache.items():
+            timestamp = entry.get("timestamp", 0)
+            ttl = entry.get("ttl", DEFAULT_TTL)
+            if current_time - timestamp > ttl:
+                expired_keys.append(key)
+        for key in expired_keys:
+            del self.cache[key]
+        if expired_keys:
+            logger.info(f"Cleaned up {len(expired_keys)} expired cache entries")
+            self.save(force=True)
+
+
+import threading
+
+_cache_instance = None
+_cache_lock = threading.Lock()
+
+
+def get_cache():
+    global _cache_instance
+    if _cache_instance is None:
+        with _cache_lock:
+            if _cache_instance is None:
+                _cache_instance = APICache()
+    return _cache_instance

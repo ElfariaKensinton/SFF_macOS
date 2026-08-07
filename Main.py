@@ -62,21 +62,21 @@ from steam.client import SteamClient  # type: ignore
 
 from InquirerPy import inquirer
 
-from sff.prompts import prompt_confirm, prompt_select
+from sff.ui.prompts import prompt_confirm, prompt_select
 
-from sff.steam_client import SteamInfoProvider
+from sff.network.steam_client import SteamInfoProvider
 
 from sff.steam_path import init_steam_path
 
-from sff.storage.settings import resolve_advanced_mode
+from sff.core.storage.settings import resolve_advanced_mode
 
-from sff.strings import VERSION
+from sff.core.strings import VERSION
 
-from sff.structs import GAME_SPECIFIC_CHOICES, MainMenu, MainReturnCode, OSType
+from sff.core.structs import GAME_SPECIFIC_CHOICES, MainMenu, MainReturnCode, OSType
 
-from sff.ui import UI
+from sff.ui.ui import UI
 
-from sff.utils import root_folder
+from sff.core.utils import root_folder
 
 
 

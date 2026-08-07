@@ -19,7 +19,7 @@ import json
 import locale
 import os
 from pathlib import Path
-from sff.utils import root_folder
+from sff.core.utils import root_folder
 
 # Find the locales folder relative to this file
 LOCALES_DIR = root_folder() / "sff/locales"
