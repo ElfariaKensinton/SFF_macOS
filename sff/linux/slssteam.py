@@ -417,7 +417,6 @@ def patch_slssteam_config(steam_type: str, print_fn=print) -> bool:
         patched = _patch_missing_slssteam_fields(config_path, text)
         if patched is not None:
             text = patched
-        config_path.write_text(text, encoding="utf-8")
         marker.write_text("patched by SteaMidra\n", encoding="utf-8")
         print_fn(Fore.GREEN + "SLSsteam config.yaml patched (SafeMode, WarnHashMissmatch, Notifications, DisableUpdates, DisableCloud, DisableFamilyShareLock, missing fields filled)." + Style.RESET_ALL)
         return True
@@ -765,7 +764,7 @@ def migrate_existing_games(print_fn=print) -> int:
                 text = config_path.read_text(encoding="utf-8")
                 patched = _patch_missing_slssteam_fields(config_path, text)
                 if patched:
-                    config_path.write_text(patched, encoding="utf-8")
+                    pass  # _patch_missing_slssteam_fields already wrote atomically
             except Exception:
                 pass
         print_fn(Fore.GREEN + f"[migrate] Added {imported} existing game(s) to SLSsteam config." + Style.RESET_ALL)

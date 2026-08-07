@@ -93,6 +93,27 @@ window.App = (function() {
                     });
                 }
                 if (_currentPage === 'home') _refreshHomeLumacoreNotice();
+
+                // Linux first-launch guide popup (SteamOS/Steam Deck users)
+                if (_platform !== 'win32') {
+                    Bridge.callWithCallback('get_setting', 'linux_guide_shown', function(val) {
+                        if (val === 'True') return;
+                        setTimeout(function() {
+                            var msg = 'SteaMidra has been installed on Linux.\n\n';
+                            msg += 'If you are on SteamOS / Steam Deck, there are important steps:\n\n';
+                            msg += '1. Disable read-only: sudo steamos-readonly disable\n\n';
+                            msg += '2. Enable SafeMode: yes in SLSsteam config.yaml\n';
+                            msg += '   (prevents crashes after Steam client updates)\n\n';
+                            msg += '3. For Gaming Mode: edit /usr/bin/steam-jupiter\n';
+                            msg += '   (see the Linux Guide tab for full instructions)\n\n';
+                            msg += 'Would you like to open the Linux Setup Guide now?';
+                            if (window.confirm(msg)) {
+                                navigateTo('linuxguide');
+                            }
+                            Bridge.call('set_setting', 'linux_guide_shown', 'True');
+                        }, 2000);
+                    });
+                }
             });
 
             // Load theme from backend (overrides localStorage default for fresh installs)
@@ -364,6 +385,7 @@ window.App = (function() {
             case 'fixgame': FixGame.onPageEnter(); break;
             case 'cloudsaves': CloudSaves.onPageEnter(); break;
             case 'settings': Settings.onPageEnter(); break;
+            case 'linuxguide': break;  // static guide page, no dynamic module
         }
     }
 

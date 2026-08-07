@@ -40,10 +40,10 @@ logger = logging.getLogger(__name__)
 BACKUP_SUFFIX = ".bak"
 DEFAULT_FAKE_APPID = "480"  # Spacewar
 
-_RE_ADDITIONAL_APPS = re.compile(r"^AdditionalApps:\s*$", re.MULTILINE)
-_RE_APP_TOKENS = re.compile(r"^AppTokens:\s*$", re.MULTILINE)
-_RE_DLC_DATA = re.compile(r"^DlcData:\s*$", re.MULTILINE)
-_RE_FAKE_APP_IDS = re.compile(r"^FakeAppIds:\s*$", re.MULTILINE)
+_RE_ADDITIONAL_APPS = re.compile(r"^AdditionalApps:\s*(?:#.*)?$", re.MULTILINE)
+_RE_APP_TOKENS = re.compile(r"^AppTokens:\s*(?:#.*)?$", re.MULTILINE)
+_RE_DLC_DATA = re.compile(r"^DlcData:\s*(?:#.*)?$", re.MULTILINE)
+_RE_FAKE_APP_IDS = re.compile(r"^FakeAppIds:\s*(?:#.*)?$", re.MULTILINE)
 _RE_NEXT_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9]*:\s*$", re.MULTILINE)
 _RE_NEXT_KEY_SIMPLE = re.compile(r"^[A-Za-z]", re.MULTILINE)
 _RE_MISALIGNED_ITEMS = re.compile(r"(^)(\s*)-(\s*)([^\n#]+?)(?=\s*(?:#|$))", re.MULTILINE)
@@ -80,6 +80,8 @@ def _atomic_write(config_path: Path, content: str) -> bool:
     try:
         with open(temp_path, "w", encoding="utf-8") as f:
             f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(temp_path, config_path)
         return True
     except OSError as e:
@@ -93,15 +95,11 @@ def _atomic_write(config_path: Path, content: str) -> bool:
 
 
 def _create_backup(config_path: Path) -> bool:
-    """Create a .bak backup.  Skips if new file is smaller than existing backup."""
+    """Create a .bak backup before modifying the config."""
     try:
         if not config_path.exists():
             return False
         backup_path = config_path.with_suffix(BACKUP_SUFFIX)
-        if backup_path.exists():
-            if config_path.stat().st_size < backup_path.stat().st_size:
-                logger.debug("Skipping backup: new file smaller than existing backup")
-                return True
         shutil.copy2(config_path, backup_path)
         logger.info(f"Created backup: {backup_path}")
         return True
@@ -337,6 +335,8 @@ def _init_config_with_app(config_path: Path, app_id: str, comment: str) -> bool:
 
 def _append_to_additional_apps(content: str, app_id: str, comment: str, match: re.Match) -> str:
     start_pos = match.end()
+    if start_pos < len(content) and content[start_pos] == "\n":
+        start_pos += 1
     remaining = content[start_pos:]
     lines = remaining.split("\n")
     last_item_end = start_pos
@@ -384,7 +384,8 @@ def _patch_missing_slssteam_fields(config_path: Path, content: str) -> str | Non
     missing: list[str] = []
     for field in _SLSSTEAM_REQUIRED_FIELDS:
         key = field.split(":", 1)[0]
-        if key + ":" not in content and key + " " not in content:
+        pat = re.compile(rf"^{re.escape(key)}\s*:", re.MULTILINE)
+        if not pat.search(content):
             missing.append(field)
     if not missing:
         return content
@@ -422,7 +423,7 @@ def add_additional_app(config_path: Path, app_id: str, comment: str = "") -> boo
             if fixed is None:
                 fixed = _read_config(config_path) or ""
 
-        header = re.compile(r"^AdditionalApps:\s*$", re.MULTILINE)
+        header = re.compile(r"^AdditionalApps:\s*(?:#.*)?$", re.MULTILINE)
         match = header.search(fixed)
         if match:
             new_content = _append_to_additional_apps(fixed, app_id, comment, match)
@@ -562,7 +563,7 @@ def add_dlc_data(
 
         dlc_data_end = match.end()
 
-        parent_pat = re.compile(rf"^(\s*){re.escape(parent_app_id)}:\s*$", re.MULTILINE)
+        parent_pat = re.compile(rf"^(\s*){re.escape(parent_app_id)}:\s*(?:#.*)?$", re.MULTILINE)
         parent_match = parent_pat.search(content, dlc_data_end)
 
         safe_name = f'"{dlc_name}"' if dlc_name else '""'

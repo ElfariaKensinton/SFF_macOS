@@ -367,6 +367,12 @@ class Settings(Enum):
         False,
         bool,
     )
+    LINUX_GUIDE_SHOWN = SettingItem(
+        "linux_guide_shown",
+        "Linux setup guide shown (managed automatically)",
+        False,
+        bool,
+    )
     PROVIDER_CONTRIBUTE_KEYS = SettingItem(
         "provider_contribute_keys",
         "Contribute clean provider keys every 3 hours",

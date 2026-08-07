@@ -1,11 +1,29 @@
 # Changelog
 
+## 6.6.3
+
+### Fixed
+
+- **Bridge undefined references** — `misc_bridge.py` had `_UNSAFE_FILENAME_RE` (bulk import) and `_fetch_steam_image_urls` (library images) not imported, causing `NameError` at runtime. Added inline imports. `store_bridge.py` had missing `global _STEAM_APPLIST_CACHE_TIME` declaration causing cache timestamp not to reset. Cross-module cache invalidation in `_bridge_set_setting` now correctly references `store_bridge` module namespace.
+- **SLSsteam YAML config corruption fixes** — 6 bugs fixed: section headers now accept inline comments (`AdditionalApps:  # list`), no longer creating duplicate sections. `_append_to_additional_apps` now correctly inserts on new line instead of gluing to header. Backup always overwrites (removed broken size-check). `_atomic_write` now calls `fsync` before rename preventing empty files on crash. Commented-out keys like `# FakeName: ""` no longer falsely detected as present. Double-write bypassing atomic mechanism removed from `slssteam.py`.
+- **Ryuu key infinite prompt loop** — `get_ryuu()` only checked `RYUU_KEY` (Reseller) as primary key, ignoring `RYUU_API_KEY` (Premium) saved via Settings. User saved Premium key, downloader didn't see it, prompted for new key, saved to Reseller slot, tried download, failed, cleared Reseller, re-prompted — infinite loop. Now falls back to Premium key if Reseller is empty, clears both on failure.
+
+### Added
+
+- **Linux Guide tab** — new sidebar tab (visible only on Linux) with complete SLSsteam setup guide: prerequisites, SteamOS/Steam Deck SafeMode warning, Gaming Mode steam-jupiter editing steps with backup instructions, troubleshooting, and links to official h3adcr-b wiki, community Reddit guide, YouTube setup video, and SLSsteam GitHub.
+- **SteamOS first-launch popup** — on Linux, one-time popup warns about `sudo steamos-readonly disable` requirement, SafeMode enabling, and Gaming Mode setup. Opens Linux Guide tab on confirmation.
+
+### Improved
+
+- **Provider contribution defaults** — `PROVIDER_CONTRIBUTE_KEYS` and `PROVIDER_ENRICH_STEAM_METADATA` now default to enabled. Interval changed from 24h to 3h. First contribution fires 3 seconds after launch. Existing users automatically migrated via settings version bump to 1.1.0.
+- **Steam client log noise reduced** — removed per-app "Getting app info..." DEBUG lines from library scanner. Only timing and cache-hit logs remain.
+
 ## 6.6.2
 
 ### Fixed
 
 - **Library tab "No games found" crash** — `_bridge_load_library`, `_bridge_fetch_library_images`, and `_bridge_cancel_bulk_import` had stale `self.` references that were not converted to `bridge.` during the web_bridge.py refactoring, causing `NameError: name 'self' is not defined`. Library tab, cloud saves, and bulk import now work correctly.
-- **Cloud saves `WebBridge` reference crash** — `cloudsaves_bridge.py` had 5 stale `WebBridge._get_bundled_tool_path()` references (lines 151, 207, 249, 484, 644) left over from the bridge extraction. Changed to `bridge._get_bundled_tool_path()`.
+- **Cloud saves `WebBridge` reference crash** — `cloudsaves_bridge.py` had 5 stale `WebBridge._get_bundled_tool_path()` references left over from the bridge extraction. Changed to `bridge._get_bundled_tool_path()`.
 
 ## 6.6.1
 

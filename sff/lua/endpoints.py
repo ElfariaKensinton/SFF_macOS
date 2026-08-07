@@ -507,9 +507,13 @@ def get_ryuu(dest, app_id, depotcache=None, request_update=None, branch=None, fi
     max_attempts = 3
     attempt = 0
     while attempt < max_attempts:
-        if not (ryuu_key := get_setting(Settings.RYUU_KEY)):
+        ryuu_key = get_setting(Settings.RYUU_KEY) or ""
+        api_key = get_setting(Settings.RYUU_API_KEY) or ""  # premium fallback
+        if not ryuu_key and api_key:
+            ryuu_key = api_key
+        if not ryuu_key:
             ryuu_key = prompt_secret(
-                "Paste your Ryuu API key: ",
+                "Paste your Ryuu reseller or premium API key: ",
                 lambda x: bool(x.strip()),
                 "API key cannot be empty.",
                 long_instruction="Contact Ryuu staff to get an API key.",
@@ -560,6 +564,7 @@ def get_ryuu(dest, app_id, depotcache=None, request_update=None, branch=None, fi
             return None
         if prompt_confirm("Do you want to enter a new API key?"):
             set_setting(Settings.RYUU_KEY, "")
+            set_setting(Settings.RYUU_API_KEY, "")
             continue
         return None
     return None

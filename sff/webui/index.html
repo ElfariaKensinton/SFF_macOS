@@ -43,6 +43,10 @@
                 <svg class="nav-icon" viewBox="0 0 24 24"><path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z"/></svg>
                 <span class="nav-label" data-i18n="Cloud Saves">Cloud Saves</span>
             </button>
+            <button class="nav-item platform-linux" data-page="linuxguide" data-tooltip="SLSsteam setup, Steam Deck Gaming Mode, SafeMode, troubleshooting">
+                <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1010 10A10 10 0 0012 2zm0 18a8 8 0 118-8 8 8 0 01-8 8z"/><path d="M12 6a1 1 0 011 1v4a1 1 0 01-1 1 1 1 0 01-1-1V7a1 1 0 011-1z"/><circle cx="12" cy="16" r="1"/></svg>
+                <span class="nav-label">Linux Guide</span>
+            </button>
             <div class="nav-separator"></div>
             <button class="nav-item" data-page="settings" data-tooltip="Themes, Steam path, API keys, Preferences">
                 <svg class="nav-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
@@ -1374,6 +1378,99 @@ start YourGame-Shipping.exe</pre>
                 <p id="about-info">SteaMidra — Steam game setup and manifest tool<br>
                     <a href="#" id="about-github">GitHub</a>
                 </p>
+            </div>
+        </section>
+
+        <!-- Page: Linux Guide -->
+        <section id="page-linuxguide" class="page">
+            <div class="page-header">
+                <h1>Linux Guide</h1>
+                <p class="page-subtitle">SLSsteam setup, SteamOS Gaming Mode, and troubleshooting</p>
+            </div>
+
+            <div class="section-group">
+                <h2 class="section-title">SLSsteam Overview</h2>
+                <div style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px 20px;line-height:1.6;font-size:13px;">
+                    <p style="margin-top:0;">SteaMidra on Linux uses <strong>SLSsteam</strong> to handle ownership injection, DLC unlocking, and achievement support. Click <strong>Set Up Linux Tools</strong> below or on the Home page to automatically download and configure SLSsteam via <a href="https://github.com/Deadboy666/h3adcr-b" target="_blank">h3adcr-b</a>.</p>
+                    <p><strong>LumaCore is Windows-only</strong> — it does not work on Linux. SLSsteam is the Linux equivalent.</p>
+                </div>
+            </div>
+
+            <div class="section-group">
+                <h2 class="section-title">Prerequisites</h2>
+                <div style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px 20px;line-height:1.6;font-size:13px;">
+                    <ol style="padding-left:18px;">
+                        <li style="margin-bottom:8px;"><strong>.NET 9 Runtime</strong> — needed for DepotDownloaderMod. SteaMidra installs it automatically, or download from <a href="https://dotnet.microsoft.com/en-us/download/dotnet/9.0" target="_blank">Microsoft</a> (recommended).</li>
+                        <li style="margin-bottom:8px;"><strong>Steam (native Linux client)</strong> — installed and logged in.</li>
+                        <li style="margin-bottom:8px;"><strong>Proton</strong> (if running Windows games) — enabled in Steam Play settings.</li>
+                    </ol>
+                </div>
+            </div>
+
+            <div class="section-group">
+                <h2 class="section-title">SteamOS / Steam Deck Users</h2>
+                <div style="background:var(--card-bg);border:1px solid #ffb84d;border-radius:10px;padding:16px 20px;line-height:1.6;font-size:13px;">
+                    <p style="margin-top:0;color:#ffb84d;font-weight:700;">IMPORTANT: Follow these steps before running Linux Setup.</p>
+                    <ol style="padding-left:18px;">
+                        <li style="margin-bottom:8px;">Open Konsole and set a sudo password: <code>passwd</code></li>
+                        <li style="margin-bottom:8px;">Disable the read-only filesystem: <code>sudo steamos-readonly disable</code></li>
+                        <li style="margin-bottom:8px;">Run SteaMidra's <strong>Linux Setup</strong> to install SLSsteam</li>
+                        <li style="margin-bottom:8px;"><strong>Enable SafeMode:</strong> Open <code>~/.config/SLSsteam/config.yaml</code> and change:<br><code style="background:var(--btn-bg);padding:2px 6px;border-radius:3px;">SafeMode: no</code> → <code style="background:#4caf50;color:#fff;padding:2px 6px;border-radius:3px;">SafeMode: yes</code><br>This prevents SLSsteam from crashing your Deck into a boot loop when Steam updates.</li>
+                    </ol>
+                </div>
+            </div>
+
+            <div class="section-group">
+                <h2 class="section-title">Gaming Mode Setup</h2>
+                <div style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px 20px;line-height:1.6;font-size:13px;">
+                    <p style="margin-top:0;">For SteaMidra/SLSsteam to work in Gaming Mode, you must edit the Steam launch script. <strong style="color:#ffb84d;">Steam updates will reset this file — repeat these steps after every update.</strong></p>
+                    <ol style="padding-left:18px;">
+                        <li style="margin-bottom:8px;"><strong>Backup the file:</strong> <code>sudo cp /usr/bin/steam-jupiter /usr/bin/steam-jupiter.bak</code></li>
+                        <li style="margin-bottom:8px;"><strong>Open as root:</strong> <code>sudo kate /usr/bin/steam-jupiter</code></li>
+                        <li style="margin-bottom:8px;">Find the line starting with <code>exec</code> near the bottom. <strong>Before</strong> that line, insert:<br><code style="background:var(--btn-bg);padding:4px 8px;border-radius:3px;display:inline-block;margin:4px 0;">export LD_AUDIT="/home/deck/.local/share/SLSsteam/library-inject.so:/home/deck/.local/share/SLSsteam/SLSsteam.so"</code></li>
+                        <li style="margin-bottom:8px;"><strong>Save and close.</strong></li>
+                        <li style="margin-bottom:8px;"><strong>Test in Desktop Mode first:</strong> launch Steam normally. If it opens and SLSsteam loads (you'll see a notification), Gaming Mode should work.</li>
+                        <li style="margin-bottom:8px;"><strong>Your backup is at:</strong> <code>/usr/bin/steam-jupiter.bak</code></li>
+                    </ol>
+                </div>
+            </div>
+
+            <div class="section-group">
+                <h2 class="section-title">Quick Actions</h2>
+                <div class="action-grid small">
+                    <button class="action-card compact" data-action="linux_setup" data-tooltip="Rerun Linux setup: install/update SLSsteam and ensure .NET 9 is available">
+                        <svg class="action-icon" viewBox="0 0 24 24"><path d="M12 2v20"/><path d="M5 9h14"/><path d="M5 15h14"/><path d="M17 3a9 9 0 010 18"/><path d="M7 3a9 9 0 000 18"/></svg>
+                        <span class="action-title">Set Up Linux Tools</span>
+                    </button>
+                    <button class="action-card compact" data-action="fix_slssteam_hash" data-tooltip="Fix SLSsteam hash mismatch after Steam client update">
+                        <svg class="action-icon" viewBox="0 0 24 24"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="M9 12l2 2 4-4"/></svg>
+                        <span class="action-title">Fix Hash Issue</span>
+                    </button>
+                    <button class="action-card compact" data-action="applist_menu" data-tooltip="Manage SLSsteam AdditionalApps injection IDs">
+                        <svg class="action-icon" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                        <span class="action-title">AppList IDs</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="section-group">
+                <h2 class="section-title">Troubleshooting</h2>
+                <div style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px 20px;line-height:1.6;font-size:13px;">
+                    <p style="margin-top:0;"><strong>Unknown steamclient.so hash</strong> — run <em>Fix Hash Issue</em>. If that doesn't help, re-run <em>Linux Setup</em>.</p>
+                    <p><strong>Games showing "Purchase" instead of "Play"</strong> — SLSsteam may not be initialized. Restart Steam, or re-run <em>Linux Setup</em>.</p>
+                    <p><strong>DDMod fails to download</strong> — verify .NET 9: <code>dotnet --version</code>. Should show 9.x.</p>
+                    <p><strong>Gaming Mode black screen / boot loop</strong> — boot to Desktop Mode, restore steam-jupiter from backup: <code>sudo cp /usr/bin/steam-jupiter.bak /usr/bin/steam-jupiter</code>, then check <code>SafeMode: yes</code> is set in config.yaml.</p>
+                </div>
+            </div>
+
+            <div class="section-group">
+                <h2 class="section-title">Further Reading</h2>
+                <div style="background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px 20px;line-height:1.6;font-size:13px;display:flex;flex-direction:column;gap:10px;">
+                    <a href="https://github.com/Deadboy666/h3adcr-b/wiki/Headcrab-Wiki" target="_blank" style="color:var(--accent);text-decoration:none;">h3adcr-b Official Wiki — installation, troubleshooting, and config management</a>
+                    <a href="https://www.reddit.com/r/SteamDeckPirates/comments/1leqim0/guide_slssteam_how_to_unlock_dlcs_bypass_family/" target="_blank" style="color:var(--accent);text-decoration:none;">Community SLSsteam Guide — DLC unlocking, Family Sharing bypass, and more</a>
+                    <a href="https://www.youtube.com/watch?v=0Wyd3FzkHoo" target="_blank" style="color:var(--accent);text-decoration:none;">Video: Complete Guide to ACCELA 2026 — Installing and Configuring Linux Tools</a>
+                    <a href="https://github.com/AceSLS/SLSsteam" target="_blank" style="color:var(--accent);text-decoration:none;">SLSsteam GitHub — official source and releases</a>
+                </div>
             </div>
         </section>
     </main>
