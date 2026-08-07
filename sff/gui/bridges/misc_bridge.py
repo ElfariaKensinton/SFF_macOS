@@ -1470,9 +1470,9 @@ def _bridge_set_setting(bridge, key, value):
             # nuke the on-disk all_games.txt mirror in lockstep.
             if s.key_name == "store_show_software":
                 try:
-                    global _STEAM_APPLIST_CACHE, _STEAM_APPLIST_CACHE_TIME
-                    _STEAM_APPLIST_CACHE = None
-                    _STEAM_APPLIST_CACHE_TIME = 0.0
+                    from sff.gui.bridges import store_bridge as _sb
+                    _sb._STEAM_APPLIST_CACHE = None
+                    _sb._STEAM_APPLIST_CACHE_TIME = 0.0
                     # Defence-in-depth: drop the Store grid cache so
                     # list_games rebuilds with the fresh toggle on
                     # the next round trip.
@@ -2049,6 +2049,7 @@ def _bridge_enqueue_dropped_blobs(bridge, blobs_json):
             lower = name.lower()
             if not (lower.endswith(".lua") or lower.endswith(".zip") or lower.endswith(".rar") or lower.endswith(".7z") or lower.endswith(".manifest")):
                 continue
+            from sff.gui.web_bridge import _UNSAFE_FILENAME_RE
             safe = _UNSAFE_FILENAME_RE.sub("_", name)
             target = staging / safe
             # Avoid overwriting a sibling drop with the same name in the
@@ -2099,7 +2100,7 @@ def _bridge_cancel_bulk_import(bridge):
     """Raise the cancel signal on the in-flight queue. The current
     file finishes its pipeline cleanly; no new files are dequeued.
     """
-    queue = getattr(self, "_bulk_import_queue", None)
+    queue = getattr(bridge, "_bulk_import_queue", None)
     if queue is not None:
         queue.cancel()
     bridge._emit_task_result("bulk_import", False, "Bulk import cancelled")
@@ -2400,11 +2401,12 @@ def _bridge_fetch_library_images(bridge, app_ids_json):
     def _do():
         cached = {
             int(app_id): url
-            for app_id, url in getattr(self, "_library_image_cache", {}).items()
+            for app_id, url in getattr(bridge, "_library_image_cache", {}).items()
             if str(app_id).isdigit() and url
         }
         missing = [app_id for app_id in app_ids if str(app_id) not in bridge._library_image_cache]
         if missing:
+            from sff.gui.bridges.store_bridge import _fetch_steam_image_urls
             fresh, _, _ = _fetch_steam_image_urls(missing)
             for app_id, url in fresh.items():
                 if url:
@@ -2434,9 +2436,10 @@ def _bridge_load_library(bridge):
         if not games:
             return []
         app_ids = [g["app_id"] for g in games if g.get("app_id")]
-        cached = getattr(self, "_library_image_cache", {})
+        cached = getattr(bridge, "_library_image_cache", {})
         missing = [int(app_id) for app_id in app_ids if str(app_id) not in cached]
         if missing:
+            from sff.gui.bridges.store_bridge import _fetch_steam_image_urls
             image_urls, _, _ = _fetch_steam_image_urls(missing)
             for img_appid, url in image_urls.items():
                 if url:

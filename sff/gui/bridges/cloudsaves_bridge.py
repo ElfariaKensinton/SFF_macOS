@@ -148,7 +148,7 @@ def _bridge_rclone_backup_save(bridge, config_json):
         steam32_id = str(config.get("steam32_id", "")).strip()
         game_name = config.get("game_name", f"App {app_id}").strip() or f"App {app_id}"
         if not rclone_exe:
-            bundled = WebBridge._get_bundled_tool_path("rclone")
+            bundled = bridge._get_bundled_tool_path("rclone")
             if bundled:
                 rclone_exe = str(bundled)
         if not app_id or not rclone_exe or not remote_dest or not steam_path or not steam32_id:
@@ -204,7 +204,7 @@ def _bridge_rclone_list_remotes(bridge, rclone_exe_json):
         except Exception:
             rclone_exe = ""
         if not rclone_exe:
-            bundled = WebBridge._get_bundled_tool_path("rclone")
+            bundled = bridge._get_bundled_tool_path("rclone")
             rclone_exe = str(bundled) if bundled else ""
         if not rclone_exe or not Path(rclone_exe).exists():
             return json.dumps({"ok": False, "error": "rclone executable not found"})
@@ -246,7 +246,7 @@ def _bridge_rclone_test_remote(bridge, config_json):
         rclone_exe = config.get("rclone_exe", "").strip()
         remote = config.get("remote", "").strip()
         if not rclone_exe:
-            bundled = WebBridge._get_bundled_tool_path("rclone")
+            bundled = bridge._get_bundled_tool_path("rclone")
             rclone_exe = str(bundled) if bundled else ""
         if not rclone_exe or not Path(rclone_exe).exists():
             return json.dumps({"ok": False, "error": "rclone executable not found"})
@@ -289,7 +289,7 @@ def _bridge_rclone_open_config(bridge, rclone_exe_json):
     except Exception:
         rclone_exe = ""
     if not rclone_exe:
-        bundled = WebBridge._get_bundled_tool_path("rclone")
+        bundled = bridge._get_bundled_tool_path("rclone")
         rclone_exe = str(bundled) if bundled else ""
     if not rclone_exe or not Path(rclone_exe).exists():
         bridge._emit_task_result("rclone_open_config", False, "", error="rclone executable not found")
@@ -481,7 +481,7 @@ def _bridge_backup_all_save_locations(bridge, config_json):
             import subprocess
             from concurrent.futures import ThreadPoolExecutor, as_completed
             if not rclone_exe:
-                bundled = WebBridge._get_bundled_tool_path("rclone")
+                bundled = bridge._get_bundled_tool_path("rclone")
                 rclone_exe = str(bundled) if bundled else ""
             if not rclone_exe or not remote_dest:
                 return (False, "rclone exe or remote destination not set.", [])
@@ -641,7 +641,7 @@ def _bridge_scan_backup_root(bridge, config_json):
             rclone_exe = config.get("rclone_exe", "").strip()
             remote_dest = config.get("remote_dest", "").strip()
             if not rclone_exe:
-                bundled = WebBridge._get_bundled_tool_path("rclone")
+                bundled = bridge._get_bundled_tool_path("rclone")
                 rclone_exe = str(bundled) if bundled else ""
             if not rclone_exe or not remote_dest:
                 return (False, "rclone exe or remote destination not set.", {})

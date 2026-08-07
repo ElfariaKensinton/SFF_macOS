@@ -1476,7 +1476,7 @@ def _bridge_update_store_lists(bridge):
             logger.warning("Store list update: JSON sources failed: %s", e)
             results.append(f"JSON sources failed: {e}")
         # Also invalidate the Steam applist in-memory cache so next search re-reads
-        global _STEAM_APPLIST_CACHE
+        global _STEAM_APPLIST_CACHE, _STEAM_APPLIST_CACHE_TIME
         _STEAM_APPLIST_CACHE = None
         _STEAM_APPLIST_CACHE_TIME = 0
         return (ok_steam or ok_json, "; ".join(results))
