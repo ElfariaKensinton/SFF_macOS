@@ -342,6 +342,9 @@ def get_hubcap(dest, app_id, depotcache = None, hubcap_key = None):
                     "Go to the Hubcap Manifest website and request an API key. It's free."
                 ),
             ).strip()
+            if not hubcap_key:
+                print(Fore.YELLOW + "No Hubcap API key entered — skipping Hubcap." + Style.RESET_ALL)
+                return None
             set_setting(Settings.HUBCAP_KEY, hubcap_key)
         headers = {
             "Authorization": f"Bearer {hubcap_key}",
@@ -507,53 +510,66 @@ def get_ryuu(dest, app_id, depotcache=None, request_update=None, branch=None, fi
     max_attempts = 3
     attempt = 0
     while attempt < max_attempts:
-        ryuu_key = get_setting(Settings.RYUU_KEY) or ""
-        api_key = get_setting(Settings.RYUU_API_KEY) or ""  # premium fallback
-        if not ryuu_key and api_key:
-            ryuu_key = api_key
+        reseller_key = get_setting(Settings.RYUU_KEY) or ""
+        premium_key = get_setting(Settings.RYUU_API_KEY) or ""
+        is_premium = False
+
+        if reseller_key and premium_key:
+            choice = prompt_select(
+                "Which Ryuu key type do you want to use?",
+                [("Reseller (auth_code)", "reseller"),
+                 ("Premium (X-Auth-Key)", "premium")],
+                cancellable=False,
+            )
+            is_premium = (choice == "premium")
+        elif premium_key:
+            is_premium = True
+        elif reseller_key:
+            is_premium = False
+        else:
+            choice = prompt_select(
+                "What type of Ryuu key do you have?",
+                [("Reseller key", "reseller"),
+                 ("Premium API key", "premium")],
+                cancellable=True,
+            )
+            if choice is None:
+                return None
+            is_premium = (choice == "premium")
+
+        ryuu_key = premium_key if is_premium else reseller_key
         if not ryuu_key:
+            prompt_msg = (
+                "Paste your Ryuu premium API key:"
+                if is_premium else
+                "Paste your Ryuu reseller key:"
+            )
             ryuu_key = prompt_secret(
-                "Paste your Ryuu reseller or premium API key: ",
+                prompt_msg,
                 lambda x: bool(x.strip()),
                 "API key cannot be empty.",
                 long_instruction="Contact Ryuu staff to get an API key.",
             ).strip()
-            set_setting(Settings.RYUU_KEY, ryuu_key)
+            if not ryuu_key:
+                return None
+            if is_premium:
+                set_setting(Settings.RYUU_API_KEY, ryuu_key)
+            else:
+                set_setting(Settings.RYUU_KEY, ryuu_key)
 
-        if request_update:
-            try:
-                upd_resp = httpx.get(
-                    "https://generator.ryuu.lol/resellerrequestupdate",
-                    params={"appid": str(app_id), "auth_code": ryuu_key},
-                    timeout=30, follow_redirects=True,
-                )
-                if upd_resp.status_code == 200:
-                    msg = upd_resp.json().get("message", "OK")
-                    print(Fore.GREEN + f"Ryuu update: {msg}" + Style.RESET_ALL)
-                elif upd_resp.status_code == 400:
-                    body = (upd_resp.text or "")[:4096]
-                    print(Fore.YELLOW + f"ryuu rejected update: 400 (appid not in db) {body}" + Style.RESET_ALL)
-                else:
-                    body = (upd_resp.text or "")[:4096]
-                    print(Fore.YELLOW + f"ryuu rejected update: {upd_resp.status_code} {body}" + Style.RESET_ALL)
-            except Exception as e:
-                print(Fore.YELLOW + f"Ryuu update request failed ({e}). Continuing..." + Style.RESET_ALL)
-            request_update = False
-
-        # Try old endpoint first (auth_code param, works for normal reseller users)
-        lua_bytes = _ryuu_download_old(app_id, ryuu_key, dest, depotcache, file_type)
+        # Route to correct endpoint based on type
+        if is_premium:
+            lua_bytes = _ryuu_download_new(app_id, ryuu_key, branch, file_type)
+        else:
+            lua_bytes = _ryuu_download_old(app_id, ryuu_key, dest, depotcache, file_type)
         if lua_bytes is not None:
             return _ryuu_save_lua(lua_bytes, dest, app_id)
 
-        # Try new endpoint with API key (X-Auth-Key header, premium users)
-        api_key = (get_setting(Settings.RYUU_API_KEY) or "").strip()
-        if api_key:
-            lua_bytes = _ryuu_download_new(app_id, api_key, branch, file_type)
-            if lua_bytes is not None:
-                return _ryuu_save_lua(lua_bytes, dest, app_id)
-
-        # Fall back: try old endpoint with API key too
-        lua_bytes = _ryuu_download_new(app_id, ryuu_key, branch, file_type)
+        # If chosen endpoint failed, try the other one
+        if is_premium:
+            lua_bytes = _ryuu_download_old(app_id, ryuu_key, dest, depotcache, file_type)
+        else:
+            lua_bytes = _ryuu_download_new(app_id, ryuu_key, branch, file_type)
         if lua_bytes is not None:
             return _ryuu_save_lua(lua_bytes, dest, app_id)
 

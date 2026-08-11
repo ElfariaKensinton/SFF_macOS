@@ -370,7 +370,7 @@ def download_depot(
     if manifest_bytes:
         print_fn(f"[native] Using provided manifest ({len(manifest_bytes)} bytes)")
 
-    if manifest_bytes is None:
+    if manifest_bytes is None or len(manifest_bytes) == 0:
         # ── Request code ──────────────────────────────────
         request_code = _resolve_request_code(cdn, app_id, depot_id, manifest_gid, print_fn)
 
@@ -389,7 +389,7 @@ def download_depot(
                 break
             last_err = f"HTTP error from {host}"
 
-        if manifest_bytes is None:
+        if manifest_bytes is None or len(manifest_bytes) == 0:
             client.disconnect()
             print_fn(f"[native] Manifest download failed: {last_err}")
             return False, 0

@@ -64,7 +64,10 @@ def _on_gui_thread(func):
         raise RuntimeError("gui prompt backend not installed")
     container = {"value": None, "error": None, "done": threading.Event()}
     _invoker._signal.emit((func, container))
-    container["done"].wait()
+    if not container["done"].wait(timeout=30.0):
+        # Dialog may be invisible on Wayland — release worker thread
+        container["result"] = None
+        container["done"].set()
     if container["error"] is not None:
         raise container["error"]
     return container["value"]

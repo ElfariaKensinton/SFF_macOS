@@ -199,6 +199,7 @@ setup_venv() {
     elif [ -f "$dir/requirements.txt" ]; then
         "$dir/.venv/bin/pip" install --quiet -r "$dir/requirements.txt"
     fi
+    "$dir/.venv/bin/pip" install --quiet steam==1.4.4 --no-deps
 }
 
 # ── Install: AppImage ─────────────────────────────────────────────────────────

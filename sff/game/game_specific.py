@@ -788,8 +788,11 @@ class GameHandler:
             self.injection_manager.dlc_check(self.provider, int(app_info.app_id))
         elif choice == MainMenu.MULTIPLAYER_FIX:
             self.apply_multiplayer_fix(app_info)
+            return (True, "Multiplayer fix applied.")
         elif choice == MainMenu.CRACK_FIX:
-            self.apply_crack_fix(app_info)
+            success = self.apply_crack_fix(app_info)
+            return (success, "Crack files applied" if success else "No crack selected or download failed")
         elif choice == MainMenu.MANAGE_DLC_UNLOCKERS:
             self.manage_dlc_unlockers(app_info)
+            return (True, "DLC unlockers updated.")
         return MainReturnCode.LOOP

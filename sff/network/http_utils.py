@@ -163,7 +163,7 @@ async def get_request(
 def get_request_raw(url):
     while True:
         try:
-            return httpx.get(url, timeout=None).content
+            return httpx.get(url, timeout=120).content
         except httpx.HTTPError as e:
             print(f"Network error: {repr(e)}")
             if not prompt_confirm("Try again?"):
@@ -364,7 +364,7 @@ def download_to_tempfile(
                 headers=headers,
                 params=params,
                 follow_redirects=True,
-                timeout=None,
+                timeout=120,
             )
         except ValueError as e:
             if "Unknown scheme for proxy URL" not in str(e):
@@ -378,7 +378,7 @@ def download_to_tempfile(
                 headers=headers,
                 params=params,
                 follow_redirects=True,
-                timeout=None,
+                timeout=120,
                 trust_env=False,
             )
         with stream_cm as response:

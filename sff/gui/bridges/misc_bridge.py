@@ -1415,6 +1415,21 @@ def _bridge_launch_game(bridge, app_id):
         if not game_dir.exists():
             raise FileNotFoundError("Installed game folder not found")
 
+        # On Linux, always use Steam to launch — properly handles both
+        # native ELF binaries and Proton/Wine .exe games with correct
+        # compatibility tool settings.
+        if sys.platform != "win32":
+            from PyQt6.QtCore import QUrl
+            from PyQt6.QtGui import QDesktopServices
+            ok = QDesktopServices.openUrl(QUrl(f"steam://run/{app_id}"))
+            bridge._emit_task_result(
+                "launch_game",
+                bool(ok),
+                "Launch sent to Steam" if ok else "Could not launch game",
+                app_id=app_id,
+            )
+            return
+
         def _is_linux_binary(path: Path) -> bool:
             try:
                 if not path.is_file() or not os.access(path, os.X_OK):
@@ -2487,6 +2502,14 @@ def _bridge_delete_game(bridge, app_id, game_path, mode):
                 lua_removed = True
             except Exception as e:
                 logger.warning("delete_game: stplug-in Lua removal failed: %s", e)
+            # Also remove from saved_lua/ cache
+            try:
+                saved_path = Path.cwd() / "saved_lua" / f"{app_id_int}.lua"
+                if saved_path.exists():
+                    saved_path.unlink()
+                    logger.info("delete_game: removed saved_lua cache %s", saved_path)
+            except Exception:
+                pass
 
         if mode != "full":
             if lua_removed:

@@ -1533,7 +1533,7 @@ def _bridge_download_game_ddmod(bridge, app_id, source, lua_path, manifest_folde
             # for "running download" so we don't snap back to 35
             # mid-flight or pre-empt the 95% "Updating tracker" stage.
             _DDMOD_FLOOR = 35.0
-            _DDMOD_CEIL = 95.0
+            _DDMOD_CEIL = 100.0
             _last_pct = [-1.0]
 
             def _print_fn(msg):

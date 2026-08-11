@@ -454,6 +454,34 @@ window.Components = (function() {
         _hideImages = !!val;
     }
 
+    function showConfirm(title, message, onYes, onNo) {
+        var modal = document.getElementById('confirm-dialog');
+        var titleEl = document.getElementById('confirm-dialog-title');
+        var msgEl = document.getElementById('confirm-dialog-message');
+        var yesBtn = document.getElementById('confirm-dialog-yes');
+        var noBtn = document.getElementById('confirm-dialog-no');
+        var closeBtn = document.getElementById('confirm-dialog-cancel');
+
+        if (titleEl) titleEl.textContent = title || 'Confirm';
+        if (msgEl) msgEl.textContent = message || '';
+
+        var cleanup = function() {
+            hideModal('confirm-dialog');
+            yesBtn.removeEventListener('click', onYesHandler);
+            noBtn.removeEventListener('click', onNoHandler);
+            if (closeBtn) closeBtn.removeEventListener('click', onNoHandler);
+        };
+
+        var onYesHandler = function() { cleanup(); if (onYes) onYes(); };
+        var onNoHandler = function() { cleanup(); if (onNo) onNo(); };
+
+        yesBtn.addEventListener('click', onYesHandler);
+        noBtn.addEventListener('click', onNoHandler);
+        if (closeBtn) closeBtn.addEventListener('click', onNoHandler);
+
+        showModal('confirm-dialog');
+    }
+
     return {
         getCoverUrls: getCoverUrls,
         getLibraryCoverUrl: getLibraryCoverUrl,
@@ -465,6 +493,7 @@ window.Components = (function() {
         hideModal: hideModal,
         showDownloadModal: showDownloadModal,
         showLibraryModal: showLibraryModal,
+        showConfirm: showConfirm,
         escapeHtml: escapeHtml,
         initModals: initModals,
         CustomSelect: CustomSelect,

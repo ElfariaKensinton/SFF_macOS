@@ -1,5 +1,20 @@
 # Changelog
 
+## 6.6.4
+
+### Fixed
+
+- **`steam` package not installed on Linux** — `steamidra_install.sh` never ran `pip install steam==1.4.4 --no-deps` in the venv, causing `ModuleNotFoundError: No module named 'steam'` on startup. Both requirements files document the 2-step process, but the install script only performed step 1.
+- **Linux game launch "executable launch failed"** — `_bridge_launch_game` scanned for ELF binaries only on Linux, making Windows `.exe` files (Proton/Wine games) invisible. Now always delegates to Steam via `steam://run/{app_id}` on Linux, which correctly handles both native and Proton games.
+- **Crack Files button does nothing** — CRACK_FIX/MULTIPLAYER_FIX/MANAGE_DLC returned `MainReturnCode.LOOP` which silently mapped to `None` in game_bridge, causing zero UI feedback. Now returns `(bool, str)` tuples with proper toast notifications.
+- **Auto-update popup buttons** — browser-native OK/Cancel replaced with custom Yes/No dialog via new `Components.showConfirm()`.
+- **Download hangs on Wayland** — `_on_gui_thread` had infinite `wait()` on modal dialogs, freezing worker threads on compositors where dialogs are invisible. Added 30s timeout. `download_to_tempfile` timeouts now `120s` (was unlimited). Empty Hubcap prompt input gracefully returns `None`.
+- **Ryuu key infinite prompt loop** — `get_ryuu()` now asks "Reseller or Premium?" before key entry, routes to correct endpoint deterministically, and clears both keys on failure.
+- **DDMod progress stuck at 95%** — progress ceiling raised to 100%.
+- **ACF read-only overwrite failure** — `chmod(0o644)` before write on existing ACF files.
+- **Empty manifest treated as valid download** — added `len(manifest_bytes) == 0` check to native downloader.
+- **`saved_lua/<appid>.lua` not deleted on game removal** — now cleaned up in `delete_game`.
+
 ## 6.6.3
 
 ### Fixed

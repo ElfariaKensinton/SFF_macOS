@@ -2116,5 +2116,21 @@ start YourGame-Shipping.exe</pre>
     <script src="js/settings.js"></script>
     <script src="js/bulk_import.js"></script>
     <script src="js/dlc_check.js"></script>
+    <div id="confirm-dialog" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content" style="max-width:400px;">
+            <div class="modal-header">
+                <h2 id="confirm-dialog-title">Confirm</h2>
+                <button class="modal-close" id="confirm-dialog-cancel">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="confirm-dialog-message" style="white-space:pre-line;line-height:1.5;"></p>
+            </div>
+            <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;padding:0 20px 16px;">
+                <button id="confirm-dialog-no" class="btn" style="min-width:80px;">No</button>
+                <button id="confirm-dialog-yes" class="btn btn-primary" style="min-width:80px;">Yes</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

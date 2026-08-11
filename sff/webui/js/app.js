@@ -202,9 +202,10 @@ window.App = (function() {
                             Bridge.callWithCallback('get_setting', 'auto_enable_updates_new_games', function(val) {
                                 if (val === 'True') return;
                                 var fastAutoUpdateMsg = 'Game downloaded successfully.\n\nWould you like to enable auto-updates for this game?\n(Keeps the Steam Update button visible for this game.)';
-                                if (window.confirm(fastAutoUpdateMsg)) {
-                                    Bridge.call('let_updates_add_game', String(result.app_id));
-                                }
+                                Components.showConfirm('Auto Update', fastAutoUpdateMsg,
+                                    function() { Bridge.call('let_updates_add_game', String(result.app_id)); },
+                                    function() { }
+                                );
                             });
                         }
                     }
@@ -214,11 +215,15 @@ window.App = (function() {
                             Bridge.callWithCallback('get_setting', 'auto_enable_updates_new_games', function(val) {
                                 if (val === 'True') return;
                                 var autoUpdateMsg = 'Game downloaded successfully.\n\nWould you like to enable auto-updates for this game?\n(Keeps the Steam Update button visible for this game.)';
-                                if (window.confirm(autoUpdateMsg)) {
-                                    Bridge.call('let_updates_add_game', String(result.app_id));
-                                }
+                                Components.showConfirm('Auto Update', autoUpdateMsg,
+                                    function() { Bridge.call('let_updates_add_game', String(result.app_id)); },
+                                    function() { }
+                                );
                             });
                         }
+                    }
+                    if (result.task === 'community_fixes') {
+                        Components.showToast(result.success ? 'success' : 'error', result.message || 'Crack files completed.');
                     }
                     if (result.task === 'auto_lc_setup') {
                         var runBtn = document.getElementById('lc-install-run');

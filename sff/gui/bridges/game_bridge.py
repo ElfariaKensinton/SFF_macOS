@@ -222,6 +222,8 @@ def _bridge_run_game_action(bridge, app_id, action):
                 return "__handled_no_toast__"
             if result is False or result is MainReturnCode.EXIT:
                 return f"Action '{action}' failed"
+            if result is MainReturnCode.LOOP:
+                return "__handled_no_toast__"
             if result is MainReturnCode.LOOP_NO_PROMPT:
                 return "__handled_no_toast__"
             return None
