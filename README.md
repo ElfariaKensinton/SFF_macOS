@@ -184,7 +184,11 @@ SteaMidra’s GPL license applies to SteaMidra’s own source code only. It does
 
 **Ludusavi** — The cloud save custom-path feature uses the **Ludusavi manifest** game-save-location database maintained by **mtkennerly** (<https://github.com/mtkennerly/ludusavi-manifest>). Bundled as `sff/data/manifest.yaml`.
 
-**Hubcap Manifest** – Store browser and manifest library API provided by **Hubcap Manifest**.
+**Hubcap Manifest** – Store browser and manifest library API provided by **Hubcap Manifest**. Community server: <https://discord.gg/hubcapsmanifest>
+
+**Ryuu** – Lua and manifest download provider with reseller and premium API keys. Community server: <https://discord.gg/manifests>
+
+**DepotBox** – Lua and manifest download provider. Also powers the Build ID lookup behind Download Older Version. Community server: <https://discord.gg/depotbox>
 
 **RedPaper** – Credit to RedPaper for the Broken Moon MIDI cover, originally arranged by U2 Akiyama and used in Touhou 7.5: Immaterial and Missing Power. Touhou 7.5 and its assets are owned by Team Shanghai Alice and Twilight Frontier. SteaMidra is not affiliated with or endorsed by either party. All trademarks belong to their respective owners.
 

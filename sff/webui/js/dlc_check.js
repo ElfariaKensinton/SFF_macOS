@@ -183,7 +183,7 @@
                         Components.showToast('warning', 'Tick at least one DLC first.');
                         return;
                     }
-                    Components.showToast('info', 'Queueing ' + checkedIds.length + ' DLC(s) through oureveryday...');
+                    Components.showToast('info', 'Queueing ' + checkedIds.length + ' DLC(s) through MidraEveryDay...');
                     checkedIds.forEach(function (id) {
                         Bridge.call('download_dlc_oureveryday',
                             String(id), String(_currentAppId));

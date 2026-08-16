@@ -35,6 +35,10 @@
                 <svg class="nav-icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 <span class="nav-label" data-i18n="Downloads">Downloads</span>
             </button>
+            <button class="nav-item platform-win" data-page="downgrade" data-tooltip="Pin an installed game to an older build by Build ID">
+                <svg class="nav-icon" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                <span class="nav-label" data-i18n="Downgrade">Downgrade</span>
+            </button>
             <button class="nav-item" data-page="fixgame" data-tooltip="Apply emulators, remove DRM, manage DLC">
                 <svg class="nav-icon" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
                 <span class="nav-label" data-i18n="Fix Game">Fix Game</span>
@@ -1057,6 +1061,35 @@ start YourGame-Shipping.exe</pre>
             </div>
         </section>
 
+        <!-- Page: Downgrade -->
+        <section id="page-downgrade" class="page">
+            <div class="page-header">
+                <h1>Downgrade Game</h1>
+                <p class="page-subtitle">Pin an installed game to an older build. Paste a Build ID from SteamDB and the manifest IDs are pulled and applied for you. Windows only.</p>
+            </div>
+
+            <div class="provider-section" style="max-width:640px;">
+                <h2 class="section-title">Select Game</h2>
+                <div class="input-group" style="margin-bottom:14px;">
+                    <label style="font-size:12px;font-weight:600;opacity:0.8;">Installed game:</label>
+                    <select id="downgrade-game-select" style="width:100%; font-size:13px; padding:8px 10px; box-sizing:border-box; background:var(--input-bg,rgba(255,255,255,0.07)); border:1px solid var(--border,rgba(255,255,255,0.12)); border-radius:6px; color:inherit;">
+                        <option value="">-- Select a game --</option>
+                    </select>
+                </div>
+                <div class="input-group" style="margin-bottom:14px;">
+                    <label style="font-size:12px;font-weight:600;opacity:0.8;">App ID:</label>
+                    <input id="downgrade-appid" type="text" inputmode="numeric" placeholder="e.g. 730" style="width:100%; font-size:13px; padding:8px 10px; box-sizing:border-box; background:var(--input-bg,rgba(255,255,255,0.07)); border:1px solid var(--border,rgba(255,255,255,0.12)); border-radius:6px; color:inherit;">
+                </div>
+                <div class="input-group" style="margin-bottom:16px;">
+                    <label style="font-size:12px;font-weight:600;opacity:0.8;">Build ID:</label>
+                    <input id="downgrade-buildid" type="text" inputmode="numeric" placeholder="e.g. 17704973" style="width:100%; font-size:13px; padding:8px 10px; box-sizing:border-box; background:var(--input-bg,rgba(255,255,255,0.07)); border:1px solid var(--border,rgba(255,255,255,0.12)); border-radius:6px; color:inherit;">
+                </div>
+                <button id="downgrade-apply" class="btn btn-primary">Downgrade</button>
+                <button id="downgrade-unlock" class="btn" style="margin-left:8px;" data-tooltip="Remove the version lock so Steam updates this game back to the latest build">Unlock Updates</button>
+                <div id="downgrade-status" style="margin-top:14px; font-size:13px; opacity:0.9; white-space:pre-wrap;"></div>
+            </div>
+        </section>
+
         <!-- Page: Settings -->
         <section id="page-settings" class="page">
             <div class="page-header">
@@ -1378,6 +1411,13 @@ start YourGame-Shipping.exe</pre>
                 <p id="about-info">SteaMidra — Steam game setup and manifest tool<br>
                     <a href="#" id="about-github">GitHub</a>
                 </p>
+                <p style="font-size:12px;opacity:0.85;margin-top:6px;line-height:1.6;">
+                    Download providers: MidraEveryDay, Hubcap, Ryuu, DepotBox<br>
+                    Community servers (API keys):
+                    <a href="#" id="about-link-hubcap">Hubcap</a> ·
+                    <a href="#" id="about-link-depotbox">DepotBox</a> ·
+                    <a href="#" id="about-link-ryuu">Ryuu</a>
+                </p>
             </div>
         </section>
 
@@ -1484,10 +1524,10 @@ start YourGame-Shipping.exe</pre>
                 <button class="modal-close" data-tooltip="Close">&times;</button>
             </div>
             <div class="modal-body">
-                <div class="dl-source-picker">
+                    <div class="dl-source-picker">
                     <span class="dl-source-label">Download source:</span>
                     <label class="dl-source-option">
-                        <input type="radio" name="dl-source" value="oureveryday" checked> OurEveryday
+                        <input type="radio" name="dl-source" value="oureveryday" checked> MidraEveryDay
                     </label>
                     <label class="dl-source-option">
                         <input type="radio" name="dl-source" value="hubcap"> Hubcap
@@ -1501,6 +1541,15 @@ start YourGame-Shipping.exe</pre>
                     <label class="dl-source-option">
                         <input type="radio" name="dl-source" value="local"> Local file
                     </label>
+                </div>
+                <div id="dl-source-key-hint" style="display:none; margin-top:8px; padding-left:4px; font-size:12px; opacity:0.85;">
+                </div>
+                <div id="dl-crack-banner" style="display:none; margin-top:8px; padding:8px 10px; border:1px solid var(--accent,#4a9eff); border-radius:6px; font-size:12px;">
+                    <span id="dl-crack-banner-text"></span>
+                    <div style="margin-top:6px; display:flex; gap:6px;">
+                        <button id="dl-crack-older-btn" class="btn btn-sm btn-primary">Download Older Version</button>
+                        <button id="dl-crack-source-btn" class="btn btn-sm">Crack instructions</button>
+                    </div>
                 </div>
                 <div id="ryuu-update-option" style="display:none; margin-top:8px; padding-left:4px;">
                     <label class="dl-source-option">
@@ -1653,6 +1702,58 @@ start YourGame-Shipping.exe</pre>
         </div>
     </div>
 
+    <div id="older-mode-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Download Older Version</h2>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom:14px;opacity:0.85;">Choose how to pick the version.</p>
+                <button id="older-mode-manual" class="download-option">
+                    <svg class="dl-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                    <div class="dl-info">
+                        <span class="dl-title">Manual</span>
+                        <span class="dl-desc">Enter or import manifest IDs and pick the version yourself.</span>
+                    </div>
+                </button>
+                <button id="older-mode-auto" class="download-option platform-win">
+                    <svg class="dl-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    <div class="dl-info">
+                        <span class="dl-title">Automatic</span>
+                        <span class="dl-desc">Enter a Build ID — manifest IDs are pulled and applied for you. Windows only.</span>
+                    </div>
+                </button>
+            </div>
+            <div class="modal-footer">
+                <button class="btn modal-cancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="older-auto-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Download by Build ID</h2>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom:12px;opacity:0.85;">Open the game on SteamDB, go to Patches, copy the Build ID of the version you want, and paste it here.</p>
+                <p style="margin-bottom:12px;font-size:12px;opacity:0.7;">Build ID manifest data provided by DepotBox.</p>
+                <div class="input-group">
+                    <label style="font-size:12px;font-weight:600;opacity:0.8;">Build ID:</label>
+                    <input id="older-auto-buildid" type="text" inputmode="numeric" placeholder="e.g. 17704973" style="width:100%; font-size:13px; padding:8px 10px; box-sizing:border-box; background:var(--input-bg,rgba(255,255,255,0.07)); border:1px solid var(--border,rgba(255,255,255,0.12)); border-radius:6px; color:inherit;">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn modal-cancel">Cancel</button>
+                <button id="older-auto-apply" class="btn btn-primary">Download Version</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Steam Home Download Modal -->
     <div id="steam-home-modal" class="modal hidden">
         <div class="modal-overlay"></div>
@@ -1672,7 +1773,7 @@ start YourGame-Shipping.exe</pre>
                 <div class="dl-source-picker" style="margin-bottom:10px;">
                     <span class="dl-source-label">Lua source:</span>
                     <label class="dl-source-option">
-                        <input type="radio" name="steam-home-source" value="oureveryday" checked> OurEveryday
+                        <input type="radio" name="steam-home-source" value="oureveryday" checked> MidraEveryDay
                     </label>
                     <label class="dl-source-option">
                         <input type="radio" name="steam-home-source" value="hubcap"> Hubcap
@@ -1762,7 +1863,7 @@ start YourGame-Shipping.exe</pre>
                 <div class="dl-source-picker" style="margin-bottom:10px;">
                     <span class="dl-source-label">Lua source:</span>
                     <label class="dl-source-option">
-                        <input type="radio" name="ddmod-home-source" value="oureveryday" checked> OurEveryday
+                        <input type="radio" name="ddmod-home-source" value="oureveryday" checked> MidraEveryDay
                     </label>
                     <label class="dl-source-option">
                         <input type="radio" name="ddmod-home-source" value="hubcap"> Hubcap
@@ -1945,6 +2046,7 @@ start YourGame-Shipping.exe</pre>
                     <button id="lu-toggle-all" class="btn btn-sm" style="font-size:12px;padding:3px 10px;">Deselect All</button>
                 </div>
                 <div id="lu-helper-status" style="font-size:12px;opacity:0.7;margin-bottom:8px;">Helper status: checking...</div>
+                <input type="text" id="lu-search" placeholder="Search games..." style="width:100%;padding:6px 10px;margin-bottom:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;">
                 <div id="lu-game-list" style="max-height:320px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px 10px;background:var(--bg-secondary, var(--bg));">
                     <span style="opacity:0.5;font-size:13px;">Loading games...</span>
                 </div>
@@ -2088,7 +2190,7 @@ start YourGame-Shipping.exe</pre>
                 <div id="dlc-check-bulk-actions" style="display:none;gap:8px;flex-wrap:wrap;">
                     <span style="font-size:12px;color:var(--fg-muted);align-self:center;">Download checked DLCs through:</span>
                     <button class="btn dlc-bulk-dl" data-source="hubcap">Hubcap</button>
-                    <button class="btn dlc-bulk-dl" data-source="oureveryday">Oureveryday</button>
+                    <button class="btn dlc-bulk-dl" data-source="oureveryday">MidraEveryDay</button>
                     <button class="btn dlc-bulk-dl" data-source="ryuu">Ryuu</button>
                     <button class="btn dlc-bulk-dl" data-source="local">Local files</button>
                 </div>

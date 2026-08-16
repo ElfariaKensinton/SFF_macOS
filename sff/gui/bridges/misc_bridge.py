@@ -483,6 +483,14 @@ def _bridge_check_game_update(bridge, app_id):
             acf_data = vdf_load(acf_path)
             state = acf_data.get("AppState", {})
             installed_buildid = str(state.get("buildid", "0")).strip()
+            game_name = str(state.get("name", "") or "").strip()
+
+            try:
+                from sff.gui.web_bridge import _find_crack_entry, _pick_crack_fix
+                crack_entry = _find_crack_entry(game_name)
+            except Exception:
+                crack_entry = None
+            crack_bid = str(crack_entry.get("buildid", "") or "") if crack_entry else ""
 
             provider = create_provider_for_current_thread()
             app_data = provider.get_single_app_info(int(app_id))
@@ -493,16 +501,31 @@ def _bridge_check_game_update(bridge, app_id):
                 .get("buildid", "0")
             ).strip()
 
+            def _with_crack(res):
+                if crack_entry:
+                    res["crack"] = {
+                        "available": True,
+                        "buildid": crack_bid,
+                        "match_installed": bool(crack_bid and installed_buildid == crack_bid),
+                        "match_latest": bool(
+                            crack_bid and cm_buildid and cm_buildid != "0"
+                            and crack_bid == cm_buildid
+                        ),
+                        "fix": _pick_crack_fix(crack_entry),
+                        "source_crack": crack_entry.get("source_crack", [])[:1],
+                    }
+                return res
+
             if not cm_buildid or cm_buildid == "0":
-                return {"found": True, "error": "Could not retrieve buildid from Steam CM"}
+                return _with_crack({"found": True, "error": "Could not retrieve buildid from Steam CM"})
 
             if installed_buildid == cm_buildid:
-                return {
+                return _with_crack({
                     "found": True,
                     "up_to_date": True,
                     "installed_buildid": installed_buildid,
                     "cm_buildid": cm_buildid,
-                }
+                })
 
             os_type = OSType.WINDOWS if sys.platform == "win32" else OSType.LINUX
             lua_manager = LuaManager(os_type)
@@ -529,7 +552,7 @@ def _bridge_check_game_update(bridge, app_id):
                     acf_writer = ACFWriter(lib_path)
                     acf_writer.patch_acf_depot_manifests(acf_path, new_manifest_map)
                     acf_writer._patch_acf_error_state(acf_path)
-                    return {
+                    return _with_crack({
                         "found": True,
                         "up_to_date": False,
                         "updated": True,
@@ -538,23 +561,23 @@ def _bridge_check_game_update(bridge, app_id):
                         "cm_buildid": cm_buildid,
                         "manifests_updated": 0,
                         "acf_depots_patched": len(new_manifest_map),
-                    }
+                    })
 
-                return {
+                return _with_crack({
                     "found": True,
                     "up_to_date": False,
                     "installed_buildid": installed_buildid,
                     "cm_buildid": cm_buildid,
                     "error": f"No saved .lua for App ID {app_id}. Steam CM did not expose public manifest IDs either, so SteaMidra cannot patch this one automatically.",
-                }
+                })
 
             parsed_lua = lua_manager.fetch_lua(LuaChoice.ADD_LUA, saved_lua_path)
             if parsed_lua is None:
-                return {
+                return _with_crack({
                     "found": True,
                     "up_to_date": False,
                     "error": "Failed to parse saved .lua file",
-                }
+                })
             parsed_lua.manifest_overrides = {}
 
             install_lua_to_steam(bridge._steam_path, str(parsed_lua.app_id), saved_lua_path)
@@ -581,7 +604,7 @@ def _bridge_check_game_update(bridge, app_id):
                 if pinned_count:
                     install_lua_to_steam(bridge._steam_path, str(parsed_lua.app_id), saved_lua_path)
 
-            return {
+            return _with_crack({
                 "found": True,
                 "up_to_date": False,
                 "updated": True,
@@ -589,7 +612,7 @@ def _bridge_check_game_update(bridge, app_id):
                 "cm_buildid": cm_buildid,
                 "manifests_updated": len(new_manifest_map),
                 "lua_pins_written": pinned_count if new_manifest_map else 0,
-            }
+            })
 
         except Exception as e:
             logger.exception("check_game_update failed: %s", e)
@@ -621,6 +644,7 @@ def _bridge_check_game_update(bridge, app_id):
             k: v for k, v in result.items()
             if k not in ("error", "success", "message", "task")
         }
+        extras["app_id"] = str(app_id)
         bridge._emit_task_result("update_check", success, msg, **extras)
 
     bridge._run_async(_do, on_done=_on_done)
@@ -1288,14 +1312,56 @@ def _bridge_app_update_check(bridge, _arg=""):
         })
 
 def _bridge_get_disk_usage(bridge, path):
-    """Return disk usage JSON {total, used, free} for the given path."""
-    import shutil
+    """Return disk usage JSON {total, used, free} for the given path.
+
+    Results are cached for 30s per path. The probe itself runs on a
+    worker thread with a 1s deadline so an offline network drive can
+    never stall the GUI (Windows GetDiskFreeSpaceEx can block ~60s on a
+    dead mapped drive). If the probe misses the deadline the worker
+    still fills the cache when it finishes; the JS side re-requests
+    once and then reads the warm cache.
+    """
+    import concurrent.futures
     import json as _json
+    import time as _t
     try:
-        usage = shutil.disk_usage(path)
-        return _json.dumps({"total": usage.total, "used": usage.used, "free": usage.free})
+        cache = getattr(bridge, "_disk_usage_cache", None)
+        if cache is None:
+            cache = {}
+            bridge._disk_usage_cache = cache
+        hit = cache.get(str(path))
+        if hit and _t.monotonic() - hit[0] < 30.0:
+            return hit[1]
+    except Exception:
+        cache = {}
+    try:
+        fut = _DISK_POOL.submit(shutil.disk_usage, path)
+
+        def _store(result_fut):
+            try:
+                usage = result_fut.result()
+                data = _json.dumps({"total": usage.total, "used": usage.used, "free": usage.free})
+                try:
+                    cache[str(path)] = (_t.monotonic(), data)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        fut.add_done_callback(_store)
+        try:
+            usage = fut.result(timeout=1.0)
+            data = _json.dumps({"total": usage.total, "used": usage.used, "free": usage.free})
+            cache[str(path)] = (_t.monotonic(), data)
+            return data
+        except concurrent.futures.TimeoutError:
+            return _json.dumps({})
     except Exception:
         return _json.dumps({"error": True})
+
+
+from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
+_DISK_POOL = _ThreadPoolExecutor(max_workers=2)
 
 def _bridge_save_ryuu_key(bridge, key):
     """Save Ryuu API key to settings."""
@@ -1620,10 +1686,18 @@ def _bridge_provider_update_now(bridge):
 
 def _bridge_get_provider_cache_status(bridge):
     try:
-        from sff.lua.provider import provider_update_state, load_provider
+        from sff.lua.provider import provider_file_candidates, provider_update_state
 
         data = provider_update_state()
-        data["count"] = len(load_provider())
+        # This slot is called synchronously by QWebChannel.  Loading the
+        # provider here used to parse, validate and sort a ~65 MB JSON file on
+        # Qt's GUI thread merely to display an entry count.  Opening Store then
+        # looked completely frozen for several seconds.  A stat is enough for
+        # the status badge; the provider itself is only loaded by operations
+        # that actually need its keys.
+        candidates = [path for path in provider_file_candidates() if path.exists()]
+        data["available"] = bool(candidates)
+        data["size_bytes"] = max((path.stat().st_size for path in candidates), default=0)
         return json.dumps(data)
     except Exception as exc:
         return json.dumps({

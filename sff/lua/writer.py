@@ -307,7 +307,7 @@ class ACFWriter:
             logger.warning("Could not patch workshop ACF: %s", e)
 
     def patch_acf_depot_manifests(self, acf_file: Path, manifest_map: dict):
-        """Update InstalledDepots and MountedDepots in-place with new manifest GIDs.
+        """Update InstalledDepots in-place with new manifest GIDs.
 
         Preserves SizeOnDisk, installdir, StateFlags, and all other existing fields.
         Also clears stale update-error flags. Used by update_all_manifests so that
@@ -328,10 +328,6 @@ class ACFWriter:
                 else:
                     installed[depot_str] = {"manifest": manifest_str, "size": "0"}
             app_state["InstalledDepots"] = installed
-            if sys.platform == "win32":
-                app_state["MountedDepots"] = {
-                    str(d): str(m) for d, m in manifest_map.items()
-                }
             for key, clean_val in [
                 ("UpdateResult", "0"),
                 ("FullValidateAfterNextUpdate", "0"),

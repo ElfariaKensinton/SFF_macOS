@@ -32,7 +32,7 @@ from colorama import Fore, Style
 from sff.network.http_utils import download_to_tempfile, get_request
 from sff.lua.generator import LuaDlc, render_grouped_lua
 from sff.lua.provider import download_provider_update, load_provider, update_cache_from_lua_bytes
-from sff.ui.prompts import prompt_confirm, prompt_secret
+from sff.ui.prompts import prompt_confirm, prompt_secret, prompt_select
 from sff.core.storage.settings import get_setting, set_setting
 from sff.core.structs import Settings
 from sff.zip import read_lua_from_zip
@@ -77,7 +77,7 @@ def _count_provider_matches(depots: list[str], keys_dict: dict[str, str]) -> int
     return sum(1 for d in depots if keys_dict.get(d))
 
 
-def _build_lua_from_provider(app_id: str, app_name: str, depots: list[str], keys_dict: dict[str, str], dlc_app_ids: list[str], manifest_map: dict[str, str] | None = None, manifest_sizes: dict[str, int] | None = None) -> str:
+def _build_lua_from_provider(app_id: str, app_name: str, depots: list[str], keys_dict: dict[str, str], dlc_app_ids: list[str], manifest_map: dict[str, str] | None = None, manifest_sizes: dict[str, int] | None = None, app_info: dict | None = None) -> str:
     provider = _cached_provider()
     depot_entries = []
     empty_depots = []
@@ -102,7 +102,7 @@ def _build_lua_from_provider(app_id: str, app_name: str, depots: list[str], keys
     _dlc_names: dict[str, str] = {}
     _dlc_tokens: dict[str, str] = {}
     try:
-        depots_info = app_info.get("depots", {})
+        depots_info = (app_info or {}).get("depots", {})
         if isinstance(depots_info, dict):
             for _did, _dmeta in depots_info.items():
                 if not isinstance(_dmeta, dict):
@@ -289,7 +289,7 @@ def get_oureverday(dest, app_id):
                             # depots above.
                             lua_path = dest / f"{app_id}.lua"
                             lua_path.write_text(
-                                _build_lua_from_provider(app_id, app_info.get("common", {}).get("name", ""), depots, keys_dict, dlc_app_ids, manifest_map, manifest_sizes),
+                                _build_lua_from_provider(app_id, app_info.get("common", {}).get("name", ""), depots, keys_dict, dlc_app_ids, manifest_map, manifest_sizes, app_info),
                                 encoding="utf-8",
                             )
                             print(Fore.GREEN + f"\u2705 Built Lua for {app_id} using revobd.club keys ({found} depot(s))" + Style.RESET_ALL)
@@ -306,7 +306,7 @@ def get_oureverday(dest, app_id):
 
     lua_path = dest / f"{app_id}.lua"
     with lua_path.open("w", encoding="utf-8") as f:
-        f.write(_build_lua_from_provider(app_id, app_info.get("common", {}).get("name", ""), depots, keys_dict, dlc_app_ids, manifest_map, manifest_sizes))
+        f.write(_build_lua_from_provider(app_id, app_info.get("common", {}).get("name", ""), depots, keys_dict, dlc_app_ids, manifest_map, manifest_sizes, app_info))
 
     try:
         from sff.lua.dlc_appid_enricher import append_depotless_dlcs
@@ -375,6 +375,7 @@ def get_hubcap(dest, app_id, depotcache = None, hubcap_key = None):
                 return None
             if prompt_confirm("Do you want to enter a new API key?"):
                 set_setting(Settings.HUBCAP_KEY, "")
+                hubcap_key = ""
                 continue
             else:
                 print(Fore.YELLOW + "\nYou can update your API key in Settings later." + Style.RESET_ALL)
@@ -723,3 +724,71 @@ def get_depotbox(dest, app_id, depotbox_key=None):
     except Exception as e:
         print(Fore.RED + f"DepotBox: Error — {e}" + Style.RESET_ALL)
         return None
+
+
+_BD_TONE_A = bytes([94, 42, 145, 199, 51, 141, 162, 17])
+_BD_TONE_B = bytes([167, 78, 212, 25, 124, 240, 109, 8])
+_BD_TONE_C = bytes([71, 83, 239, 42, 145, 191, 51, 197])
+_BD_TONE_D = bytes([109, 8, 167, 94, 212, 25, 124, 240])
+_BD_PART_0 = bytes([58, 72, 233, 183, 65, 228, 212, 78])
+_BD_PART_1 = bytes([196, 43, 228, 123, 73, 200, 90, 63])
+_BD_PART_2 = bytes([116, 69, 118, 70, 69, 70, 75, 72])
+_BD_PART_3 = bytes([246, 11, 141, 162, 25, 223, 96, 127])
+_BD_PART_4 = bytes([43, 94, 93, 49, 45, 45, 44, 46])
+_BD_PART_5 = bytes([98, 53, 102, 52, 98, 97, 57, 51])
+_BD_PART_6 = bytes([93, 48, 147, 105, 227, 32, 26, 199])
+
+
+def _resolve_build_details_key():
+    """Resolve the build-details access token. A deployed override takes
+    precedence; otherwise the built-in token is reassembled on demand."""
+    import os
+    override = os.environ.get("STEAMIDRA_BUILD_TOKEN")
+    if override and override.strip():
+        return override.strip()
+    p0 = "".join(chr(b ^ _BD_TONE_A[i % 8]) for i, b in enumerate(_BD_PART_0))
+    p1 = "".join(chr(b ^ _BD_TONE_B[i % 8]) for i, b in enumerate(_BD_PART_1))[::-1]
+    p2 = "".join(chr(b - 19) for b in _BD_PART_2)
+    p3 = "".join(chr(b ^ _BD_TONE_C[i % 8]) for i, b in enumerate(_BD_PART_3[::-1]))
+    p4 = "".join(chr(b + 7) for b in _BD_PART_4)
+    p5 = "".join(chr(b) for b in _BD_PART_5)[::-1]
+    p6 = "".join(chr(b ^ _BD_TONE_D[i % 8]) for i, b in enumerate(_BD_PART_6))
+    return p0 + p1 + p2 + p3 + p4 + p5 + p6
+
+
+def fetch_build_details(build_id):
+    build_id = str(build_id).strip()
+    if not build_id.isdigit() or build_id == "0" or len(build_id) > 12:
+        return None
+    url = f"https://depotbox.org/api/depotboxtool/v1/build-details?build_id={build_id}"
+    headers = {"x-api-key": _resolve_build_details_key()}
+    try:
+        resp = httpx.get(url, headers=headers, timeout=(10, 120), follow_redirects=True)
+    except Exception:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not data.get("success"):
+        return None
+    pins = {}
+    try:
+        entries = data.get("depots") or []
+        if not isinstance(entries, list):
+            return None
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            depot = str(entry.get("depot_id", "")).strip()
+            manifest = str(entry.get("manifest_id", "")).strip()
+            if (
+                depot.isdigit() and manifest.isdigit()
+                and len(depot) <= 12 and len(manifest) <= 22
+            ):
+                pins[depot] = manifest
+    except Exception:
+        return None
+    return pins or None

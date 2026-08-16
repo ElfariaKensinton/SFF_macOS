@@ -75,6 +75,7 @@ from sff.gui.bridges.download_bridge import (
     _bridge_download_game_fastest,
     _bridge_download_game_version,
     _bridge_download_game_version_native,
+    _bridge_download_older_version_auto,
     _bridge_download_game_with_source,
     _bridge_import_local_lua,
     _bridge_run_linux_ddmod_fallback,
@@ -242,7 +243,6 @@ class _Worker(QObject):
                 raise
             logger.exception("Worker error: %s", e)
             self.error.emit(str(e))
-            self.finished.emit(None)
 
 
 def _should_show_software() -> str:
@@ -327,12 +327,13 @@ def _collect_steamidra_managed_sources(steam_path, saved_lua_root=None) -> dict[
 
 
 _CRACK_BUILDID_CACHE: dict[str, str] | None = None
+_CRACK_BUILDID_FULL: list | None = None
 _CRACK_BUILDID_TIME = 0.0
 _CRACK_BUILDID_FETCHING = False
 
 
 def _prefetch_crack_buildids():
-    global _CRACK_BUILDID_CACHE, _CRACK_BUILDID_TIME, _CRACK_BUILDID_FETCHING
+    global _CRACK_BUILDID_CACHE, _CRACK_BUILDID_FULL, _CRACK_BUILDID_TIME, _CRACK_BUILDID_FETCHING
     import time as _t
     if _CRACK_BUILDID_CACHE is not None and (_t.time() - _CRACK_BUILDID_TIME) < 3600:
         return
@@ -348,12 +349,33 @@ def _prefetch_crack_buildids():
         if resp.status_code == 200:
             data = resp.json()
             out = {}
+            full = []
             for g in data:
+                if not isinstance(g, dict):
+                    continue
                 name = str(g.get("name", "") or "").strip().lower()
                 bid = str(g.get("buildid", "") or "").strip()
-                if name and bid:
+                if not name:
+                    continue
+                full.append({
+                    "name": name,
+                    "buildid": bid,
+                    "source_crack": [str(x) for x in (g.get("source_crack") or []) if x],
+                    "original_download": [str(x) for x in (g.get("original_download") or []) if x],
+                    "fixes": [
+                        {
+                            "href": str(f.get("href", "") or ""),
+                            "filename": str(f.get("filename", "") or ""),
+                            "badges": [str(b) for b in (f.get("badges") or [])],
+                        }
+                        for f in (g.get("fixes") or [])
+                        if isinstance(f, dict) and f.get("href")
+                    ],
+                })
+                if bid:
                     out[name] = bid
             _CRACK_BUILDID_CACHE = out
+            _CRACK_BUILDID_FULL = full
             _CRACK_BUILDID_TIME = _t.time()
     except Exception:
         pass
@@ -366,6 +388,101 @@ def _get_crack_buildid_map() -> dict[str, str]:
     return _CRACK_BUILDID_CACHE or {}
 
 
+def _warm_steam_session_worker():
+    """Background worker: pre-warm the shared Steam CM session."""
+    try:
+        from sff.network.steam_client import warm_steam_session
+        warm_steam_session()
+    except Exception as e:
+        logger.debug("steam session prewarm failed: %r", e)
+
+
+def _lua_migration_known_names():
+    """Names of config/lua files already handled (moved or dismissed)."""
+    try:
+        from sff.core.storage.settings import get_setting
+        from sff.core.structs import Settings
+        raw = get_setting(Settings.LUA_FOLDER_MIGRATION_KNOWN) or "[]"
+        data = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        return {str(x) for x in data}
+    except Exception:
+        return set()
+
+
+def _latest_public_buildid_from_cache(app_id):
+    """Latest public build id from cached app info (stale-read allowed)."""
+    try:
+        from sff.core.cache import get_cache
+        cache = get_cache()
+        cached = cache.get_stale(f"app_info_{app_id}")
+        if cached and isinstance(cached, dict):
+            public = cached.get("depots", {}).get("branches", {}).get("public", {})
+            bid = str(public.get("buildid", "") or "") if isinstance(public, dict) else ""
+            return bid
+    except Exception:
+        pass
+    return ""
+
+
+def _extract_archive_into(archive_path, dest_dir):
+    """Extract zip/rar/7z archive contents into dest_dir."""
+    from pathlib import Path as _P
+    dest_dir = _P(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = _P(archive_path)
+    suffix = archive_path.suffix.lower()
+    if suffix == ".zip":
+        import zipfile
+        with zipfile.ZipFile(archive_path) as zf:
+            zf.extractall(dest_dir)
+    elif suffix == ".rar":
+        import rarfile
+        with rarfile.RarFile(str(archive_path)) as rf:
+            rf.extractall(str(dest_dir))
+    elif suffix == ".7z":
+        import py7zr
+        with py7zr.SevenZipFile(archive_path, mode="r") as zf:
+            zf.extractall(path=dest_dir)
+    else:
+        raise ValueError(f"Unsupported archive type: {suffix}")
+
+
+def _find_crack_entry(game_name):
+    """Return the full CrakFiles entry for a game name (normalized match)."""
+    if not game_name or _CRACK_BUILDID_FULL is None:
+        return None
+    target = str(game_name).strip().lower()
+    if not target:
+        return None
+    for entry in _CRACK_BUILDID_FULL:
+        if entry["name"] == target:
+            return entry
+    for entry in _CRACK_BUILDID_FULL:
+        name = entry["name"]
+        if name in target or target in name:
+            return entry
+    return None
+
+
+def _pick_crack_fix(entry):
+    """Prefer Crack Only > Crack > CrackFix, then the newest entry."""
+    if not entry:
+        return None
+    fixes = [f for f in entry.get("fixes", []) if f.get("href")]
+    if not fixes:
+        return None
+    def _rank(f):
+        badges = [b.lower() for b in f.get("badges", [])]
+        if "crack only" in badges:
+            return 0
+        if "crack" in badges:
+            return 1
+        if "crackfix" in badges:
+            return 2
+        return 3
+    return sorted(fixes, key=_rank)[0]
+
+
 class WebBridge(QObject):
     """QObject subclass registered via QWebChannel.
     JS accesses this as ``channel.objects.bridge``.
@@ -376,6 +493,7 @@ class WebBridge(QObject):
     depot_history_results = pyqtSignal(str)
     download_progress = pyqtSignal(str)
     task_finished = pyqtSignal(str)
+    game_branches_ready = pyqtSignal(str)
     task_progress = pyqtSignal(str)
     log_message = pyqtSignal(str)
     lc_progress = pyqtSignal(str)
@@ -410,9 +528,22 @@ class WebBridge(QObject):
         self._provider_cache_timer.setInterval(10 * 60 * 1000)
         self._provider_cache_timer.timeout.connect(self._maybe_auto_refresh_provider_cache)
         self._provider_cache_timer.start()
-        # Prefetch crack buildids in background so store search never blocks
-        from sff.gui.web_bridge import _prefetch_crack_buildids
-        QTimer.singleShot(5000, _prefetch_crack_buildids)
+        # Network prefetches must never run on Qt's GUI thread.  The old
+        # singleShot called the HTTP function directly and could stall every
+        # paint/input event for the full request timeout.
+        QTimer.singleShot(5000, lambda: self._run_async(_prefetch_crack_buildids))
+        # Pre-warm the shared Steam CM session in the background so the
+        # first app-info / branch lookup never pays the anonymous login
+        # cost on the GUI thread.
+        QTimer.singleShot(8000, lambda: self._run_async(_warm_steam_session_worker))
+        # Pending ACF edits (downgrade build IDs) — retried every 30s in
+        # the background until Steam's ACF accepts the write.
+        self._acf_queue_busy = False
+        self._acf_queue_timer = QTimer(self)
+        self._acf_queue_timer.setInterval(30_000)
+        self._acf_queue_timer.timeout.connect(self._process_acf_queue)
+        self._acf_queue_timer.start()
+        QTimer.singleShot(20_000, self._process_acf_queue)
         self._library_image_cache: "_OrderedDict[str, str]" = _OrderedDict()
         self._LIBRARY_IMAGE_CACHE_MAX = 500
 
@@ -425,30 +556,40 @@ class WebBridge(QObject):
         self._games_prefetch_timer.start()
         QTimer.singleShot(2000, self._prefetch_installed_games)
 
-        # Preload fallback data (games.json + name cache) at startup
-        # so the first Store tab search doesn't wait 9s for the
-        # download.  Runs deferred so the UI loads first.
+        self._store_metadata_warming = False
+        self._store_search_in_flight = False
+        self._pending_store_search = None
+
+        # Preload disk-cached fallback data after the first frame.  Parsing
+        # games.json can involve tens of MB, so it belongs on a worker too.
         self._preload_all_store_data()
 
     def _preload_all_store_data(self):
-        """Warm cached store metadata without forcing visible network work.
-
-        Deferred 1.5s after construction onto the Qt event loop (not a
-        background thread) because ssl.create_default_context — called by
-        game_list_fallback — segfaults on Windows when run concurrently
-        with QtWebEngine's render process spawn during window.show().
-        """
+        """Warm store metadata off the GUI thread, once per process window."""
         from PyQt6.QtCore import QTimer as _QTimer
 
-        def _do():
-            try:
-                from sff.game_list_fallback import ensure_loaded_cached
-                ensure_loaded_cached()
-                logger.debug("Preload: cached store metadata warmed")
-            except Exception as e:
-                logger.debug("Preload: store data preload failed: %s", e)
+        def _start():
+            # If the Store is already searching, that worker will populate the
+            # same caches. Do not create a second parser/network contender.
+            if self._store_metadata_warming or self._store_search_in_flight:
+                return
+            self._store_metadata_warming = True
 
-        _QTimer.singleShot(1500, _do)
+            def _do():
+                from sff.game_list_fallback import ensure_loaded_cached
+                return ensure_loaded_cached()
+
+            def _done(_result):
+                self._store_metadata_warming = False
+                logger.debug("Preload: cached store metadata warmed")
+
+            def _error(message):
+                self._store_metadata_warming = False
+                logger.debug("Preload: store data preload failed: %s", message)
+
+            self._run_async(_do, on_done=_done, on_error=_error)
+
+        _QTimer.singleShot(3500, _start)
 
     # ── helpers ──────────────────────────────────────────────────
 
@@ -1109,6 +1250,9 @@ class WebBridge(QObject):
     @pyqtSlot(str, str, str)
     def download_game_version_native(self, app_id, manifest_override_json, source='oureveryday'):
         return _bridge_download_game_version_native(self, app_id, manifest_override_json, source)
+    @pyqtSlot(str, str)
+    def download_older_version_auto(self, app_id, build_id):
+        return _bridge_download_older_version_auto(self, app_id, build_id)
     @pyqtSlot(str)
     def dlc_check_get_list(self, app_id):
         return _bridge_dlc_check_get_list(self, app_id)
@@ -1346,33 +1490,320 @@ class WebBridge(QObject):
     @pyqtSlot(str, result=str)
     def refresh_game_branches(self, app_id):
         return _bridge_refresh_game_branches(self, app_id)
+    @pyqtSlot(str, str, result=str)
+    def get_crack_info(self, app_id, game_name):
+        """Return CrakFiles info for a game + whether its crack build id
+        matches the latest public build id. Memory-only, instant."""
+        entry = _find_crack_entry(game_name)
+        if not entry:
+            return json.dumps({"found": False})
+        latest = _latest_public_buildid_from_cache(app_id)
+        crack_bid = str(entry.get("buildid", "") or "")
+        match = None
+        if latest and crack_bid:
+            match = (latest == crack_bid)
+        return json.dumps({
+            "found": True,
+            "name": entry.get("name", ""),
+            "crack_buildid": crack_bid,
+            "latest_buildid": latest,
+            "match_latest": match,
+            "fix": _pick_crack_fix(entry),
+            "source_crack": entry.get("source_crack", [])[:1],
+        })
+    @pyqtSlot(str, str)
+    def apply_game_crack(self, app_id, game_name):
+        """Download the crack archive for a game and extract it into the
+        installed game folder. Runs in a background worker."""
+        if not app_id or not app_id.strip().isdigit():
+            self._emit_task_result("crack_apply", False, f"Invalid App ID: '{app_id}'", app_id=app_id)
+            return
+
+        def _do():
+            try:
+                self.download_progress.emit(json.dumps({
+                    "app_id": app_id, "status": "Looking up crack...", "progress": 5
+                }))
+                if not game_name or not str(game_name).strip():
+                    try:
+                        from sff.core.storage.vdf import get_steam_libs, vdf_load
+                        for _lib in get_steam_libs(self._steam_path) if self._steam_path else []:
+                            _acf = _lib / "steamapps" / f"appmanifest_{app_id}.acf"
+                            if _acf.is_file():
+                                game_name = str(vdf_load(_acf).get("AppState", {}).get("name", "") or "")
+                                break
+                    except Exception:
+                        pass
+                entry = _find_crack_entry(game_name)
+                if not entry:
+                    return (False, "No crack found for this game.")
+                fix = _pick_crack_fix(entry)
+                if not fix:
+                    return (False, "No downloadable crack file listed for this game.")
+                from sff.network.pixeldrain import _extract_pixeldrain_id, download_pixeldrain
+                file_id = _extract_pixeldrain_id(fix.get("href", "") or "")
+                if not file_id:
+                    return (False, "Crack download link is not a supported host.")
+
+                install_dir = self._find_installed_game_dir(app_id)
+                if install_dir is None:
+                    return (False, "Game install folder not found. Download the game first.")
+
+                self.download_progress.emit(json.dumps({
+                    "app_id": app_id, "status": f"Downloading crack: {fix.get('filename') or file_id}", "progress": 30
+                }))
+                import tempfile
+                from pathlib import Path as _Path
+                tmp_dir = _Path(tempfile.mkdtemp(prefix="steamidra_crack_"))
+                archive = download_pixeldrain(file_id, tmp_dir)
+                if archive is None:
+                    return (False, "Crack download failed (pixeldrain unreachable).")
+                self.download_progress.emit(json.dumps({
+                    "app_id": app_id, "status": "Extracting crack into game folder", "progress": 70
+                }))
+                _extract_archive_into(archive, install_dir)
+                try:
+                    archive.unlink(missing_ok=True)
+                    import shutil as _sh
+                    _sh.rmtree(tmp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+                _bridge_set_game_update_override(self, app_id, False)
+                self.download_progress.emit(json.dumps({
+                    "app_id": app_id, "status": "Crack applied", "progress": 100
+                }))
+                return (True, f"Crack applied to {game_name}. Auto-updates disabled for this game.")
+            except Exception as exc:
+                logger.exception("apply_game_crack failed for %s: %s", app_id, exc)
+                return (False, f"Crack apply failed: {exc}")
+
+        def _on_done(result):
+            ok, msg = (result if isinstance(result, tuple) else (result is True, str(result)))
+            self._emit_task_result("crack_apply", bool(ok), str(msg), app_id=app_id)
+
+        self._run_async(_do, on_done=_on_done, on_error=lambda e: self._emit_task_result("crack_apply", False, str(e), app_id=app_id))
+    @pyqtSlot(result=str)
+    def check_lua_folder_migration(self):
+        """List .lua files in Steam/config/lua (SteamTools/OST folder) that
+        have not been handled yet. Memory/local IO only, never network."""
+        try:
+            from pathlib import Path as _P
+            if not self._steam_path:
+                return json.dumps({"files": [], "known": [], "new": []})
+            lua_root = _P(self._steam_path) / "config" / "lua"
+            if not lua_root.exists():
+                return json.dumps({"files": [], "known": [], "new": []})
+            files = sorted(p.name for p in lua_root.glob("*.lua"))
+            known = _lua_migration_known_names()
+            new = [f for f in files if f not in known]
+            return json.dumps({"files": files, "known": sorted(known), "new": new})
+        except Exception as e:
+            logger.warning("check_lua_folder_migration failed: %s", e)
+            return json.dumps({"files": [], "known": [], "new": []})
+
+    @pyqtSlot(str)
+    def migrate_lua_folder(self, files_json):
+        """Move .lua files from Steam/config/lua into config/stplug-in so
+        LumaCore loads them. Existing targets are skipped (reported, kept)."""
+        def _do():
+            try:
+                import shutil as _sh
+                from pathlib import Path as _P
+                from sff.core.storage.settings import set_setting
+                from sff.core.structs import Settings
+                if not self._steam_path:
+                    return (False, "Steam path not configured.")
+                try:
+                    names = json.loads(files_json) if isinstance(files_json, str) else (files_json or [])
+                except Exception:
+                    names = []
+                names = [str(n) for n in names]
+                if not names:
+                    return (False, "Nothing to migrate.")
+                lua_root = _P(self._steam_path) / "config" / "lua"
+                target = _P(self._steam_path) / "config" / "stplug-in"
+                target.mkdir(parents=True, exist_ok=True)
+                moved = 0
+                skipped = 0
+                missing = 0
+                handled = []
+                for name in names:
+                    safe = _P(name).name
+                    src = lua_root / safe
+                    if not src.is_file():
+                        missing += 1
+                        continue
+                    dst = target / safe
+                    if dst.exists():
+                        skipped += 1
+                        handled.append(safe)
+                        continue
+                    _sh.move(str(src), str(dst))
+                    moved += 1
+                    handled.append(safe)
+                known = _lua_migration_known_names()
+                known.update(handled)
+                set_setting(Settings.LUA_FOLDER_MIGRATION_KNOWN, json.dumps(sorted(known)))
+                msg = f"Migrated {moved} Lua file(s) to stplug-in"
+                if skipped:
+                    msg += f", skipped {skipped} (already in stplug-in)"
+                if missing:
+                    msg += f", {missing} no longer present"
+                return (True, msg)
+            except Exception as exc:
+                logger.exception("migrate_lua_folder failed: %s", exc)
+                return (False, f"Migration failed: {exc}")
+
+        def _on_done(result):
+            ok, msg = (result if isinstance(result, tuple) else (result is True, str(result)))
+            self._emit_task_result("lua_migration", bool(ok), str(msg))
+
+        self._run_async(_do, on_done=_on_done, on_error=lambda e: self._emit_task_result("lua_migration", False, str(e)))
+
+    @pyqtSlot(str)
+    def lua_folder_migration_dismiss(self, files_json):
+        """Record file names as handled without moving them, so the popup
+        only reappears for files that show up later."""
+        try:
+            from pathlib import Path as _P
+            from sff.core.storage.settings import set_setting
+            from sff.core.structs import Settings
+            try:
+                names = json.loads(files_json) if isinstance(files_json, str) else (files_json or [])
+            except Exception:
+                names = []
+            known = _lua_migration_known_names()
+            known.update(_P(n).name for n in names)
+            set_setting(Settings.LUA_FOLDER_MIGRATION_KNOWN, json.dumps(sorted(known)))
+        except Exception as exc:
+            logger.warning("lua_folder_migration_dismiss failed: %s", exc)
+
+    def _process_acf_queue(self):
+        """Retry pending ACF edits (downgrade build IDs) in the background."""
+        if getattr(self, "_acf_queue_busy", False):
+            return
+        self._acf_queue_busy = True
+
+        def _on_applied(app_id, build_id):
+            try:
+                self._emit_task_result(
+                    "acf_queue_applied",
+                    True,
+                    f"Build {build_id} applied to App {app_id} — Steam now shows the downloaded version.",
+                    app_id=app_id,
+                )
+            except Exception:
+                pass
+
+        def _do():
+            try:
+                from sff.game.acf_pending_queue import process_pending_acf_edits
+                process_pending_acf_edits(self._steam_path, on_applied=_on_applied)
+            finally:
+                self._acf_queue_busy = False
+
+        self._run_async(_do)
+
+    def _find_installed_game_dir(self, app_id):
+        """Locate the installed game folder (steamapps/common/<installdir>)
+        for an app id across all Steam libraries. Returns Path or None."""
+        try:
+            from pathlib import Path as _Path
+            from sff.core.storage.vdf import get_steam_libs, vdf_load
+            steam_path = self._steam_path
+            libs = get_steam_libs(steam_path) if steam_path else []
+            for lib in libs:
+                acf = lib / "steamapps" / f"appmanifest_{app_id}.acf"
+                if not acf.is_file():
+                    continue
+                data = vdf_load(acf)
+                installdir = str(data.get("AppState", {}).get("installdir", "") or "").strip()
+                if installdir:
+                    return lib / "steamapps" / "common" / installdir
+        except Exception as exc:
+            logger.debug("_find_installed_game_dir failed for %s: %s", app_id, exc)
+        return None
+
+    def _branches_from_cache(self, app_id):
+        try:
+            from sff.core.cache import get_cache
+            cached = get_cache().get_stale(f"app_info_{app_id}")
+            if cached and isinstance(cached, dict):
+                branches = cached.get("depots", {}).get("branches", {})
+                if isinstance(branches, dict) and branches:
+                    return self._branches_to_list(branches)
+        except Exception:
+            pass
+        return []
+
+    def _branches_to_list(self, branches):
+        result = []
+        for name, b in branches.items():
+            if isinstance(b, dict):
+                result.append({
+                    "name": name,
+                    "buildid": str(b.get("buildid", "")),
+                    "description": str(b.get("description", "")),
+                    "password_required": bool(b.get("pwdrequired", False)),
+                })
+        result.sort(key=lambda x: (x["name"] != "public", x["name"]))
+        return result
+
+    def _spawn_branches_fetch(self, app_id, force):
+        """Background branch fetch — result arrives via game_branches_ready."""
+        def _do():
+            try:
+                from sff.network.steam_client import create_provider_for_current_thread
+                provider = create_provider_for_current_thread()
+                if force:
+                    try:
+                        provider.invalidate_app(int(app_id))
+                    except Exception:
+                        pass
+                info = provider.get_single_app_info(int(app_id))
+                branches = info.get("depots", {}).get("branches", {})
+                if isinstance(branches, dict) and branches:
+                    return self._branches_to_list(branches)
+            except Exception as e:
+                logger.warning("get_game_branches failed for %s: %s", app_id, e)
+            return []
+
+        def _on_done(result):
+            self.game_branches_ready.emit(json.dumps({
+                "app_id": str(app_id),
+                "branches": result or [],
+            }))
+
+        self._run_async(_do, on_done=_on_done)
+
     def _fetch_branches(self, app_id, force_refresh=False):
+        # 1. Cache/stale-first — instant, no network on the GUI thread.
+        if not force_refresh:
+            cached = self._branches_from_cache(app_id)
+            if cached:
+                return json.dumps(cached)
+        # 2. SteamCMD HTTP mirror only (~1s typical, bounded) — the GUI
+        #    thread never touches Steam CM and can never wait on a login
+        #    or the 35s quick budget again.
         try:
             from sff.network.steam_client import create_provider_for_current_thread
-            if force_refresh:
-                from sff.core.cache import get_cache
-                cache = get_cache()
-                cache.invalidate(f"app_info_{app_id}")
             provider = create_provider_for_current_thread()
-            info = provider.get_single_app_info(int(app_id))
-            depots = info.get("depots", {})
-            branches = depots.get("branches", {})
-            if not isinstance(branches, dict) or not branches:
-                return json.dumps([])
-            result = []
-            for name, b in branches.items():
-                if isinstance(b, dict):
-                    result.append({
-                        "name": name,
-                        "buildid": str(b.get("buildid", "")),
-                        "description": str(b.get("description", "")),
-                        "password_required": bool(b.get("pwdrequired", False)),
-                    })
-            result.sort(key=lambda x: (x["name"] != "public", x["name"]))
-            return json.dumps(result)
+            if force_refresh:
+                try:
+                    provider.invalidate_app(int(app_id))
+                except Exception:
+                    pass
+            info = provider.get_single_app_info_http_only(int(app_id))
+            branches = info.get("depots", {}).get("branches", {})
+            if isinstance(branches, dict) and branches:
+                return json.dumps(self._branches_to_list(branches))
         except Exception as e:
             logger.warning("get_game_branches failed for %s: %s", app_id, e)
-            return json.dumps([])
+        # 3. Mirror miss/down — return empty now and backfill the
+        #    dropdown through game_branches_ready when the background
+        #    fetch (HTTP first, then CM) completes.
+        self._spawn_branches_fetch(app_id, force=force_refresh)
+        return json.dumps([])
 
     @pyqtSlot(str, str)
     def ryuu_request_branch(self, app_id, branch):

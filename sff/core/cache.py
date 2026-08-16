@@ -97,6 +97,15 @@ class APICache:
         logger.debug(f"Cache hit for key: {key}")
         return entry.get("data")
 
+    def get_stale(self, key):
+        """Return a cached value even when its TTL has expired, without
+        deleting the entry. Used by low-churn data (app info, branches)
+        so UI reads never fall through to a slow network path."""
+        entry = self.cache.get(key)
+        if entry is None:
+            return None
+        return entry.get("data")
+
     def set(self, key, data, ttl = None):
         if ttl is None:
             ttl = DEFAULT_TTL

@@ -573,6 +573,17 @@ def main():
 
     QTimer.singleShot(2000, _maybe_self_update)
 
+    # Fill missing LumaCore pattern cache for the current Steam build on
+    # startup (Steam client updates after install leave the cache empty).
+    if sys.platform == "win32":
+        def _prewarm_luma():
+            try:
+                from sff.lumacore.lumacore_setup import prewarm_pattern_cache_if_missing
+                prewarm_pattern_cache_if_missing(steam_path)
+            except Exception:
+                pass
+        QTimer.singleShot(8000, _prewarm_luma)
+
     # A15: manifest preserver watcher is now started inside
     # SFFMainWindow.__init__ on a daemon thread. Nothing to do here.
 

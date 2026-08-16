@@ -181,13 +181,6 @@ def discover_games(steam_path: str | os.PathLike[str] | None) -> list[dict]:
     if root is None or not root.is_dir():
         return []
 
-    try:
-        from sff.game.update_prompt_override import get_excluded_depots
-
-        global_excluded = get_excluded_depots(steam_path)
-    except Exception:
-        global_excluded = set()
-
     seen: set[str] = set()
     games: list[dict] = []
     candidates = sorted(root.glob("*.lua"), key=lambda p: p.name.lower())
@@ -205,8 +198,6 @@ def discover_games(steam_path: str | os.PathLike[str] | None) -> list[dict]:
         if active == 0 and commented == 0:
             continue
         allow_update = active == 0 and commented > 0
-        if global_excluded:
-            allow_update = bool(pin_depots & global_excluded)
         seen.add(app_id)
         games.append(
             {

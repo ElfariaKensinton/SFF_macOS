@@ -39,14 +39,46 @@ def get_product_info(provider: "SteamInfoProvider", app_ids):
     return ProductInfo({"apps": provider.get_app_info(app_ids), "packages": {}})
 
 
+_SESSION_CLIENT = None
+_SESSION_PROVIDER = None
+_SESSION_GUARD = threading.Lock()
+
+
 def create_provider_for_current_thread():
-    client = SteamClient()
-    return SteamInfoProvider(client)
+    """Return the session-shared Steam client/provider pair.
+
+    The Steam client is created once per app run and reused by every
+    caller. This means the anonymous login (15-45s) happens at most
+    once, and the in-memory app-info cache makes repeat lookups
+    instant — including synchronous GUI-thread reads.
+    """
+    global _SESSION_CLIENT, _SESSION_PROVIDER
+    with _SESSION_GUARD:
+        if _SESSION_PROVIDER is None:
+            try:
+                client = SteamClient(connection_timeout=30)
+            except TypeError:
+                client = SteamClient()
+            _SESSION_CLIENT = client
+            _SESSION_PROVIDER = SteamInfoProvider(client)
+        return _SESSION_PROVIDER
+
+
+def warm_steam_session():
+    """Log in once in the background so GUI-thread lookups never pay
+    the anonymous-login cost. Safe to call from any worker thread."""
+    try:
+        provider = create_provider_for_current_thread()
+        client = _SESSION_CLIENT
+        _ensure_client_session(client)
+    except Exception as e:
+        logger.debug("warm_steam_session failed: %r", e)
 
 
 _APP_INFO_TIMEOUTS = (15, 30, 60)
 _MAX_APP_INFO_RETRIES = len(_APP_INFO_TIMEOUTS)
 _GEVENT_LOCK = threading.Lock()
+_LOGIN_LOCK = threading.Lock()
 
 
 @dataclass
@@ -75,15 +107,16 @@ def _steam_transient_errors():
 
 
 def _ensure_client_session(client):
-    if client.logged_on:
-        return
-    logger.debug("Logging in anonymously...")
-    try:
-        client.anonymous_login()
-    except Exception as e:
-        logger.exception("Steam anonymous login failed: %s", e)
-        raise
-    logger.debug("Anonymous login done")
+    with _LOGIN_LOCK:
+        if client.logged_on:
+            return
+        logger.debug("Logging in anonymously...")
+        try:
+            client.anonymous_login()
+        except Exception as e:
+            logger.exception("Steam anonymous login failed: %s", e)
+            raise
+        logger.debug("Anonymous login done")
 
 
 def _client_state(client):
@@ -123,13 +156,26 @@ def _request_app_info(client, app_ids, timeout):
     return ProductInfo(info)
 
 
-def _get_product_info_result(client, app_ids):
+def _get_product_info_result(client, app_ids, quick=False):
     if len(app_ids) == 0:
         raise ValueError("app_ids cannot be empty.")
     with _GEVENT_LOCK:
         _ensure_client_session(client)
         last_error: Exception | None = None
         transient = _steam_transient_errors()
+        if quick:
+            try:
+                with gevent.Timeout(35):
+                    return _ProductInfoResult(
+                        _request_app_info(client, app_ids, 25), True
+                    )
+            except gevent.Timeout as e:
+                last_error = e
+                logger.debug(
+                    "App info quick path timed out (35s budget) for apps=%s: %r",
+                    app_ids, e,
+                )
+                return _ProductInfoResult(_empty_product_info(), False)
         for attempt, timeout in enumerate(_APP_INFO_TIMEOUTS, start=1):
             try:
                 return _ProductInfoResult(_request_app_info(client, app_ids, timeout), True)
@@ -165,8 +211,53 @@ def _get_product_info_result(client, app_ids):
         return _ProductInfoResult(_empty_product_info(), False)
 
 
-def _get_product_info(client, app_ids):
-    return _get_product_info_result(client, app_ids).info
+def _get_product_info(client, app_ids, quick=False):
+    return _get_product_info_result(client, app_ids, quick=quick).info
+
+
+_APPINFO_HTTP_URL = "https://api.steamcmd.net/v1/info/{}"
+_APPINFO_HTTP_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def fetch_app_info_http(app_id):
+    """Fetch one app's info from the SteamCMD HTTP mirror.
+
+    api.steamcmd.net serves the same appinfo structure Valve ships
+    through SteamCMD (depots, branches/build ids, manifests, common)
+    as plain JSON. Used as the final fallback when the Steam CM path
+    cannot produce the app in time. Returns the app payload dict or
+    None. Nothing from the response is ever executed.
+    """
+    app_id = str(app_id).strip()
+    if not app_id.isdigit() or len(app_id) > 12:
+        return None
+    try:
+        import httpx
+        resp = httpx.get(
+            _APPINFO_HTTP_URL.format(app_id),
+            headers={"User-Agent": _APPINFO_HTTP_UA, "Accept": "application/json"},
+            timeout=10,
+            follow_redirects=True,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if not isinstance(data, dict):
+            return None
+        if str(data.get("status", "")).lower() != "success":
+            return None
+        payload = (data.get("data") or {}).get(app_id)
+        if not isinstance(payload, dict):
+            return None
+        if not isinstance(payload.get("depots"), dict):
+            return None
+        return payload
+    except Exception as e:
+        logger.debug("appinfo HTTP fallback failed for %s: %r", app_id, e)
+        return None
 
 
 class SteamInfoProvider:
@@ -180,7 +271,7 @@ class SteamInfoProvider:
         return f"app_info_{app_id}"
 
     def _load_cached_app(self, app_id) -> bool:
-        cached_data = self._persistent_cache.get(self._cache_key(app_id))
+        cached_data = self._persistent_cache.get_stale(self._cache_key(app_id))
         if cached_data is None:
             return False
         self._cache[app_id] = cached_data
@@ -190,9 +281,36 @@ class SteamInfoProvider:
     def _store_app_payloads(self, apps):
         for app_id, app_data in apps.items():
             self._cache[app_id] = app_data
-            self._persistent_cache.set(self._cache_key(app_id), app_data)
+            # App info changes rarely — keep it cached for 7 days so the
+            # download modal stays instant across restarts instead of
+            # re-paying a Steam CM login after the old 1-hour TTL.
+            self._persistent_cache.set(self._cache_key(app_id), app_data, ttl=7 * 24 * 3600)
 
-    def get_app_info(self, app_ids):
+    def invalidate_app(self, app_id):
+        """Drop an app from both the in-memory and persistent caches."""
+        self._cache.pop(app_id, None)
+        self._cache.pop(int(app_id), None)
+        self._persistent_cache.invalidate(self._cache_key(app_id))
+
+    def _fill_from_http(self, app_ids):
+        """Fill as many missing apps as possible from the SteamCMD HTTP
+        mirror. Returns the list of app ids that were filled."""
+        filled = []
+        for app_id in app_ids:
+            if self._cache.get(app_id, {}):
+                continue
+            payload = fetch_app_info_http(app_id)
+            if payload:
+                self._store_app_payloads({app_id: payload})
+                logger.debug(
+                    "appinfo filled from SteamCMD HTTP mirror: %s", app_id
+                )
+                filled.append(app_id)
+        return filled
+
+    def get_app_info_http_only(self, app_ids):
+        """SteamCMD HTTP mirror only — never touches Steam CM. Used by
+        GUI-thread callers so they can never block on a CM login."""
         missing = []
         for app_id in app_ids:
             if app_id in self._cache:
@@ -200,18 +318,45 @@ class SteamInfoProvider:
             if not self._load_cached_app(app_id):
                 missing.append(app_id)
         if missing:
-            result = _get_product_info_result(self.client, missing)
-            apps = result.info.get("apps", {})
-            valid_ids = set(apps.keys())
-            self._store_app_payloads(apps)
-            if result.complete:
-                invalid_ids = set(missing) - valid_ids
-                for app_id in invalid_ids:
-                    self._cache[app_id] = False
-            else:
-                logger.debug(
-                    "Steam appinfo fetch incomplete; leaving %s uncached for later retry",
-                    sorted(set(missing) - valid_ids),
+            self._fill_from_http(missing)
+        return {
+            app_id: self._cache.get(app_id, {})
+            for app_id in app_ids
+            if self._cache.get(app_id, {})
+        }
+
+    def get_single_app_info_http_only(self, app_id):
+        result = self.get_app_info_http_only([app_id])
+        return result.get(app_id, {})
+
+    def get_app_info(self, app_ids, quick=False):
+        missing = []
+        for app_id in app_ids:
+            if app_id in self._cache:
+                continue
+            if not self._load_cached_app(app_id):
+                missing.append(app_id)
+        if missing:
+            # SteamCMD HTTP mirror first — fast, bounded, no login.
+            self._fill_from_http(missing)
+            still_missing = [a for a in missing if not self._cache.get(a, {})]
+            if still_missing:
+                result = _get_product_info_result(self.client, still_missing, quick=quick)
+                apps = result.info.get("apps", {})
+                valid_ids = set(apps.keys())
+                self._store_app_payloads(apps)
+                if result.complete:
+                    invalid_ids = set(still_missing) - valid_ids
+                    for app_id in invalid_ids:
+                        self._cache[app_id] = False
+                else:
+                    logger.debug(
+                        "Steam appinfo fetch incomplete; leaving %s uncached for later retry",
+                        sorted(set(still_missing) - valid_ids),
+                    )
+                # CM incomplete — one more HTTP attempt for leftovers.
+                self._fill_from_http(
+                    [a for a in still_missing if not self._cache.get(a, {})]
                 )
         else:
             logger.debug("Reading app info from cache...")
@@ -221,8 +366,8 @@ class SteamInfoProvider:
             if self._cache.get(app_id, {})
         }
 
-    def get_single_app_info(self, app_id):
-        result = self.get_app_info([app_id])
+    def get_single_app_info(self, app_id, quick=False):
+        result = self.get_app_info([app_id], quick=quick)
         return result.get(app_id, {})
 
 

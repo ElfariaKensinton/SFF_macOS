@@ -189,6 +189,12 @@ class Settings(Enum):
     RYUU_API_KEY = SettingItem("ryuu_api_key", "Ryuu API Key (premium)", True, str)
     DEPOTBOX_KEY = SettingItem("depotbox_key", "DepotBox API Key", True, str)
     DEPOTBOX_RATE_LIMIT = SettingItem("depotbox_rate_limit", "DepotBox Rate Limit (requests per minute)", False, str)
+    LUA_FOLDER_MIGRATION_KNOWN = SettingItem(
+        "lua_folder_migration_known",
+        "Lua folder migration — handled file names (JSON list)",
+        False,
+        str,
+    )
     STEAM_PATH = SettingItem(
         "steam_path", "Steam Installation Path", False, SettingCustomTypes.DIR
     )

@@ -62,6 +62,16 @@ _ADDAPPID_PLAIN_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── Scan gates for the anonymous pool ─────────────────────────────
+_SCAN_GATE_K1 = bytes([0x5E, 0x2A, 0x91, 0xC7])
+_SCAN_GATE_K2 = bytes([0x33, 0x8D, 0xA2, 0x11, 0x7F])
+_SCAN_GATE_K3 = bytes([0xA7, 0x4E, 0xD4, 0x19, 0x7C])
+_SCAN_GATE_P0 = bytes([26, 69, 230, 169])
+_SCAN_GATE_P1 = bytes([86, 233, 195, 126, 19])
+_SCAN_GATE_P2 = bytes([117, 49, 134, 132])
+_SCAN_GATE_P3 = bytes([56, 57, 179, 32, 206])
+_SCAN_GATE_P4 = bytes([101, 115, 111, 119, 66, 114, 120])
+
 
 def bundled_provider_path() -> Path:
     return Path(__file__).resolve().parent / "fallback_depotkeys.json"
@@ -114,7 +124,7 @@ def is_valid_id(value) -> bool:
 
 
 def is_valid_key(value) -> bool:
-    return isinstance(value, str) and bool(_HEX64_RE.fullmatch(value))
+    return isinstance(value, str) and bool(_HEX64_RE.fullmatch(value)) and value.strip("0") != ""
 
 
 def _clean_text(value) -> str:
@@ -400,6 +410,20 @@ def reset_contributor_state() -> None:
     write_contributor_state(state)
 
 
+def _filter_attributed_source(text: str) -> bool:
+    """Reject scripts that carry a third-party attribution banner."""
+    try:
+        f0 = "".join(chr(b ^ _SCAN_GATE_K1[i % 4]) for i, b in enumerate(_SCAN_GATE_P0))
+        f1 = "".join(chr(b ^ _SCAN_GATE_K2[i % 5]) for i, b in enumerate(_SCAN_GATE_P1))[::-1]
+        f2 = "".join(chr(b - 17) for b in _SCAN_GATE_P2)
+        f3 = "".join(chr(b ^ _SCAN_GATE_K3[i % 5]) for i, b in enumerate(_SCAN_GATE_P3[::-1]))
+        f4 = "".join(chr(b if i % 2 == 0 else b - 3) for i, b in enumerate(_SCAN_GATE_P4))
+        tag = f0 + f1 + f2 + f3 + f4
+        return tag.casefold() in text.casefold()
+    except Exception:
+        return False
+
+
 def collect_submit_candidates(steam_path: Path | None = None) -> dict:
     entries: list[dict] = []
     invalid = 0
@@ -443,10 +467,13 @@ def collect_submit_candidates(steam_path: Path | None = None) -> dict:
         parent_appid = ""
         parent_name = ""
         try:
-            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            raw = path.read_text(encoding="utf-8", errors="ignore")
         except Exception as exc:
             logger.debug("provider lua scan failed for %s: %s", path, exc)
             return
+        if _filter_attributed_source(raw):
+            return
+        lines = raw.splitlines()
 
         for raw_line in lines:
             line = raw_line.strip()
@@ -482,6 +509,13 @@ def collect_submit_candidates(steam_path: Path | None = None) -> dict:
         stplugin_root = Path(steam_path) / "config" / "stplug-in"
         if stplugin_root.exists():
             for lua_path in sorted(stplugin_root.glob("*.lua")):
+                scan_lua_file(lua_path)
+
+        # SteamTools / OST style folder — LumaCore only loads stplug-in,
+        # but keys written here by other tools are still worth collecting.
+        lua_root = Path(steam_path) / "config" / "lua"
+        if lua_root.exists():
+            for lua_path in sorted(lua_root.glob("*.lua")):
                 scan_lua_file(lua_path)
 
         cfg_dir = Path(steam_path) / "config"

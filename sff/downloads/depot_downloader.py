@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import logging
 from pathlib import Path
 from typing import Tuple
 
@@ -31,8 +32,22 @@ from colorama import Fore, Style
 from sff.downloads.dotnet_utils import get_dotnet_path
 from sff.core.utils import root_folder
 
+logger = logging.getLogger(__name__)
+
 KEYS_TMP = Path(tempfile.gettempdir()) / "mistwalker_keys.vdf"
 MANIFESTS_TMP = Path(tempfile.gettempdir()) / "mistwalker_manifests"
+
+_DDMOD_EXIT_HINTS = {
+    3762504530: (
+        "DepotDownloaderMod crashed with an unhandled .NET exception. "
+        "The bundled DDMod may be outdated/corrupt, or the download "
+        "folder is not writable."
+    ),
+    3221225781: (
+        "DepotDownloaderMod failed to start (missing DLL). "
+        "Reinstall .NET 9 or re-download DepotDownloaderMod."
+    ),
+}
 
 
 def _find_openssl_lib_dir(dotnet_root: str) -> str:
@@ -303,61 +318,80 @@ def run_download(
 
     _copy_manifests_to_temp(steam_path, manifests)
 
-    # ── Linux native downloader (no .NET needed) ──────────────────
-    if sys.platform.startswith("linux"):
+    # ── Native downloader first (all platforms, no .NET needed) ────────
+    # The pure-Python CDN downloader is the primary engine. DepotDownloaderMod
+    # below acts as the backup for depots the native path cannot complete.
+    download_dir = dest_path / "steamapps" / "common" / installdir
+    download_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write probe: a dead/inaccessible destination should fail here with a
+    # clear message instead of surfacing as a DDMod .NET crash later.
+    try:
+        _probe = download_dir / ".steamidra_write_probe"
+        _probe.write_text("ok", encoding="utf-8")
+        _probe.unlink(missing_ok=True)
+    except Exception as e:
+        print_fn(Fore.RED + f"ERROR: download folder is not writable: {download_dir} ({e})" + Style.RESET_ALL)
         try:
-            from sff.downloads.native_downloader import download_depot as _native_dl
-            print_fn(Fore.CYAN + "\n[Native] Starting Steam CDN download (no .NET required)" + Style.RESET_ALL)
-            all_ok = True
-            total_size = 0
-            for depot_id in selected_depots:
-                depot_id_str = str(depot_id)
-                manifest_id = manifests.get(depot_id_str)
-                if not manifest_id:
-                    print_fn(Fore.YELLOW + f"Depot {depot_id_str}: no manifest, skipping" + Style.RESET_ALL)
-                    continue
-                key_data = depots.get(depot_id_str, {})
-                key = key_data.get("key", "") if isinstance(key_data, dict) else ""
-                if not key:
-                    print_fn(Fore.YELLOW + f"Depot {depot_id_str}: no key, skipping" + Style.RESET_ALL)
-                    continue
-                print_fn(
-                    Fore.CYAN
-                    + f"\n--- Downloading depot {depot_id_str} (native) ---"
-                    + Style.RESET_ALL
+            KEYS_TMP.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False, 0
+
+    native_failed: list = []
+    try:
+        from sff.downloads.native_downloader import download_depot as _native_dl
+        print_fn(Fore.CYAN + "\n[Native] Starting Steam CDN download (no .NET required)" + Style.RESET_ALL)
+        for depot_id in selected_depots:
+            depot_id_str = str(depot_id)
+            manifest_id = manifests.get(depot_id_str)
+            key_data = depots.get(depot_id_str, {})
+            key = key_data.get("key", "") if isinstance(key_data, dict) else ""
+            if not manifest_id or not key:
+                print_fn(Fore.YELLOW + f"Depot {depot_id_str}: native needs manifest+key, deferring to DDMod" + Style.RESET_ALL)
+                native_failed.append(depot_id)
+                continue
+            print_fn(
+                Fore.CYAN
+                + f"\n--- Downloading depot {depot_id_str} (native) ---"
+                + Style.RESET_ALL
+            )
+            try:
+                manifest_path = None
+                mf = MANIFESTS_TMP / f"{depot_id_str}_{manifest_id}.manifest"
+                if mf.exists():
+                    manifest_path = mf
+                ok, size = _native_dl(
+                    appid, depot_id_str, manifest_id, key, download_dir,
+                    print_fn=print_fn, os_filter=os_name or ("linux" if sys.platform.startswith("linux") else "windows"),
+                    steam_path=steam_path,
+                    manifest_path=manifest_path,
                 )
-                try:
-                    manifest_path = None
-                    if manifest_id:
-                        mf = MANIFESTS_TMP / f"{depot_id_str}_{manifest_id}.manifest"
-                        if mf.exists():
-                            manifest_path = mf
-                    ok, size = _native_dl(
-                        app_id, depot_id_str, manifest_id, key, download_dir,
-                        print_fn=print_fn, os_filter=os_name or "linux",
-                        steam_path=steam_path,
-                        manifest_path=manifest_path,
-                    )
-                    if ok:
-                        total_size += size
-                        print_fn(Fore.GREEN + f"Depot {depot_id_str} downloaded ({size:,} bytes)" + Style.RESET_ALL)
-                    else:
-                        all_ok = False
-                except Exception as e:
-                    print_fn(Fore.RED + f"Native download failed for depot {depot_id_str}: {e}" + Style.RESET_ALL)
-                    logger.exception("Native downloader: depot %s failed", depot_id_str)
-                    all_ok = False
+                if ok:
+                    print_fn(Fore.GREEN + f"Depot {depot_id_str} downloaded ({size:,} bytes)" + Style.RESET_ALL)
+                else:
+                    print_fn(Fore.YELLOW + f"Depot {depot_id_str}: native download failed, deferring to DDMod" + Style.RESET_ALL)
+                    native_failed.append(depot_id)
+            except Exception as e:
+                print_fn(Fore.RED + f"Native download failed for depot {depot_id_str}: {e}" + Style.RESET_ALL)
+                native_failed.append(depot_id)
+        if not native_failed:
             try:
                 KEYS_TMP.unlink(missing_ok=True)
             except Exception:
                 pass
             total_size = _calculate_dir_size(download_dir)
             print_fn(Fore.CYAN + f"Total size on disk: {total_size:,} bytes" + Style.RESET_ALL)
-            return all_ok, total_size
-        except ImportError:
-            print_fn(Fore.YELLOW + "[Native] Native downloader not available, falling back to DDMod" + Style.RESET_ALL)
-        except Exception as e:
-            print_fn(Fore.YELLOW + f"[Native] Init failed ({e}), falling back to DDMod" + Style.RESET_ALL)
+            return True, total_size
+        print_fn(Fore.YELLOW + f"[Native] {len(native_failed)} depot(s) failed — using DepotDownloaderMod as backup" + Style.RESET_ALL)
+    except ImportError:
+        native_failed = list(selected_depots)
+        print_fn(Fore.YELLOW + "[Native] Native downloader not available, falling back to DDMod" + Style.RESET_ALL)
+    except Exception as e:
+        native_failed = list(selected_depots)
+        print_fn(Fore.YELLOW + f"[Native] Init failed ({e}), falling back to DDMod" + Style.RESET_ALL)
+
+    ddmod_depots = list(native_failed) if native_failed else list(selected_depots)
 
     dotnet_path = get_dotnet_path()
     if not dotnet_path:
@@ -395,11 +429,11 @@ def run_download(
 
     MANIFESTS_TMP.mkdir(parents=True, exist_ok=True)
     deps_dir = get_deps_dir()
-    total_depots = len(selected_depots)
+    total_depots = len(ddmod_depots)
     all_ok = True
     target_os = (os_name or ("linux" if sys.platform.startswith("linux") else "windows")).lower()
 
-    for i, depot_id in enumerate(selected_depots):
+    for i, depot_id in enumerate(ddmod_depots):
         depot_id_str = str(depot_id)
         manifest_id = manifests.get(depot_id_str)
 
@@ -464,6 +498,7 @@ def run_download(
                 if creation_flags:
                     popen_kwargs["creationflags"] = creation_flags
 
+                logger.debug("DDMod launch (depot %s): %s", depot_id_str, " ".join(cmd))
                 proc = subprocess.Popen(cmd, **popen_kwargs)
                 _timeout = None
                 try:
@@ -491,6 +526,9 @@ def run_download(
                         + f"Depot {depot_id_str} exited with code {proc.returncode}"
                         + Style.RESET_ALL
                     )
+                    _hint = _DDMOD_EXIT_HINTS.get(proc.returncode)
+                    if _hint:
+                        print_fn(Fore.YELLOW + f"  {_hint}" + Style.RESET_ALL)
                     if attempt <= max_retries:
                         continue
                     all_ok = False

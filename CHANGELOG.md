@@ -1,5 +1,47 @@
 # Changelog
 
+## 6.6.5
+
+### New
+
+- **Download Older Version — Build ID (Automatic)** — pick a Build ID from SteamDB and SteaMidra pulls the matching per-depot manifest IDs from DepotBox, pins only the depots present in the game's Lua, removes depots that did not exist in that build, and reloads the Lua live. The manual picker (depot history, manual manifest input, HTML import) is available too. Build ID data provided by DepotBox — thanks DepotBox!
+- **Provider credits** — Ryuu and DepotBox added as credited providers with community-server links (Hubcap link added too). The download modal now shows the provider's Discord server link when no API key is configured, and Settings → About lists all providers with their servers.
+- **Crack notifications (CrakFiles)** — the download modal now shows a banner when a crack exists for the game: if the crack Build ID matches the latest build it tells you to use Add to Library (Download through Steam, Fastest); otherwise it says the crack needs the older Build ID and opens Download Older Version with the Build ID pre-filled. For installed games the update check compares the installed build against the crack build and offers to apply the crack right away (downloads the crack archive into the game folder and disables auto-updates for that game).
+- **App info 100% reliable via SteamCMD mirror** — app-info lookups now have a third fallback layer: api.steamcmd.net (the SteamCMD appinfo cache as plain JSON). When the Steam CM path can't produce an app, SteaMidra fills it from the mirror and caches it for 7 days. No steamcmd.exe needed, nothing executed.
+- **Download modal could still freeze ~35s on new games** — the branch lookup used Steam CM first (with a 35s bounded quick fetch) and only fell back to the SteamCMD mirror afterwards. Now api.steamcmd.net is the FIRST source for every app-info lookup, and the GUI thread uses an HTTP-only path that never touches Steam CM at all — worst case a bounded mirror call (~1s typical, measured 0.9s cold), and if the mirror is down the dropdown backfills through the `game_branches_ready` signal. Steam CM can only ever run in background workers.
+- **Duplicate anonymous Steam logins** — the session prewarmer and the store preload could run `anonymous_login` on the shared client at the same time (visible as two back-to-back "Logging in anonymously..." lines and a wedged `logged_on=False` state). Logins are now serialized with a dedicated lock — exactly one login per session.
+- **Branch dropdown backfill signal** — when the branch fetch cannot finish within its bounded quick window, a background fetch now completes it and pushes the result through the new `game_branches_ready` signal so the Ryuu branch dropdown fills itself in. The download modal can never freeze.
+- **Downgraded builds show in Steam** — after Download Older Version, SteaMidra writes the downloaded `buildid` + `TargetBuildID` and the pinned manifest IDs into the existing ACF (only fields Steam itself manages — no MountedDepots, no AutoUpdateBehavior; LumaCore handles version pinning). Steam is closed/restarted around the write. If the ACF doesn't exist yet (game still downloading) or Steam holds the file, the edit is queued persistently and retried every 30 seconds until the game is fully installed — surviving reboots. Stale queue entries expire after 7 days.
+- **MountedDepots removed from ACF patching** — `patch_acf_depot_manifests` no longer writes a MountedDepots section (Steam never creates or reads one).
+- **SteamTools/OST Lua folder support** — the contribution system now also collects depot keys from `Steam/config/lua` (the SteamTools/OST folder), with the DepotBox exclusion filter applied. When SteaMidra detects unhandled .lua files there, it asks to migrate them into stplug-in so LumaCore loads them — conflicts are skipped and reported, and already-handled files are remembered so the popup only reappears for new files. Downloads still write only to stplug-in.
+
+### Fixed
+
+- **Ryuu download crash** — `get_ryuu()` called `prompt_select()` which was never imported at module level, causing immediate `NameError` crash on every Ryuu download. Added `prompt_select` to imports.
+- **DLC names lost in oureveryday Lua** — `_build_lua_from_provider()` referenced `app_info` out of scope, causing silent `NameError` and all DLC entries losing their names. Now passed as a parameter.
+- **Dead code removed** — unused `global_excluded` computation in `discover_games()` cleaned up.
+- **Linux native downloader never worked** — 3 `NameError` bugs in `depot_downloader.py`: `app_id` undefined (should be `appid`), `logger` not defined in module, `download_dir` unassigned in the native branch. Every native Linux download crashed silently and fell back to DDMod. All fixed — the native downloader now actually runs on Linux (thanks SK-DEV-AI).
+- **Store freeze when opening** — provider status check parsed a ~65 MB JSON file on the GUI thread just to show an entry count. Replaced with lightweight file availability/size stat. Store now opens instantly.
+- **Store landing page 30s freeze** — unfiltered Store query built the full ~190k-entry Steam catalog. Now uses offline-first `browse_games_json()` with heapq pagination keeping only the current page in memory.
+- **Unbounded QThread creation on rapid search** — search request coalescing added: one worker in flight, latest pending request retained. Prevents memory growth and Store freezes.
+- **Duplicate worker finish signal** — `_Worker.run()` emitted `finished` after `error`, causing double UI notifications. Removed duplicate emit.
+- **GUI-thread network prefetch** — crack build-ID prefetch ran HTTP directly on Qt's GUI thread. Moved to `_run_async` background worker.
+- **Blocking `thread.wait()` in GUI callbacks** — removed from classic tabs (store, fix game, cloud saves) destructors.
+- **Startup store preload raced with search** — `_preload_all_store_data()` now runs on a background worker with `_store_metadata_warming` guard; skips if a search is already in flight.
+- **Download modal froze the app for minutes** — root cause: every app-info/branch lookup created a fresh Steam client and paid a 15-45s anonymous login plus 15/30/60s retry escalation on the GUI thread (up to 5 minutes). Fixed properly: one shared Steam CM session per app run (login happens once, in the background), branch lookups use a bounded quick mode (35s absolute worst case, ~1-2s typical cold, instant warm), app-info cache TTL raised to 7 days, and branch reads fall back to stale cache entries instead of re-fetching. Verified with a real cold-cache fetch: 1.7s instead of minutes.
+- **Older-version downloads prompted for auto-update** — Steam-native older-version installs now pass `skip_auto_update=True` so no "enable auto updates?" prompt appears after deliberately installing an older build.
+- **Build ID lookup hardened** — build-details responses are strictly JSON with digits-only depot/manifest values and length caps. Malformed payloads are rejected outright; nothing from the response is ever executed.
+- **DDMod crash on Windows (23-byte partial downloads)** — the pure-Python native downloader is now the primary engine on Windows and Linux; DepotDownloaderMod runs only as a backup for depots the native path cannot complete. DDMod failures now map exit codes to readable messages (unhandled .NET exception / missing DLL), the download folder is write-probed before launching, and the full DDMod command line is logged.
+- **Offline network drives froze the Library page** — disk usage probing could block ~60s on a dead mapped drive. Now bounded to 1s on the GUI thread with a 30s per-path cache and one JS retry.
+- **LumaCore "No cached support data" after Steam updates** — pattern cache prewarm now runs at app startup when LumaCore is installed, filling missing pattern TOMLs without requiring reinstall.
+
+### Improved
+
+- **Store search error responses** — structured error JSON emitted to the UI with visible error notification instead of silent failure.
+- **docs/LINUX_SETUP.md** — corrected stale `LD_PRELOAD` mentions to `LD_AUDIT` (matching official SLSsteam installers).
+- **Store performance overhaul** — major UI and performance improvements from ImHisako: offline-first landing page, search request coalescing, worker lifecycle fixes, memory-leak cleanup, Theme Studio redesign, Settings layout rework, responsive layouts, and reduced-motion support.
+- **OurEveryday download source renamed to MidraEveryDay** — same provider and internal IDs, new display name across the download modals, DLC bulk download, and Settings → About.
+
 ## 6.6.4
 
 ### Fixed

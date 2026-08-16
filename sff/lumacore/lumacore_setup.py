@@ -380,6 +380,19 @@ def _prewarm_lumacore_patterns(
             _progress(f"Pattern cache write failed for {label}: {exc}", callback)
 
 
+def prewarm_pattern_cache_if_missing(steam_path) -> None:
+    """Run at app startup — fill missing LumaCore pattern TOMLs for the current
+    Steam client build if LumaCore is installed. No-op otherwise."""
+    try:
+        if not steam_path:
+            return
+        if not (steam_path / "LumaCore.dll").is_file() and not (steam_path / "dwmapi.dll").is_file():
+            return
+        _prewarm_lumacore_patterns(steam_path, None)
+    except Exception as exc:
+        logger.debug("Startup LumaCore pattern prewarm skipped: %s", exc)
+
+
 def _fetch_release_asset(variant: str = "release") -> Optional[tuple[str, str]]:
     """Return (download_url, filename) for the best asset in the latest GitHub release.
 
@@ -676,8 +689,10 @@ def _fetch_latest_release_tag(timeout: float = 10.0) -> Optional[str]:
 
 
 def get_installed_lumacore_version(steam_path: Path) -> str:
-    """Return the version label SteaMidra last installed. Empty when LumaCore
-    isn't installed (or was installed by a build that never wrote the tag).
+    """Return the LumaCore version currently on disk. Uses the version label
+    SteaMidra last installed, falling back to the version LumaCore itself
+    reports in status.json (covers manual installs). Empty when LumaCore
+    isn't installed at all.
     """
     from sff.core.storage.settings import get_setting
     from sff.core.structs import Settings
@@ -689,7 +704,20 @@ def get_installed_lumacore_version(steam_path: Path) -> str:
         if not (steam_path / dll).is_file():
             return ""
     saved = get_setting(Settings.LUMACORE_INSTALLED_VERSION) or ""
-    return _normalise_lc_version(str(saved))
+    if saved:
+        return _normalise_lc_version(str(saved))
+    # Manual install — ask LumaCore's own status.json for its version.
+    try:
+        import json
+        status_path = steam_path / "lumacore" / "status.json"
+        if status_path.is_file():
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+            version = str(payload.get("lumacore_version") or "").strip()
+            if version:
+                return _normalise_lc_version(version)
+    except Exception:
+        pass
+    return ""
 
 
 def remember_installed_lumacore_version(version: str) -> None:

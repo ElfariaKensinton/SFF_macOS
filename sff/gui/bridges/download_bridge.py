@@ -376,7 +376,7 @@ def _bridge_run_windows_fastest(bridge, app_id, source='', request_update=False,
                 "status": (
                     "Lua download failed. Steam CM may be down or the "
                     "selected source returned nothing. Try a different "
-                    "provider (Hubcap / oureveryday) and retry."
+                    "provider (Hubcap / MidraEveryDay) and retry."
                 ),
                 "progress": 0,
             }))
@@ -986,6 +986,183 @@ def _bridge_download_game_version(bridge, app_id, manifest_override_json, source
     bridge._run_async(_do, on_done=_on_done, on_error=_on_error)
 
 
+def _find_app_manifest_acf(steam_path, app_id):
+    """Locate appmanifest_<app_id>.acf across all Steam libraries."""
+    from sff.core.storage.vdf import get_steam_libs
+    try:
+        libs = list(get_steam_libs(steam_path))
+    except Exception:
+        libs = []
+    libs.append(Path(steam_path))
+    seen = set()
+    for lib in libs:
+        candidate = Path(lib) / "steamapps" / f"appmanifest_{app_id}.acf"
+        key = str(candidate).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _sync_acf_downgrade(acf_path, build_id, pins):
+    """Write the downgraded build ID + manifest IDs into an existing ACF.
+
+    Only touches fields Steam itself manages:
+      - buildid / TargetBuildID -> the downloaded build ID
+      - InstalledDepots[depot].manifest -> pinned manifest IDs (depots
+        already present in the ACF only; size and everything else kept)
+    Never writes MountedDepots or AutoUpdateBehavior — LumaCore handles
+    version pinning and Steam does not use those for this flow.
+    """
+    import os
+    import stat
+    from sff.core.storage.vdf import vdf_load, vdf_dump
+    try:
+        data = vdf_load(acf_path)
+    except Exception as exc:
+        logger.warning("downgrade: could not read acf %s: %s", acf_path, exc)
+        return False
+    state = data.get("AppState", {}) or {}
+    state["buildid"] = str(build_id)
+    state["TargetBuildID"] = str(build_id)
+    installed = state.get("InstalledDepots", {}) or {}
+    if isinstance(installed, dict):
+        for depot_id, manifest_id in (pins or {}).items():
+            entry = installed.get(str(depot_id))
+            if isinstance(entry, dict):
+                entry["manifest"] = str(manifest_id)
+        state["InstalledDepots"] = installed
+    data["AppState"] = state
+    try:
+        os.chmod(acf_path, stat.S_IWRITE | stat.S_IREAD)
+    except OSError:
+        pass
+    vdf_dump(acf_path, data)
+    try:
+        verify = vdf_load(acf_path)
+        written = str((verify.get("AppState", {}) or {}).get("buildid", ""))
+    except Exception:
+        written = ""
+    try:
+        os.chmod(acf_path, 0o444)
+    except OSError:
+        pass
+    if written != str(build_id):
+        logger.warning("downgrade: acf buildid write did not stick for %s", acf_path)
+        return False
+    return True
+
+
+def _stop_steam_for_write(steam_path):
+    """Close Steam (Windows) so the ACF can be edited safely. Returns True
+    if Steam was running and is now closed."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import time as _time
+        from sff.core.processes import SteamProcess, is_proc_running
+        proc = SteamProcess(steam_path)
+        if not is_proc_running(proc.exe_name):
+            return False
+        proc.kill()
+        waited = 0.0
+        while is_proc_running(proc.exe_name) and waited < 20:
+            _time.sleep(0.5)
+            waited += 0.5
+        return not is_proc_running(proc.exe_name)
+    except Exception as exc:
+        logger.debug("downgrade: could not stop Steam: %s", exc)
+        return False
+
+
+def _start_steam_again(steam_path):
+    """Relaunch Steam (Windows) after an ACF edit."""
+    if sys.platform != "win32":
+        return False
+    try:
+        from sff.core.processes import launch_steam_unelevated
+        ok, msg = launch_steam_unelevated(Path(steam_path) / "steam.exe", steam_path)
+        if not ok:
+            logger.debug("downgrade: Steam relaunch failed: %s", msg)
+        return bool(ok)
+    except Exception as exc:
+        logger.debug("downgrade: could not start Steam: %s", exc)
+        return False
+
+
+def _native_install_pinned(bridge, app_id, lua_path, manifest_override, skip_auto_update=False, buildid_override=None):
+    from sff.lua.manager import parse_lua_contents, write_manifest_pins_to_lua
+    from sff.steam_tools_compat import install_lua_to_steam
+    from sff.lua.writer import ACFWriter, ConfigVDFWriter
+
+    steam_path = bridge._steam_path
+    lib_override = Path(bridge._active_library) if bridge._active_library else steam_path
+
+    bridge.download_progress.emit(json.dumps({
+        "app_id": app_id, "status": "Pinning manifests in Lua", "progress": 30
+    }))
+    pinned = write_manifest_pins_to_lua(lua_path, manifest_override)
+    if not pinned:
+        bridge.download_progress.emit(json.dumps({
+            "app_id": app_id,
+            "status": "No manifest pins were written. ACF was not created.",
+            "progress": 0,
+            "error": True,
+        }))
+        return False
+
+    bridge.download_progress.emit(json.dumps({
+        "app_id": app_id, "status": "Installing Lua to Steam", "progress": 50
+    }))
+    _auto_update_was_registered = _bridge_auto_update_was_registered(bridge, app_id)
+    install_lua_to_steam(steam_path, app_id, lua_path)
+    if not skip_auto_update:
+        _bridge_apply_auto_update_default(bridge, app_id, _auto_update_was_registered)
+
+    parsed = parse_lua_contents(
+        lua_path.read_text(encoding="utf-8", errors="replace"), lua_path
+    )
+    if not parsed:
+        bridge.download_progress.emit(json.dumps({
+            "app_id": app_id,
+            "status": "Lua parse failed after pinning. ACF was not created.",
+            "progress": 0,
+            "error": True,
+        }))
+        return False
+
+    config_writer = ConfigVDFWriter(steam_path)
+    config_writer.add_decryption_keys_to_config(parsed)
+
+    bridge.download_progress.emit(json.dumps({
+        "app_id": app_id, "status": "Writing ACF", "progress": 70
+    }))
+    buildid = str(buildid_override) if buildid_override else "0"
+    if not buildid_override:
+        try:
+            from sff.network.steam_client import create_provider_for_current_thread
+            app_data = create_provider_for_current_thread().get_single_app_info(int(app_id))
+            bid = (
+                app_data.get("depots", {})
+                .get("branches", {})
+                .get("public", {})
+                .get("buildid")
+            )
+            if bid:
+                buildid = str(bid)
+        except Exception as exc:
+            logger.debug("native install: buildid lookup failed for %s: %s", app_id, exc)
+    acf_writer = ACFWriter(lib_override)
+    acf_writer.write_acf(parsed, manifest_override=manifest_override, buildid=buildid)
+
+    bridge.download_progress.emit(json.dumps({
+        "app_id": app_id, "status": "Complete — Steam will download the game", "progress": 100
+    }))
+    return True
+
+
 def _bridge_download_game_version_native(bridge, app_id, manifest_override_json, source='oureveryday'):
     """Download specific version via Steam Native flow.
     Downloads Lua, pins manifests with write_manifest_pins_to_lua,
@@ -1009,13 +1186,9 @@ def _bridge_download_game_version_native(bridge, app_id, manifest_override_json,
         }))
 
         from sff.lua.choices import download_lua_direct
-        from sff.lua.manager import parse_lua_contents, write_manifest_pins_to_lua
-        from sff.steam_tools_compat import install_lua_to_steam
-        from sff.lua.writer import ACFWriter, ConfigVDFWriter
         from sff.core.structs import LuaEndpoint
 
         steam_path = bridge._steam_path
-        lib_override = Path(bridge._active_library) if bridge._active_library else steam_path
 
         bridge.download_progress.emit(json.dumps({
             "app_id": app_id, "status": "Downloading Lua", "progress": 10
@@ -1036,66 +1209,7 @@ def _bridge_download_game_version_native(bridge, app_id, manifest_override_json,
             }))
             return False
 
-        bridge.download_progress.emit(json.dumps({
-            "app_id": app_id, "status": "Pinning manifests in Lua", "progress": 30
-        }))
-        pinned = write_manifest_pins_to_lua(lua_path, manifest_override)
-        if not pinned:
-            logger.warning("download_game_version_native: no manifests pinned for %s", app_id)
-            bridge.download_progress.emit(json.dumps({
-                "app_id": app_id,
-                "status": "No manifest pins were written. ACF was not created.",
-                "progress": 0,
-                "error": True,
-            }))
-            return False
-
-        bridge.download_progress.emit(json.dumps({
-            "app_id": app_id, "status": "Installing Lua to Steam", "progress": 50
-        }))
-        _auto_update_was_registered = _bridge_auto_update_was_registered(bridge, app_id)
-        install_lua_to_steam(steam_path, app_id, lua_path)
-        _bridge_apply_auto_update_default(bridge, app_id, _auto_update_was_registered)
-
-        parsed = parse_lua_contents(
-            lua_path.read_text(encoding="utf-8", errors="replace"), lua_path
-        )
-        if not parsed:
-            bridge.download_progress.emit(json.dumps({
-                "app_id": app_id,
-                "status": "Lua parse failed after pinning. ACF was not created.",
-                "progress": 0,
-                "error": True,
-            }))
-            return False
-
-        config_writer = ConfigVDFWriter(steam_path)
-        config_writer.add_decryption_keys_to_config(parsed)
-
-        bridge.download_progress.emit(json.dumps({
-            "app_id": app_id, "status": "Writing ACF", "progress": 70
-        }))
-        buildid = "0"
-        try:
-            from sff.network.steam_client import create_provider_for_current_thread
-            app_data = create_provider_for_current_thread().get_single_app_info(int(app_id))
-            bid = (
-                app_data.get("depots", {})
-                .get("branches", {})
-                .get("public", {})
-                .get("buildid")
-            )
-            if bid:
-                buildid = str(bid)
-        except Exception as exc:
-            logger.debug("download_game_version_native: buildid lookup failed for %s: %s", app_id, exc)
-        acf_writer = ACFWriter(lib_override)
-        acf_writer.write_acf(parsed, manifest_override=manifest_override, buildid=buildid)
-
-        bridge.download_progress.emit(json.dumps({
-            "app_id": app_id, "status": "Complete — Steam will download the game", "progress": 100
-        }))
-        return True
+        return _native_install_pinned(bridge, app_id, lua_path, manifest_override, skip_auto_update=True)
 
     def _on_done(result):
         success = result is True
@@ -1110,6 +1224,191 @@ def _bridge_download_game_version_native(bridge, app_id, manifest_override_json,
         bridge._emit_task_result(
             "download_version_native", False, error_msg, app_id=app_id
         )
+
+    bridge._run_async(_do, on_done=_on_done, on_error=_on_error)
+
+
+def _bridge_download_older_version_auto(bridge, app_id, build_id):
+    if sys.platform != "win32":
+        bridge._emit_task_result("download_older_auto", False, "Downgrade is Windows-only.", app_id=app_id)
+        return
+    if not app_id or not app_id.strip().isdigit():
+        bridge._emit_task_result("download_older_auto", False, f"Invalid App ID: '{app_id}'", app_id=app_id)
+        return
+    if not build_id or not str(build_id).strip().isdigit():
+        bridge._emit_task_result("download_older_auto", False, f"Invalid Build ID: '{build_id}'", app_id=app_id)
+        return
+
+    def _do():
+        import os
+        from sff.lua.endpoints import fetch_build_details
+        from sff.lua.manager import parse_lua_contents, write_manifest_pins_to_lua
+        from sff.manifest.downloader import ManifestDownloader
+        from sff.lua.writer import ACFWriter, ConfigVDFWriter
+
+        steam_path = bridge._steam_path
+        if not steam_path:
+            bridge.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Steam path not configured.", "progress": 0, "error": True,
+            }))
+            return False
+
+        lua_path = Path(steam_path) / "config" / "stplug-in" / f"{app_id}.lua"
+        if not lua_path.exists():
+            bridge.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "This game has no stplug-in Lua yet. Add the game first.",
+                "progress": 0, "error": True,
+            }))
+            return False
+
+        bridge.download_progress.emit(json.dumps({
+            "app_id": app_id, "status": f"Looking up build {build_id}", "progress": 10
+        }))
+        build_pins = fetch_build_details(build_id)
+        if not build_pins:
+            bridge.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Build not found. Check the Build ID.",
+                "progress": 0, "error": True,
+            }))
+            return False
+
+        parsed = parse_lua_contents(
+            lua_path.read_text(encoding="utf-8", errors="replace"), lua_path
+        )
+        if not parsed:
+            bridge.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Could not parse the game's Lua.",
+                "progress": 0, "error": True,
+            }))
+            return False
+
+        lua_depots = {str(pair.depot_id) for pair in parsed.depots}
+        override = {depot: gid for depot, gid in build_pins.items() if depot in lua_depots}
+        if not override:
+            bridge.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "This build has no depots matching this game's Lua.",
+                "progress": 0, "error": True,
+            }))
+            return False
+
+        # Depots present in the Lua but absent from this build's response did
+        # not exist in that version — drop their addappid/setManifestid lines.
+        # A backup is kept next to the Lua in case anything needs restoring.
+        to_delete = lua_depots - set(build_pins)
+        if to_delete:
+            from sff.lua.manager import remove_depots_from_lua
+            try:
+                import shutil as _shutil
+                _shutil.copyfile(lua_path, Path(str(lua_path) + ".bak"))
+            except Exception as exc:
+                logger.debug("download_older_version_auto: lua backup failed: %s", exc)
+            removed = remove_depots_from_lua(lua_path, to_delete)
+            if removed:
+                bridge.download_progress.emit(json.dumps({
+                    "app_id": app_id,
+                    "status": f"Removed {removed} line(s) for depots not in build {build_id}",
+                    "progress": 25,
+                }))
+                parsed = parse_lua_contents(
+                    lua_path.read_text(encoding="utf-8", errors="replace"), lua_path
+                )
+                if not parsed:
+                    bridge.download_progress.emit(json.dumps({
+                        "app_id": app_id, "status": "Could not parse the game's Lua after depot cleanup.",
+                        "progress": 0, "error": True,
+                    }))
+                    return False
+
+        bridge.download_progress.emit(json.dumps({
+            "app_id": app_id, "status": f"Downloading {len(override)} manifest(s)", "progress": 35
+        }))
+        try:
+            downloader = ManifestDownloader(None, Path(steam_path))
+            written = downloader.download_manifests(parsed, manifest_override=override)
+        except Exception as exc:
+            logger.exception("download_older_version_auto: manifest download failed: %s", exc)
+            written = []
+        if not written:
+            bridge.download_progress.emit(json.dumps({
+                "app_id": app_id, "status": "Could not download any manifest for that build.",
+                "progress": 0, "error": True,
+            }))
+            return False
+
+        bridge.download_progress.emit(json.dumps({
+            "app_id": app_id, "status": "Pinning manifests in Lua", "progress": 75
+        }))
+        write_manifest_pins_to_lua(lua_path, override)
+
+        try:
+            config_writer = ConfigVDFWriter(steam_path)
+            config_writer.add_decryption_keys_to_config(parsed)
+            lib_override = Path(bridge._active_library) if bridge._active_library else Path(steam_path)
+            acf_writer = ACFWriter(lib_override)
+            acf_writer.write_acf(parsed, manifest_override=override, buildid=str(build_id))
+        except Exception as exc:
+            logger.debug("download_older_version_auto: acf/config write skipped: %s", exc)
+
+        try:
+            os.utime(lua_path, None)
+        except Exception:
+            pass
+
+        # ── ACF sync: make Steam show + download the downgraded build ──
+        # Steam only creates the ACF once the game is downloaded, and it
+        # may hold the file during downloads — so when we cannot write
+        # now, queue the edit and keep retrying until it sticks.
+        from sff.game.acf_pending_queue import enqueue_acf_edit
+        from sff.core.storage.vdf import vdf_load
+
+        acf_path = _find_app_manifest_acf(steam_path, app_id)
+        applied_now = False
+        if acf_path is not None:
+            try:
+                _acf_data = vdf_load(acf_path)
+                try:
+                    _flags = int(str((_acf_data.get("AppState", {}) or {}).get("StateFlags", "0") or "0") or 0)
+                except Exception:
+                    _flags = 0
+            except Exception:
+                _flags = 0
+            if _flags & 4:
+                bridge.download_progress.emit(json.dumps({
+                    "app_id": app_id, "status": "Updating Steam properties", "progress": 88
+                }))
+                _steam_was_running = _stop_steam_for_write(steam_path)
+                applied_now = _sync_acf_downgrade(acf_path, str(build_id), override)
+                if _steam_was_running:
+                    bridge.download_progress.emit(json.dumps({
+                        "app_id": app_id, "status": "Starting Steam back up", "progress": 95
+                    }))
+                    _start_steam_again(steam_path)
+
+        if applied_now:
+            status = f"Done — pinned build {build_id}, ACF updated, and reloaded live."
+        else:
+            enqueue_acf_edit(app_id, str(build_id), override)
+            status = (
+                f"Done — pinned build {build_id} and reloaded live. "
+                "The ACF (build ID in Steam) will be updated automatically "
+                "once the game is fully downloaded."
+            )
+        bridge.download_progress.emit(json.dumps({
+            "app_id": app_id, "status": status, "progress": 100
+        }))
+        return True
+
+    def _on_done(result):
+        success = result is True
+        bridge._emit_task_result(
+            "download_older_auto",
+            success,
+            f"Build {build_id} {'applied and reloaded' if success else 'failed'} for App {app_id}",
+            app_id=app_id,
+        )
+
+    def _on_error(error_msg):
+        bridge._emit_task_result("download_older_auto", False, error_msg, app_id=app_id)
 
     bridge._run_async(_do, on_done=_on_done, on_error=_on_error)
 
@@ -1342,7 +1641,7 @@ def _bridge_download_game_ddmod(bridge, app_id, source, lua_path, manifest_folde
                         _staging.mkdir(parents=True, exist_ok=True)
                         _shutil.copy2(_mf, _staging / _mf.name)
                         _shutil.copy2(_mf, _depotcache / _mf.name)
-                return (True, "Local Lua/manifests imported without Hubcap/Ryuu/OurEveryday or DDMod")
+                return (True, "Local Lua/manifests imported without MidraEveryDay/Hubcap/Ryuu or DDMod")
 
             # Confirm registration before the depot fetch fires.
             bridge.download_progress.emit(json.dumps({

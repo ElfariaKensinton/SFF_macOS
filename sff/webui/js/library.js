@@ -151,6 +151,7 @@ window.Library = (function() {
     }
 
     function onPageEnter() {
+        if (window._luaMigrationCheck) window._luaMigrationCheck();
         init();
         _refreshLibrary(false);
         _refreshDiskInfo();
@@ -212,7 +213,22 @@ window.Library = (function() {
             if (!el) return;
             try {
                 var d = JSON.parse(json || '{}');
-                if (d.error || !d.total) { el.textContent = ''; return; }
+                if (d.error || !d.total) {
+                    // Slow drive (network share): the backend fills its cache
+                    // in the background — retry once shortly after.
+                    setTimeout(function() {
+                        Bridge.callWithCallback('get_disk_usage', drivePath, function(json2) {
+                            if (!el) return;
+                            try {
+                                var d2 = JSON.parse(json2 || '{}');
+                                if (d2.error || !d2.total) { el.textContent = ''; return; }
+                                el.textContent = _fmtBytes(d2.free) + ' free of ' + _fmtBytes(d2.total);
+                            } catch(e2) {}
+                        });
+                    }, 1200);
+                    el.textContent = '';
+                    return;
+                }
                 el.textContent = _fmtBytes(d.free) + ' free of ' + _fmtBytes(d.total);
             } catch(e) {}
         });
@@ -456,6 +472,30 @@ window.Library = (function() {
             Components.showToast('success', 'Updated to build ' + (data.cm_buildid || ''));
         } else if (data.error) {
             Components.showToast('error', data.error);
+        }
+        if (data.crack && data.crack.available) {
+            var c = data.crack;
+            var appId = String(data.app_id || '');
+            if (c.match_installed) {
+                Components.showConfirm(
+                    'Crack available',
+                    'A crack exists for this game and matches your installed build. Apply the crack now?',
+                    function() {
+                        Bridge.call('apply_game_crack', appId, '');
+                    }
+                );
+            } else if (c.buildid) {
+                Components.showConfirm(
+                    'Crack requires older version',
+                    'The crack for this game needs Build ID ' + c.buildid + ' (installed: ' +
+                        (data.installed_buildid || '?') + '). Open Download Older Version now?',
+                    function() {
+                        if (window._openOlderVersionForCrack) {
+                            window._openOlderVersionForCrack(appId, c.buildid);
+                        }
+                    }
+                );
+            }
         }
     }
 

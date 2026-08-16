@@ -8,33 +8,51 @@ window.Components = (function() {
 
     var _hideImages = false;
 
-    // Steam CDN image URL templates — ordered by 2026 reliability (akamai.shared first, matches Steam API responses)
+    // A short fallback chain avoids issuing a dozen failed requests for every
+    // delisted title while still covering Steam's current asset layouts.
     var _CDN = [
         'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{id}/library_600x900.jpg',
-        'https://cdn.akamai.steamstatic.com/steam/apps/{id}/header.jpg',
         'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{id}/header.jpg',
-        'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{id}/library_header.jpg',
-        'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{id}/capsule_616x353.jpg',
-        'https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{id}/library_600x900.jpg',
-        'https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{id}/header.jpg',
-        'https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{id}/library_header.jpg',
-        'https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{id}/capsule_616x353.jpg',
-        'https://shared.steamstatic.com/store_item_assets/steam/apps/{id}/library_600x900.jpg',
-        'https://shared.steamstatic.com/store_item_assets/steam/apps/{id}/header.jpg',
-        'https://shared.steamstatic.com/store_item_assets/steam/apps/{id}/library_header.jpg',
         'https://shared.steamstatic.com/store_item_assets/steam/apps/{id}/capsule_616x353.jpg',
         'https://cdn.cloudflare.steamstatic.com/steam/apps/{id}/header.jpg'
     ];
     var STEAM_CDN_LIBRARY = 'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{appid}/library_600x900.jpg';
 
-    var _COVER_CACHE_PREFIX = 'sff_cover_';
+    var _COVER_CACHE_KEY = 'sff_cover_cache_v2';
+    var _COVER_CACHE_MAX = 160;
+    var _coverCache = null;
+
+    function _loadCoverCache() {
+        if (_coverCache) return _coverCache;
+        try {
+            _coverCache = JSON.parse(localStorage.getItem(_COVER_CACHE_KEY) || '{}');
+        } catch(e) {
+            _coverCache = {};
+        }
+        return _coverCache;
+    }
+
+    function _persistCoverCache() {
+        var cache = _loadCoverCache();
+        var ids = Object.keys(cache);
+        if (ids.length > _COVER_CACHE_MAX) {
+            ids.sort(function(a, b) {
+                return (cache[b].t || 0) - (cache[a].t || 0);
+            }).slice(_COVER_CACHE_MAX).forEach(function(id) { delete cache[id]; });
+        }
+        try { localStorage.setItem(_COVER_CACHE_KEY, JSON.stringify(cache)); } catch(e) {}
+    }
 
     function _getCachedCoverUrl(appId) {
-        try { return localStorage.getItem(_COVER_CACHE_PREFIX + appId) || null; } catch(e) { return null; }
+        var entry = _loadCoverCache()[String(appId)];
+        if (!entry || !entry.url) return null;
+        entry.t = Date.now();
+        return entry.url;
     }
 
     function _saveCoverCache(appId, url) {
-        try { localStorage.setItem(_COVER_CACHE_PREFIX + appId, url); } catch(e) {}
+        _loadCoverCache()[String(appId)] = { url: url, t: Date.now() };
+        _persistCoverCache();
     }
 
     // SVG placeholder for missing game images (image-off icon)
@@ -100,6 +118,7 @@ window.Components = (function() {
             img.className = 'game-card-img';
             img.alt = game.name;
             img.loading = 'lazy';
+            img.decoding = 'async';
             var urls = getCoverUrls(game.app_id, game.image_url || null);
             var urlIdx = 0;
             function tryNextCard() {
@@ -164,6 +183,7 @@ window.Components = (function() {
             img.className = 'game-list-thumb';
             img.alt = '';
             img.loading = 'lazy';
+            img.decoding = 'async';
             var urls = getCoverUrls(game.app_id, game.image_url || null);
             var urlIdx = 0;
             function tryNextList() {
@@ -276,6 +296,7 @@ window.Components = (function() {
         // Reset source to default, then pre-fetch Ryuu branches in background
         var defaultSource = document.querySelector('input[name="dl-source"][value="oureveryday"]');
         if (defaultSource) defaultSource.checked = true;
+        if (window._updateDownloadSourceHint) window._updateDownloadSourceHint();
         var ryuuOpt = document.getElementById('ryuu-update-option');
         if (ryuuOpt) ryuuOpt.style.display = 'none';
         var localRow = document.getElementById('dl-local-row');
@@ -284,7 +305,53 @@ window.Components = (function() {
             _populateRyuuBranches(json);
         });
 
+        // Crack availability banner (CrakFiles). Memory-only lookup; retry
+        // once shortly after in case the crack database is still loading.
+        var crackBanner = document.getElementById('dl-crack-banner');
+        if (crackBanner) crackBanner.style.display = 'none';
+        _loadCrackBanner(appId, gameName, 1);
+
         showModal('download-modal');
+    }
+
+    function _loadCrackBanner(appId, gameName, attempt) {
+        var crackBanner = document.getElementById('dl-crack-banner');
+        if (!crackBanner) return;
+        Bridge.callWithCallback('get_crack_info', appId, gameName || '', function(json) {
+            var data;
+            try { data = JSON.parse(json || '{}'); } catch (err) { data = {}; }
+            if (!data.found) {
+                if (attempt < 2) {
+                    setTimeout(function() { _loadCrackBanner(appId, gameName, attempt + 1); }, 4000);
+                }
+                return;
+            }
+            var textEl = document.getElementById('dl-crack-banner-text');
+            var olderBtn = document.getElementById('dl-crack-older-btn');
+            var srcBtn = document.getElementById('dl-crack-source-btn');
+            if (data.match_latest === true) {
+                if (textEl) textEl.textContent = 'Crack available for this game — it matches the latest build. Use "Add to Library" (Download through Steam, Fastest) to install it.';
+                if (olderBtn) olderBtn.style.display = 'none';
+            } else {
+                if (textEl) textEl.textContent = 'Crack available for this game — it needs Build ID ' + (data.crack_buildid || '?') + '. Use Download Older Version.';
+                if (olderBtn) olderBtn.style.display = '';
+            }
+            if (olderBtn) {
+                olderBtn.onclick = function() {
+                    if (window._openOlderVersionForCrack) {
+                        window._openOlderVersionForCrack(appId, data.crack_buildid || '');
+                    }
+                };
+            }
+            if (srcBtn && data.source_crack && data.source_crack.length) {
+                srcBtn.onclick = function() {
+                    Bridge.call('open_url', data.source_crack[0]);
+                };
+            } else if (srcBtn) {
+                srcBtn.style.display = 'none';
+            }
+            crackBanner.style.display = 'block';
+        });
     }
 
     function _populateRyuuBranches(json) {
@@ -351,6 +418,20 @@ window.Components = (function() {
                 var modal = this.closest('.modal');
                 if (modal) hideModal(modal.id);
             });
+        });
+
+        // Background branch fetch backfill — fills the Ryuu branch dropdown
+        // when the sync call returned empty (Steam CM slow on the first ask).
+        Bridge.on('game_branches_ready', function(json) {
+            try {
+                var p = JSON.parse(json || '{}');
+                var modal = document.getElementById('download-modal');
+                if (!modal || modal.classList.contains('hidden')) return;
+                var dlOlder = document.getElementById('dl-older');
+                var current = dlOlder ? dlOlder.dataset.appid : '';
+                if (String(p.app_id) !== String(current)) return;
+                _populateRyuuBranches(JSON.stringify(p.branches || []));
+            } catch (e) {}
         });
     }
 

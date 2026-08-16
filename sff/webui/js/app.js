@@ -222,6 +222,11 @@ window.App = (function() {
                             });
                         }
                     }
+                    if (result.task === 'download_older_auto') {
+                        var dgStatus = document.getElementById('downgrade-status');
+                        if (dgStatus) dgStatus.textContent = result.message || (result.success ? 'Done.' : 'Failed.');
+                        if (result.success) _populateGameDropdown();
+                    }
                     if (result.task === 'community_fixes') {
                         Components.showToast(result.success ? 'success' : 'error', result.message || 'Crack files completed.');
                     }
@@ -378,20 +383,27 @@ window.App = (function() {
         _currentPage = pageId;
         localStorage.setItem('currentPage', pageId);
 
-        // Trigger page-specific init if needed
-        switch(pageId) {
-            case 'home':
-                _populateGameDropdown();
-                _refreshHomeLumacoreNotice();
-                break;
-            case 'store': Store.onPageEnter(); break;
-            case 'library': Library.onPageEnter(); break;
-            case 'downloads': Downloads.onPageEnter(); break;
-            case 'fixgame': FixGame.onPageEnter(); break;
-            case 'cloudsaves': CloudSaves.onPageEnter(); break;
-            case 'settings': Settings.onPageEnter(); break;
-            case 'linuxguide': break;  // static guide page, no dynamic module
-        }
+        // Page initialization is deferred by one frame so the active-page
+        // change is painted before any native bridge work begins.  Besides
+        // making navigation feel instant, this prevents a synchronous bridge
+        // slot from leaving the previous page visible with a busy cursor.
+        window.requestAnimationFrame(function() {
+            if (_currentPage !== pageId) return;
+            switch(pageId) {
+                case 'home':
+                    _populateGameDropdown();
+                    _refreshHomeLumacoreNotice();
+                    break;
+                case 'store': Store.onPageEnter(); break;
+                case 'library': Library.onPageEnter(); break;
+                case 'downloads': Downloads.onPageEnter(); break;
+                case 'fixgame': FixGame.onPageEnter(); break;
+                case 'cloudsaves': CloudSaves.onPageEnter(); break;
+                case 'downgrade': _populateDowngradeGames(); break;
+                case 'settings': Settings.onPageEnter(); break;
+                case 'linuxguide': break;  // static guide page, no dynamic module
+            }
+        });
     }
 
     var _logMinLevel = 20; // INFO by default
@@ -673,8 +685,59 @@ window.App = (function() {
                 if (opt) opt.style.display = this.value === 'ryuu' ? 'block' : 'none';
                 if (localRow) localRow.style.display = this.value === 'local' ? 'block' : 'none';
                 if (mfRow && this.value !== 'local') mfRow.style.display = 'none';
+                _updateDownloadSourceHint();
             });
         });
+
+        // Delegated handler for links that open external URLs via the bridge
+        document.addEventListener('click', function(e) {
+            var openUrlEl = e.target.closest('[data-openurl]');
+            if (openUrlEl) {
+                e.preventDefault();
+                Bridge.call('open_url', openUrlEl.dataset.openurl);
+            }
+        });
+
+        // Show the provider's community-server link when the selected source
+        // has no API key configured yet.
+        var _DL_SOURCE_HINTS = {
+            hubcap: { name: 'Hubcap', url: 'https://discord.gg/hubcapsmanifest', keys: ['morrenus_key'] },
+            ryuu: { name: 'Ryuu', url: 'https://discord.gg/manifests', keys: ['ryuu_key', 'ryuu_api_key'] },
+            depotbox: { name: 'DepotBox', url: 'https://discord.gg/depotbox', keys: ['depotbox_key'] }
+        };
+        function _updateDownloadSourceHint() {
+            var hint = document.getElementById('dl-source-key-hint');
+            if (!hint) return;
+            var sel = document.querySelector('input[name="dl-source"]:checked');
+            var cfg = sel ? _DL_SOURCE_HINTS[sel.value] : null;
+            if (!cfg) {
+                hint.style.display = 'none';
+                hint.innerHTML = '';
+                return;
+            }
+            var pending = cfg.keys.length;
+            var finished = false;
+            hint.style.display = 'none';
+            hint.innerHTML = '';
+            cfg.keys.forEach(function(keyName) {
+                Bridge.callWithCallback('get_setting', keyName, function(val) {
+                    if (finished) return;
+                    if (val && String(val).trim()) {
+                        finished = true;
+                        hint.style.display = 'none';
+                        hint.innerHTML = '';
+                        return;
+                    }
+                    pending -= 1;
+                    if (pending === 0) {
+                        finished = true;
+                        hint.innerHTML = 'No ' + cfg.name + ' API key found. Get one from the community server: <a href="#" data-openurl="' + cfg.url + '" style="color:var(--accent,#4a9eff);">' + cfg.name + ' Discord</a>';
+                        hint.style.display = 'block';
+                    }
+                });
+            });
+        }
+        window._updateDownloadSourceHint = _updateDownloadSourceHint;
 
         // Ryuu branch refresh button
         var ryuuRefreshBtn = document.getElementById('ryuu-refresh-branches');
@@ -799,23 +862,18 @@ window.App = (function() {
         if (dlOlder) {
             dlOlder.addEventListener('click', function() {
                 var appId = this.dataset.appid;
+                window._olderVersionCrackBuildId = null;
                 Components.hideModal('download-modal');
                 var sourceEl = document.querySelector('input[name="dl-source"]:checked');
                 window._olderVersionSource = sourceEl ? sourceEl.value : 'oureveryday';
-                var saved = localStorage.getItem('older_version_method') || '';
-                if (saved) {
-                    window._olderVersionMethod = saved;
-                    _showVersionPicker(appId);
-                    return;
-                }
                 Bridge.callSync('get_platform', function(platform) {
                     if (platform === 'win32') {
-                        var methodModal = document.getElementById('older-method-modal');
-                        if (methodModal) {
-                            methodModal.querySelectorAll('.download-option').forEach(function(b) {
+                        var modeModal = document.getElementById('older-mode-modal');
+                        if (modeModal) {
+                            modeModal.querySelectorAll('.download-option').forEach(function(b) {
                                 b.dataset.appid = appId;
                             });
-                            Components.showModal('older-method-modal');
+                            Components.showModal('older-mode-modal');
                         }
                     } else {
                         window._olderVersionMethod = 'ddmod';
@@ -824,6 +882,133 @@ window.App = (function() {
                 });
             });
         }
+
+        document.getElementById('older-mode-manual')?.addEventListener('click', function() {
+            var appId = this.dataset.appid;
+            Components.hideModal('older-mode-modal');
+            var saved = localStorage.getItem('older_version_method') || '';
+            if (saved) {
+                window._olderVersionMethod = saved;
+                _showVersionPicker(appId);
+                return;
+            }
+            var methodModal = document.getElementById('older-method-modal');
+            if (methodModal) {
+                methodModal.querySelectorAll('.download-option').forEach(function(b) {
+                    b.dataset.appid = appId;
+                });
+                Components.showModal('older-method-modal');
+            }
+        });
+
+        document.getElementById('older-mode-auto')?.addEventListener('click', function() {
+            var appId = this.dataset.appid || window._olderVersionCrackAppId || '';
+            Components.hideModal('older-mode-modal');
+            var applyBtn = document.getElementById('older-auto-apply');
+            if (applyBtn) applyBtn.dataset.appid = appId;
+            var input = document.getElementById('older-auto-buildid');
+            if (input) input.value = window._olderVersionCrackBuildId || '';
+            Components.showModal('older-auto-modal');
+        });
+
+        // Opens the Download Older Version flow (manual/automatic choice)
+        // with the Build ID pre-filled — used by the crack notification.
+        function _openOlderVersionForCrack(appId, buildId) {
+            window._olderVersionCrackAppId = appId;
+            window._olderVersionCrackBuildId = buildId || '';
+            var modeModal = document.getElementById('older-mode-modal');
+            if (modeModal) {
+                modeModal.querySelectorAll('.download-option').forEach(function(b) {
+                    b.dataset.appid = appId;
+                });
+                Components.showModal('older-mode-modal');
+            }
+        }
+        window._openOlderVersionForCrack = _openOlderVersionForCrack;
+
+        // Lua folder migration (SteamTools/OST style config/lua → stplug-in).
+        // Offered once per handled file; re-offered only when new files appear.
+        var _luaMigrationCheck = function() {
+            Bridge.callSync('check_lua_folder_migration', function(json) {
+                var data;
+                try { data = JSON.parse(json || '{}'); } catch (e) { data = {}; }
+                if (!data.new || !data.new.length) return;
+                var names = data.new;
+                Components.showConfirm(
+                    'Detected Lua files in Steam/config/lua',
+                    'Found ' + names.length + ' .lua file(s) in the SteamTools/OST folder (Steam/config/lua). Move them to stplug-in so LumaCore loads them?',
+                    function() {
+                        Bridge.call('migrate_lua_folder', JSON.stringify(names));
+                    },
+                    function() {
+                        Bridge.call('lua_folder_migration_dismiss', JSON.stringify(names));
+                    }
+                );
+            });
+        };
+        window._luaMigrationCheck = _luaMigrationCheck;
+        setTimeout(_luaMigrationCheck, 12000);
+
+        document.getElementById('older-auto-apply')?.addEventListener('click', function() {
+            var appId = this.dataset.appid;
+            var input = document.getElementById('older-auto-buildid');
+            var buildId = input ? input.value.replace(/[^0-9]/g, '') : '';
+            if (!buildId) {
+                Components.showToast('warning', 'Enter a Build ID first.');
+                return;
+            }
+            Components.hideModal('older-auto-modal');
+            Components.showToast('info', 'Applying build ' + buildId + '...');
+            Bridge.call('download_older_version_auto', appId, buildId);
+        });
+
+        var downgradeSelect = document.getElementById('downgrade-game-select');
+        if (downgradeSelect) {
+            downgradeSelect.addEventListener('change', function() {
+                var appIdInput = document.getElementById('downgrade-appid');
+                if (appIdInput && this.value) appIdInput.value = this.value;
+            });
+        }
+
+        document.getElementById('downgrade-apply')?.addEventListener('click', function() {
+            var appIdInput = document.getElementById('downgrade-appid');
+            var buildInput = document.getElementById('downgrade-buildid');
+            var statusEl = document.getElementById('downgrade-status');
+            var appId = appIdInput ? appIdInput.value.replace(/[^0-9]/g, '') : '';
+            var buildId = buildInput ? buildInput.value.replace(/[^0-9]/g, '') : '';
+            if (!appId) { Components.showToast('warning', 'Select a game or enter an App ID.'); return; }
+            if (!buildId) { Components.showToast('warning', 'Enter a Build ID.'); return; }
+            if (statusEl) statusEl.textContent = 'Applying build ' + buildId + ' to App ' + appId + '...';
+            Components.showToast('info', 'Applying build ' + buildId + '...');
+            Bridge.call('download_older_version_auto', appId, buildId);
+        });
+
+        document.getElementById('downgrade-unlock')?.addEventListener('click', function() {
+            var appIdInput = document.getElementById('downgrade-appid');
+            var statusEl = document.getElementById('downgrade-status');
+            var appId = appIdInput ? appIdInput.value.replace(/[^0-9]/g, '') : '';
+            if (!appId) { Components.showToast('warning', 'Select a game or enter an App ID.'); return; }
+            if (statusEl) statusEl.textContent = 'Unlocking updates for App ' + appId + '...';
+            Bridge.callWithCallback('let_updates_add_game', appId, function(json) {
+                var res; try { res = JSON.parse(json || '{}'); } catch(e) { res = {}; }
+                var ok = res.ok !== false;
+                Components.showToast(ok ? 'success' : 'error', ok ? 'Updates unlocked — Steam will move this game to the latest build.' : (res.error || 'Could not unlock updates.'));
+                if (statusEl) statusEl.textContent = ok ? 'Updates unlocked. Steam will download the latest build.' : (res.error || 'Failed to unlock updates.');
+            });
+        });
+
+        Bridge.on('download_progress', function(json) {
+            try {
+                var p = JSON.parse(json || '{}');
+                var statusEl = document.getElementById('downgrade-status');
+                var appIdInput = document.getElementById('downgrade-appid');
+                if (!statusEl || !appIdInput || !p.app_id) return;
+                var current = String(appIdInput.value).replace(/[^0-9]/g, '');
+                if (current && String(p.app_id) === current) {
+                    statusEl.textContent = (p.status || '') + (p.progress != null ? '  (' + p.progress + '%)' : '');
+                }
+            } catch (e) {}
+        });
 
         // Older method choice — DDMod
         document.getElementById('older-method-ddmod')?.addEventListener('click', function() {
@@ -1925,6 +2110,22 @@ window.App = (function() {
         });
     }
 
+    function _populateDowngradeGames() {
+        Bridge.callSync('get_game_list', function(json) {
+            var games;
+            try { games = JSON.parse(json || '[]'); } catch(e) { games = []; }
+            var select = document.getElementById('downgrade-game-select');
+            if (!select) return;
+            select.innerHTML = '<option value="">-- Select a game --</option>';
+            games.forEach(function(game) {
+                var opt = document.createElement('option');
+                opt.value = game.app_id;
+                opt.textContent = game.name + ' (' + game.app_id + ')';
+                select.appendChild(opt);
+            });
+        });
+    }
+
     function _getSelectedGameId() {
         var select = document.getElementById('home-game-select');
         return select ? select.value : '';
@@ -1934,6 +2135,7 @@ window.App = (function() {
         var listEl = document.getElementById('lu-game-list');
         var countEl = document.getElementById('lu-count');
         var toggleBtn = document.getElementById('lu-toggle-all');
+        var searchEl = document.getElementById('lu-search');
         if (!listEl) return;
         if (!games || !games.length) {
             listEl.innerHTML = '<span style="opacity:0.5;font-size:13px;">No stplug-in Lua files with manifest pins found.</span>';
@@ -1942,26 +2144,40 @@ window.App = (function() {
             return;
         }
 
-        var html = '';
-        games.forEach(function(g) {
-            var appId = Components.escapeHtml(String(g.app_id || ''));
-            var name = Components.escapeHtml(String(g.name || ('App ' + appId)));
-            var path = Components.escapeHtml(String(g.path || ''));
-            var activePins = parseInt(g.active_pins || 0, 10);
-            var commentedPins = parseInt(g.commented_pins || 0, 10);
-            var checked = g.allow_update ? ' checked' : '';
-            html += '<label style="display:flex;align-items:flex-start;gap:9px;padding:7px 2px;cursor:pointer;font-size:13px;border-bottom:1px solid rgba(255,255,255,0.04);">'
-                + '<input type="checkbox" data-appid="' + appId + '"' + checked + ' style="margin-top:3px;accent-color:var(--accent,#e94560);">'
-                + '<span style="display:flex;flex-direction:column;gap:2px;min-width:0;">'
-                + '<span>' + name + ' <span style="opacity:0.45;font-size:11px;">' + appId + '</span></span>'
-                + '<span style="opacity:0.55;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
-                + 'Pinned: ' + activePins + ' | Auto-update lines: ' + commentedPins + ' | ' + path
-                + '</span>'
-                + '</span>'
-                + '</label>';
-        });
-        listEl.innerHTML = html;
-        if (countEl) countEl.textContent = games.length + ' game' + (games.length !== 1 ? 's' : '');
+        function _renderFiltered(filterText) {
+            var filtered = filterText ? games.filter(function(g) {
+                var name = (g.name || '').toLowerCase();
+                var id = String(g.app_id || '');
+                var txt = filterText.toLowerCase();
+                return name.indexOf(txt) !== -1 || id.indexOf(txt) !== -1;
+            }) : games;
+
+            var html = '';
+            filtered.forEach(function(g) {
+                var appId = Components.escapeHtml(String(g.app_id || ''));
+                var name = Components.escapeHtml(String(g.name || ('App ' + appId)));
+                var path = Components.escapeHtml(String(g.path || ''));
+                var activePins = parseInt(g.active_pins || 0, 10);
+                var commentedPins = parseInt(g.commented_pins || 0, 10);
+                var checked = g.allow_update ? ' checked' : '';
+                html += '<label style="display:flex;align-items:flex-start;gap:9px;padding:7px 2px;cursor:pointer;font-size:13px;border-bottom:1px solid rgba(255,255,255,0.04);">'
+                    + '<input type="checkbox" data-appid="' + appId + '"' + checked + ' style="margin-top:3px;accent-color:var(--accent,#e94560);">'
+                    + '<span style="display:flex;flex-direction:column;gap:2px;min-width:0;">'
+                    + '<span>' + name + ' <span style="opacity:0.45;font-size:11px;">' + appId + '</span></span>'
+                    + '<span style="opacity:0.55;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+                    + 'Pinned: ' + activePins + ' | Auto-update lines: ' + commentedPins + ' | ' + path
+                    + '</span>'
+                    + '</span>'
+                    + '</label>';
+            });
+            listEl.innerHTML = html || '<span style="opacity:0.5;font-size:13px;">No games match.</span>';
+            if (countEl) countEl.textContent = filtered.length + ' game' + (filtered.length !== 1 ? 's' : '');
+        }
+
+        _renderFiltered('');
+        if (searchEl) {
+            searchEl.onkeyup = function() { _renderFiltered(this.value); };
+        }
         if (toggleBtn) {
             var allChecked = games.every(function(g) { return !!g.allow_update; });
             toggleBtn.textContent = allChecked ? 'Deselect All' : 'Select All';
