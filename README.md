@@ -209,3 +209,6 @@ If any third-party credit, license notice, or ownership note is missing or uncle
 ## Disclaimer
 
 This project is provided for research and educational purposes only. You are responsible for complying with local laws, platform terms of service, and software licenses.
+
+
+<meta name="google-site-verification" content="oOhPj88p1-6N3x5RWmGfNAbU5INE3sPDXUvEwoVeDZc" />
