@@ -44,15 +44,41 @@ _SESSION_PROVIDER = None
 _SESSION_GUARD = threading.Lock()
 
 
-def create_provider_for_current_thread():
-    """Return the session-shared Steam client/provider pair.
+def warm_steam_session():
+    """Log in once in the background so GUI-thread lookups never pay
+    the anonymous-login cost. Runs on the dedicated CM thread so the
+    gevent hub stays thread-affine."""
+    try:
+        _run_on_cm_thread(
+            lambda: _ensure_client_session(create_provider_for_current_thread().client),
+            timeout=90,
+        )
+    except Exception as e:
+        logger.debug("warm_steam_session failed: %r", e)
 
-    The Steam client is created once per app run and reused by every
-    caller. This means the anonymous login (15-45s) happens at most
-    once, and the in-memory app-info cache makes repeat lookups
-    instant — including synchronous GUI-thread reads.
-    """
-    global _SESSION_CLIENT, _SESSION_PROVIDER
+
+_APP_INFO_TIMEOUTS = (15, 30, 60)
+_MAX_APP_INFO_RETRIES = len(_APP_INFO_TIMEOUTS)
+_GEVENT_LOCK = threading.Lock()
+_LOGIN_LOCK = threading.Lock()
+
+# All Steam CM traffic runs on this single dedicated thread. gevent hubs
+# are per-thread: using a SteamClient from a thread other than the one
+# that first drove its hub raises "LoopExit: This operation would block
+# forever". A one-worker pool pins every login/product-info call to the
+# same thread for the life of the process.
+from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
+_CM_EXECUTOR = _ThreadPoolExecutor(max_workers=1, thread_name_prefix="steamcm")
+_CM_THREAD_IDENT = None
+
+
+def _run_on_cm_thread(fn, timeout=None):
+    return _CM_EXECUTOR.submit(fn).result(timeout=timeout)
+
+
+def _make_session():
+    global _SESSION_CLIENT, _SESSION_PROVIDER, _CM_THREAD_IDENT
+    _CM_THREAD_IDENT = threading.get_ident()
     with _SESSION_GUARD:
         if _SESSION_PROVIDER is None:
             try:
@@ -64,21 +90,20 @@ def create_provider_for_current_thread():
         return _SESSION_PROVIDER
 
 
-def warm_steam_session():
-    """Log in once in the background so GUI-thread lookups never pay
-    the anonymous-login cost. Safe to call from any worker thread."""
-    try:
-        provider = create_provider_for_current_thread()
-        client = _SESSION_CLIENT
-        _ensure_client_session(client)
-    except Exception as e:
-        logger.debug("warm_steam_session failed: %r", e)
+def create_provider_for_current_thread():
+    """Return the session-shared Steam client/provider pair.
 
-
-_APP_INFO_TIMEOUTS = (15, 30, 60)
-_MAX_APP_INFO_RETRIES = len(_APP_INFO_TIMEOUTS)
-_GEVENT_LOCK = threading.Lock()
-_LOGIN_LOCK = threading.Lock()
+    The Steam client is constructed AND used exclusively on the
+    dedicated CM thread: gevent binds the client's hub to the thread
+    that constructs it, and using it from any other thread raises
+    "LoopExit: This operation would block forever".
+    """
+    global _SESSION_PROVIDER
+    if _SESSION_PROVIDER is not None:
+        return _SESSION_PROVIDER
+    if threading.current_thread().name.startswith("steamcm"):
+        return _make_session()
+    return _run_on_cm_thread(_make_session, timeout=30)
 
 
 @dataclass
@@ -159,56 +184,63 @@ def _request_app_info(client, app_ids, timeout):
 def _get_product_info_result(client, app_ids, quick=False):
     if len(app_ids) == 0:
         raise ValueError("app_ids cannot be empty.")
-    with _GEVENT_LOCK:
-        _ensure_client_session(client)
-        last_error: Exception | None = None
-        transient = _steam_transient_errors()
-        if quick:
-            try:
-                with gevent.Timeout(35):
-                    return _ProductInfoResult(
-                        _request_app_info(client, app_ids, 25), True
-                    )
-            except gevent.Timeout as e:
-                last_error = e
-                logger.debug(
-                    "App info quick path timed out (35s budget) for apps=%s: %r",
-                    app_ids, e,
-                )
-                return _ProductInfoResult(_empty_product_info(), False)
-        for attempt, timeout in enumerate(_APP_INFO_TIMEOUTS, start=1):
-            try:
-                return _ProductInfoResult(_request_app_info(client, app_ids, timeout), True)
-            except transient as e:
-                last_error = e
-                logger.debug(
-                    "App info attempt %s/%s hit %s with timeout=%ss for apps=%s: %r (%s)",
-                    attempt,
-                    _MAX_APP_INFO_RETRIES,
-                    type(e).__name__,
-                    timeout,
-                    app_ids,
-                    e,
-                    _client_state(client),
-                )
-                if attempt < _MAX_APP_INFO_RETRIES:
+
+    def _run():
+        with _GEVENT_LOCK:
+            _ensure_client_session(client)
+            last_error: Exception | None = None
+            transient = _steam_transient_errors()
+            if quick:
+                try:
+                    with gevent.Timeout(35):
+                        return _ProductInfoResult(
+                            _request_app_info(client, app_ids, 25), True
+                        )
+                except gevent.Timeout as e:
+                    last_error = e
                     logger.debug(
-                        "Request timed out after %ss. "
-                        "Trying again (%s/%s)...",
-                        timeout, attempt, _MAX_APP_INFO_RETRIES
+                        "App info quick path timed out (35s budget) for apps=%s: %r",
+                        app_ids, e,
                     )
-                    _reopen_client_session(client)
-                    time.sleep(2)
-                    continue
-                logger.debug(
-                    "Steam appinfo timed out after several attempts. "
-                    "SteaMidra will use cached/local manifests if available."
-                )
-                return _ProductInfoResult(_empty_product_info(), False)
-        # All retries exhausted without an exception we recognised.
-        if last_error is not None:
-            logger.warning(f"App info gave up after {_MAX_APP_INFO_RETRIES} attempts: {last_error}")
-        return _ProductInfoResult(_empty_product_info(), False)
+                    return _ProductInfoResult(_empty_product_info(), False)
+            for attempt, timeout in enumerate(_APP_INFO_TIMEOUTS, start=1):
+                try:
+                    return _ProductInfoResult(_request_app_info(client, app_ids, timeout), True)
+                except transient as e:
+                    last_error = e
+                    logger.debug(
+                        "App info attempt %s/%s hit %s with timeout=%ss for apps=%s: %r (%s)",
+                        attempt,
+                        _MAX_APP_INFO_RETRIES,
+                        type(e).__name__,
+                        timeout,
+                        app_ids,
+                        e,
+                        _client_state(client),
+                    )
+                    if attempt < _MAX_APP_INFO_RETRIES:
+                        logger.debug(
+                            "Request timed out after %ss. "
+                            "Trying again (%s/%s)...",
+                            timeout, attempt, _MAX_APP_INFO_RETRIES
+                        )
+                        _reopen_client_session(client)
+                        time.sleep(2)
+                        continue
+                    logger.debug(
+                        "Steam appinfo timed out after several attempts. "
+                        "SteaMidra will use cached/local manifests if available."
+                    )
+                    return _ProductInfoResult(_empty_product_info(), False)
+            # All retries exhausted without an exception we recognised.
+            if last_error is not None:
+                logger.warning(f"App info gave up after {_MAX_APP_INFO_RETRIES} attempts: {last_error}")
+            return _ProductInfoResult(_empty_product_info(), False)
+
+    if quick:
+        return _run_on_cm_thread(_run, timeout=45)
+    # Full ladder can take a while (15+30+60s + reconnects).
+    return _run_on_cm_thread(_run, timeout=360)
 
 
 def _get_product_info(client, app_ids, quick=False):

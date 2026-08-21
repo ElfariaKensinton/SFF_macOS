@@ -13,6 +13,8 @@ window.Store = (function() {
     var _searchQuery = '';
     var _sortBy = 'updated';
     var _viewMode = 'grid';
+    var _selectMode = false;
+    var _selection = {};
     var _apiKeyConnected = false;
     var _initialized = false;
     var _imagesHidden = false;
@@ -146,6 +148,79 @@ window.Store = (function() {
                 _fetchGames();
             });
         });
+
+        // ── Multi-select → download queue ─────────────────────────────
+        var selectModeBtn = document.getElementById('store-select-mode');
+        var selectBar = document.getElementById('store-select-bar');
+        var selectCount = document.getElementById('store-select-count');
+        var selectAllBtn = document.getElementById('store-select-all-page');
+        var selectClearBtn = document.getElementById('store-select-clear');
+        var selectDlBtn = document.getElementById('store-select-download');
+
+        if (selectModeBtn) {
+            selectModeBtn.addEventListener('click', function() {
+                _selectMode = !_selectMode;
+                selectModeBtn.classList.toggle('active', _selectMode);
+                if (selectBar) selectBar.classList.toggle('hidden', !_selectMode);
+                if (!_selectMode) _selection = {};
+                _applySelectionState();
+            });
+        }
+
+        if (selectAllBtn) {
+            selectAllBtn.addEventListener('click', function() {
+                (_lastGames || []).forEach(function(g) {
+                    if (g && g.app_id) {
+                        _selection[String(g.app_id)] = { app_id: String(g.app_id), name: g.name || '' };
+                    }
+                });
+                _applySelectionState();
+            });
+        }
+
+        if (selectClearBtn) {
+            selectClearBtn.addEventListener('click', function() {
+                _selection = {};
+                _applySelectionState();
+            });
+        }
+
+        if (selectDlBtn) {
+            selectDlBtn.addEventListener('click', function() {
+                var entries = Object.keys(_selection).map(function(k) { return _selection[k]; });
+                if (!entries.length) {
+                    Components.showToast('warning', 'Select at least one game first.');
+                    return;
+                }
+                var sourceEl = document.querySelector('input[name="store-select-source"]:checked');
+                var source = sourceEl ? sourceEl.value : 'oureveryday';
+                Bridge.call('download_queue_enqueue', JSON.stringify(entries), source);
+                Components.showToast('info', 'Adding ' + entries.length + ' game(s) to the download queue...');
+                _selection = {};
+                _selectMode = false;
+                selectModeBtn.classList.remove('active');
+                if (selectBar) selectBar.classList.add('hidden');
+                _applySelectionState();
+            });
+        }
+
+        // Card clicks toggle selection while select mode is on.
+        document.addEventListener('click', function(e) {
+            if (!_selectMode) return;
+            var card = e.target.closest('#store-grid .game-card, #store-list .game-list-item');
+            if (!card) return;
+            var appId = card.dataset.appid;
+            if (!appId) return;
+            e.preventDefault();
+            e.stopPropagation();
+            var nameEl = card.querySelector('.game-card-name, .game-list-name');
+            if (_selection[String(appId)]) {
+                delete _selection[String(appId)];
+            } else {
+                _selection[String(appId)] = { app_id: String(appId), name: nameEl ? nameEl.textContent : '' };
+            }
+            _applySelectionState();
+        }, true);
 
         if (prevBtn) prevBtn.addEventListener('click', function() { if (_page > 1) { _page--; _fetchGames(); } });
         if (nextBtn) nextBtn.addEventListener('click', function() { if (_page < _totalPages) { _page++; _fetchGames(); } });
@@ -368,6 +443,7 @@ window.Store = (function() {
                 fragment.appendChild(Components.createGameListItem(game));
             });
             list.appendChild(fragment);
+            _applySelectionState();
             return;
         }
         if (!grid || grid.children.length) return;
@@ -375,6 +451,28 @@ window.Store = (function() {
             fragment.appendChild(Components.createGameCard(game, { index: index }));
         });
         grid.appendChild(fragment);
+        _applySelectionState();
+    }
+
+    function _applySelectionState() {
+        var count = Object.keys(_selection).length;
+        var selectCount = document.getElementById('store-select-count');
+        if (selectCount) selectCount.textContent = count + ' selected';
+        document.querySelectorAll('#store-grid .game-card, #store-list .game-list-item').forEach(function(card) {
+            var selected = !!_selection[String(card.dataset.appid)];
+            card.classList.toggle('card-selected', selected);
+            var marker = card.querySelector('.store-select-marker');
+            if (selected) {
+                if (!marker) {
+                    marker = document.createElement('span');
+                    marker.className = 'store-select-marker';
+                    marker.textContent = '\u2713';
+                    card.appendChild(marker);
+                }
+            } else if (marker) {
+                marker.remove();
+            }
+        });
     }
 
     function _updatePagination() {

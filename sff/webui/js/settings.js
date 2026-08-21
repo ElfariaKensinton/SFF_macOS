@@ -629,6 +629,7 @@ window.Settings = (function() {
             'setting-parallel-workers': 'parallel_downloads',
             'setting-backup-retention': 'backup_retention',
             'setting-live-log-lines': 'live_log_max_lines',
+            'setting-queue-concurrency': 'download_queue_concurrency',
         };
         Object.keys(numbers).forEach(function(id) {
             var el = document.getElementById(id);
@@ -870,6 +871,7 @@ window.Settings = (function() {
                 _setInputVal('setting-download-concurrency', settings.download_concurrency || '32');
                 _setInputVal('setting-depot-download-timeout', settings.depot_download_timeout || '0');
                 _setInputVal('setting-parallel-workers', settings.parallel_downloads || '5');
+                _setInputVal('setting-queue-concurrency', settings.download_queue_concurrency || '3');
                 _setInputVal('setting-backup-retention', settings.backup_retention || '4');
                 _setSelectVal('setting-depotbox-rate-limit', settings.depotbox_rate_limit || '60');
                 _setInputVal('setting-live-log-lines', settings.live_log_max_lines || '100');

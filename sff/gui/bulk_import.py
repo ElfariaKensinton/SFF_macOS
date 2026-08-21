@@ -401,12 +401,6 @@ class BulkImportQueue:
                 result.reason = str(exc)
                 return result
 
-            self._emit_progress(item, "Setting stats and achievements")
-            try:
-                set_stats_and_achievements(int(app_id) if app_id.isdigit() else app_id)
-            except Exception as exc:
-                logger.warning("set_stats_and_achievements failed: %s", exc)
-
             self._emit_progress(item, "Registering app ID with LumaCore")
             app_list_man = getattr(self._ui, "app_list_man", None)
             if app_list_man is not None:

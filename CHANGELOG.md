@@ -1,8 +1,50 @@
 # Changelog
 
+## 6.6.6
+
+### New
+
+- **Download queue** — Store page Select mode (card checkboxes, "Select all on page", provider picker) enqueues any number of games; up to 3 download in parallel (configurable in Settings → Download Queue), the rest wait FIFO. The Downloads tab shows the queue with states (queued/downloading/done/failed), live progress, Pause/Resume, Clear finished, and per-item Retry/Remove. The queue is persistent and auto-resumes after a restart; queued downloads skip the auto-update prompt.
+- **SteamCMD mirror as the primary app-info source** — app info now comes from api.steamcmd.net first (fast, JSON, no login), with Steam CM as the fallback. The GUI thread only ever touches the HTTP mirror, so the download modal physically cannot freeze on Steam CM anymore.
+- **Store catalog ships with the app** — `store_metadata/` (SteamTools GameList + steamappidlist games/software/DLC lists) is now bundled in all three builds and read as an offline fallback. Fresh installs get a full ~190k-app store catalog with zero network; searching "Stray" and the landing page work instantly offline.
+- **Download Older Version writes the build into Steam** — after a downgrade, `buildid` + `TargetBuildID` and the pinned manifest IDs are written into the existing ACF (fields Steam itself manages — no MountedDepots, no AutoUpdateBehavior; LumaCore handles pinning), with Steam closed/restarted around the write. If the ACF doesn't exist yet (game still downloading) or Steam holds the file, the edit is queued persistently and retried every 30s until the game is fully installed — surviving reboots, expiring after 7 days.
+
+### Fixed
+
+- Game list update crashed with a NameError and hid the real problem, Valve rejected the bundled key again. It falls back to the GitHub mirrors now so the list updates either way.
+- Goldberg fixes died with WinError 32 when the game was still running. SteaMidra closes the game first and retries locked file copies before giving up.
+- Archive extraction on Linux wrote Windows style member paths, which made flat files with backslashes in the name. Every archive extract sanitizes member paths now, so crack fixes, Goldberg, SLSsteam and the updater all land in real folders.
+- DDMod folder names with colons broke downloads. The install folder name gets cleaned before DDMod runs.
+- **Steam "Disk write error" on Windows** — SteaMidra was marking ACF files read-only (`chmod 0o444`) after every write, which on Windows sets FILE_ATTRIBUTE_READONLY and stops Steam from updating its own app manifests during downloads (and explains "invalid content configuration" on some MidraEveryDay installs). All ACF read-only marks are now Linux-only; Windows ACFs stay writable.
+- **Linux games downloaded as flat files (no subfolders)** — the native CDN downloader joined manifest filenames containing Windows backslash separators directly onto the game folder, so on Linux every file landed flat with names like `Some\File\Name.exe` and games couldn't launch (6.6.5 regression). Filenames are now normalized (`\` → `/`, traversal-guarded) before path building, and the OS filter works on the normalized names. A slow-paced background repair (Linux only, at most once a day) moves previously broken flat files back into the correct subdirectories and reports the result.
+- **"Manifest move skipped: 'PosixPath' object has no attribute 'items'"** — `move_manifests_to_depotcache` was called with the wrong argument; now receives the manifest map and actually moves manifests into the library depotcache.
+- **DLC check on Linux** — the SLSsteam DLC-check lookups now use the bounded quick path instead of the full re-login ladder.
+- **Freeze on Download — eliminated** — root-caused from user logs: Steam CM retry ladders (15/30/60s + re-logins) ran on the GUI thread. Now: HTTP mirror first, bounded quick mode (35s absolute cap, ~1s typical), a `game_branches_ready` signal backfills the branch dropdown in the background, and logins are serialized (exactly one anonymous login per session, previously two raced).
+- **gevent "LoopExit: This operation would block forever"** — the shared Steam client was constructed and used on different threads. All Steam CM traffic now runs on one dedicated thread where the client is constructed, used, and logged in — verified end-to-end.
+- **DLC flows "would block forever"** — `dlc_check_get_list` and `download_dlc_oureveryday` used the same cross-thread client pattern inside thread pools with blocking shutdowns. Both now use the bounded quick path (single attempt, no re-login ladder) and never wait on a stuck worker after the deadline — the DLC modal and DLC downloads work even when Steam CM is slow, and the mirror-first path makes them nearly instant.
+- **MidraEveryDay downloads stalled for minutes** — app-info lookups use the bounded quick path with non-blocking worker shutdown, and stale cache entries without depots are invalidated and refetched from the mirror. Verified live: game Lua builds in ~4-8s cold (was minutes), repeat calls instant.
+- **Crack lookup false positives** — "Red Dead Redemption" no longer matches the "Red Dead Redemption 2" crack. Matching is now exact or a word-boundary prefix (edition names like "Resident Evil Requiem: Gold Edition" still match).
+- **DepotBox rate-limit dropdown white box (Windows 11)** — native select popup replaced with the app's CustomSelect component.
+- **MountedDepots removed from ACF patching** — Steam never creates or reads one.
+
+### Improved
+
+- Hourly memory housekeeping so long sessions stop ballooning. The browser cache gets capped and cleared hourly, python garbage collection runs, and a memory line lands in the log each hour so future reports say which side grew.
+- **SteamTools/OST `config/lua` support** — the contribution system scans it for depot keys (DepotBox filter included), and SteaMidra offers a migration popup to move unhandled .lua files into stplug-in so LumaCore loads them (conflicts skipped and reported, handled files remembered, new files re-trigger the popup). Downloads still write only to stplug-in.
+- **Background branch backfills use the bounded path** — background fetches can no longer hold the shared Steam lock for minutes.
+- **Discord invite updated everywhere** — new invite (https://discord.gg/steamidra) in the README, docs, and as clickable corner links on the Home and Settings pages.
+- **UI polish** — the Downgrade page game picker now uses the custom dropdown (fixes the expanding white box), modal scrollbars stay inside the rounded corners, and the misleading "Setting up achievements" step was removed from download flows (SteaMidra never set achievements — the percentage shown is the user's own Steam profile progress).
+
 ## 6.6.5
 
 ### New
+
+- **Download queue** — the Store page has a Select mode (checkboxes on cards, "Select all on page"), a provider picker, and a Download Selected button that enqueues everything. The Downloads tab shows the queue with states (queued/downloading/done/failed), live progress, Pause/Resume, Clear finished, and per-item Retry/Remove. Up to 3 games download in parallel by default (configurable in Settings → Download Queue — Max Parallel Downloads); the rest wait FIFO. The queue is persistent and auto-resumes after a restart. Queued downloads skip the auto-update confirmation prompt.
+- **Crack matching fixed (RDR1/RDR2 mix-up)** — crack lookups no longer use loose substring matching. "Red Dead Redemption" can no longer match the "Red Dead Redemption 2" crack entry. Matching is now exact or a word-boundary prefix (still covers edition names like "Resident Evil Requiem: Gold Edition").
+- **MidraEveryDay downloads no longer stall for minutes** — the app-info lookup now uses the bounded quick path (single attempt, no re-login escalation) and the worker pool never blocks on shutdown, so a stuck shared Steam lock can't hold a download hostage for the full retry ladder. Background branch backfills use the same bounded path.
+- **Steam CM thread-affinity fixed (gevent LoopExit)** — the shared Steam client was being constructed and used on different threads, which gevent rejects with "LoopExit: This operation would block forever" (broken/slow logins in worker flows). All Steam CM traffic now runs on one dedicated thread where the client is constructed, used, and logged in — verified end-to-end: MidraEveryDay builds a game Lua in ~4-8s cold (was minutes), app startup logs in exactly once in ~1s.
+- **DepotBox rate-limit dropdown fixed** — the native select popup (expanding white box on Windows 11) was replaced with the app's CustomSelect component, matching every other dropdown.
+- **Store catalog now ships with the app** — `store_metadata/` (SteamTools GameList + steamappidlist game/software/DLC name maps) was never included in the PyInstaller build, so fresh installs had an empty Store until the GitHub mirrors were fetched — searching "Stray" and similar games returned nothing offline. All three spec files now bundle `store_metadata`, and the loaders read the writable cache first, then the bundled copy. Verified in a simulated frozen/offline environment: 192k-app catalog, "Stray" found on search, landing page populated — zero network.
 
 - **Download Older Version — Build ID (Automatic)** — pick a Build ID from SteamDB and SteaMidra pulls the matching per-depot manifest IDs from DepotBox, pins only the depots present in the game's Lua, removes depots that did not exist in that build, and reloads the Lua live. The manual picker (depot history, manual manifest input, HTML import) is available too. Build ID data provided by DepotBox — thanks DepotBox!
 - **Provider credits** — Ryuu and DepotBox added as credited providers with community-server links (Hubcap link added too). The download modal now shows the provider's Discord server link when no API key is configured, and Settings → About lists all providers with their servers.

@@ -25,7 +25,7 @@ Extract the ZIP anywhere — you will get a folder with `SteaMidra_GUI.exe` and 
 
 Open SteaMidra, go to the **Home** tab, click **Auto LC Setup**, then click **Install LumaCore**. SteaMidra copies `dwmapi.dll` + `LumaCore.dll` from `sff/lumacore/` into the Steam folder and cleans up any leftover legacy injector files automatically.
 
-If the installer reports "No DLLs found": build from `LumaCore/build.bat` or ask on [Discord](https://discord.gg/V8aZqnbB84).
+If the installer reports "No DLLs found": build from `LumaCore/build.bat` or ask on [Discord](https://discord.gg/steamidra).
 
 ---
 
@@ -46,4 +46,4 @@ You can also use **Fixes & Bypasses** as an additional source. It has no online-
 
 ## Problems?
 
-See [Troubleshooting](TROUBLESHOOTING.md) or ask on [Discord](https://discord.gg/V8aZqnbB84).
+See [Troubleshooting](TROUBLESHOOTING.md) or ask on [Discord](https://discord.gg/steamidra).

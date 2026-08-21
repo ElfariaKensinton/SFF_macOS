@@ -1348,3 +1348,79 @@ select:focus-visible,
   padding: 4px 8px;
   font-size: 11px;
 }
+
+/* ── Store multi-select + download queue ─────────────────────── */
+#store-select-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    border: 1px solid var(--border, rgba(255,255,255,0.12));
+    border-radius: 6px;
+    font-size: 12px;
+}
+.game-card.card-selected, .game-list-item.card-selected {
+    outline: 2px solid var(--accent, #4a9eff);
+    outline-offset: -2px;
+    position: relative;
+}
+.store-select-marker {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--accent, #4a9eff);
+    color: #fff;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 3;
+}
+.queue-state-badge {
+    display: inline-block;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-left: 4px;
+    text-transform: uppercase;
+}
+.queue-badge-queued { background: rgba(255,255,255,0.12); }
+.queue-badge-downloading { background: rgba(74,158,255,0.25); }
+.queue-badge-done { background: rgba(40,167,69,0.25); }
+.queue-badge-failed { background: rgba(220,53,69,0.25); }
+
+/* ── Discord corner links ─────────────────────────────────────── */
+.discord-corner-link {
+    position: absolute;
+    top: 4px;
+    right: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim, #9aa4b2);
+    text-decoration: none;
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+.discord-corner-link:hover {
+    color: var(--accent, #4a9eff);
+    background: rgba(255,255,255,0.06);
+}
+.page-header { position: relative; }
+
+/* ── Modal scrollbar: keep it inside the rounded corners ───────── */
+.modal-content::-webkit-scrollbar { width: 8px; }
+.modal-content::-webkit-scrollbar-track { background: transparent; }
+.modal-content::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.22);
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+.modal-content::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.35); background-clip: padding-box; }

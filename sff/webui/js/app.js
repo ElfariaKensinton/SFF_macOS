@@ -65,6 +65,8 @@ window.App = (function() {
         new Components.CustomSelect('dl-target-os', 'dl-target-os-ui');
         new Components.CustomSelect('ddmod-home-target-os', 'ddmod-home-target-os-ui');
         new Components.CustomSelect('library-drive-select', 'library-drive-select-ui');
+        new Components.CustomSelect('setting-depotbox-rate-limit', 'setting-depotbox-rate-limit-ui');
+        new Components.CustomSelect('downgrade-game-select', 'downgrade-game-select-ui');
         Tooltips.init();
         _initSidebar();
         _initLogPanel();

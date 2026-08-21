@@ -997,8 +997,9 @@ def _ensure_chrome_for_testing(progress_cb=None):
                 _sock_cft.setdefaulttimeout(_old_timeout_cft)
 
             extract_dir = _sff_dir() / "chrome-for-testing"
+            from sff.zip import safe_extract_zip
             with zipfile.ZipFile(str(zip_path)) as z:
-                z.extractall(str(extract_dir))
+                safe_extract_zip(z, extract_dir)
             zip_path.unlink(missing_ok=True)
             if chrome_exe.exists():
                 logger.info("Chrome for Testing ready: %s", chrome_exe)

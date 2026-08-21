@@ -427,6 +427,7 @@ def _latest_public_buildid_from_cache(app_id):
 def _extract_archive_into(archive_path, dest_dir):
     """Extract zip/rar/7z archive contents into dest_dir."""
     from pathlib import Path as _P
+    from sff.zip import safe_extract_zip, safe_extract_rar, safe_extract_7z
     dest_dir = _P(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     archive_path = _P(archive_path)
@@ -434,33 +435,46 @@ def _extract_archive_into(archive_path, dest_dir):
     if suffix == ".zip":
         import zipfile
         with zipfile.ZipFile(archive_path) as zf:
-            zf.extractall(dest_dir)
+            safe_extract_zip(zf, dest_dir)
     elif suffix == ".rar":
         import rarfile
         with rarfile.RarFile(str(archive_path)) as rf:
-            rf.extractall(str(dest_dir))
+            safe_extract_rar(rf, dest_dir)
     elif suffix == ".7z":
         import py7zr
         with py7zr.SevenZipFile(archive_path, mode="r") as zf:
-            zf.extractall(path=dest_dir)
+            safe_extract_7z(zf, dest_dir)
     else:
         raise ValueError(f"Unsupported archive type: {suffix}")
 
 
+def _normalize_crack_name(value):
+    return " ".join(str(value or "").lower().replace("’", "'").split())
+
+
 def _find_crack_entry(game_name):
-    """Return the full CrakFiles entry for a game name (normalized match)."""
+    """Return the full CrakFiles entry for a game name.
+
+    Matching is deliberately strict: exact normalized name, or the
+    crack entry name as a word-boundary prefix of the game name
+    (covers editions/subtitles like "Resident Evil Requiem: Gold
+    Edition"). Loose substring matching is banned — "Red Dead
+    Redemption" must never match the "Red Dead Redemption 2" entry.
+    """
     if not game_name or _CRACK_BUILDID_FULL is None:
         return None
-    target = str(game_name).strip().lower()
+    target = _normalize_crack_name(game_name)
     if not target:
         return None
     for entry in _CRACK_BUILDID_FULL:
-        if entry["name"] == target:
+        if _normalize_crack_name(entry.get("name")) == target:
             return entry
     for entry in _CRACK_BUILDID_FULL:
-        name = entry["name"]
-        if name in target or target in name:
-            return entry
+        name = _normalize_crack_name(entry.get("name"))
+        if name and target.startswith(name):
+            rest = target[len(name):]
+            if not rest or not rest[0].isalnum():
+                return entry
     return None
 
 
@@ -494,6 +508,7 @@ class WebBridge(QObject):
     download_progress = pyqtSignal(str)
     task_finished = pyqtSignal(str)
     game_branches_ready = pyqtSignal(str)
+    download_queue_state = pyqtSignal(str)
     task_progress = pyqtSignal(str)
     log_message = pyqtSignal(str)
     lc_progress = pyqtSignal(str)
@@ -544,6 +559,24 @@ class WebBridge(QObject):
         self._acf_queue_timer.timeout.connect(self._process_acf_queue)
         self._acf_queue_timer.start()
         QTimer.singleShot(20_000, self._process_acf_queue)
+        # Download queue: interrupted items go back to queued, then the
+        # queue auto-resumes once startup settles.
+        try:
+            from sff.game import download_queue as _dq
+            _dq.requeue_interrupted()
+        except Exception:
+            pass
+        QTimer.singleShot(15_000, self._advance_download_queue)
+        # Linux: slow-paced repair of 6.6.5 flat backslash-filenames,
+        # once per day in the background.
+        QTimer.singleShot(18_000, self._run_flat_file_repair)
+        # Hourly memory housekeeping. WebEngine cache clear on the GUI
+        # thread, gc + python cache trims on a worker, plus an RSS log
+        # line so a future memory report points at the right layer.
+        self._memory_timer = QTimer(self)
+        self._memory_timer.setInterval(60 * 60 * 1000)
+        self._memory_timer.timeout.connect(self._hourly_memory_cleanup)
+        self._memory_timer.start()
         self._library_image_cache: "_OrderedDict[str, str]" = _OrderedDict()
         self._LIBRARY_IMAGE_CACHE_MAX = 500
 
@@ -634,6 +667,15 @@ class WebBridge(QObject):
         data = {"task": task_name, "success": success, "message": message}
         data.update(extra)
         self.task_finished.emit(json.dumps(data))
+        # Download queue bookkeeping: downloads started by the queue
+        # advance the FIFO when they finish (or fail).
+        if task_name in ("download_fastest", "download_ddmod") and extra.get("app_id"):
+            try:
+                from sff.game import download_queue as _dq
+                _dq.mark_finished(str(extra["app_id"]), bool(success), message or "")
+                self._advance_download_queue()
+            except Exception:
+                pass
 
     def _track_download(self, app_id, game_name, success):
         try:
@@ -901,15 +943,6 @@ class WebBridge(QObject):
             ConfigVDFWriter(steam_path).add_decryption_keys_to_config(parsed)
 
             self.download_progress.emit(json.dumps({
-                "app_id": app_id, "status": "Setting up achievements", "progress": 50
-            }))
-            try:
-                from sff.registry_access import set_stats_and_achievements
-                set_stats_and_achievements(app_id)
-            except Exception as exc:
-                logger.debug("local import stats setup skipped: %s", exc)
-
-            self.download_progress.emit(json.dumps({
                 "app_id": app_id, "status": "Registering app ID", "progress": 60
             }))
             if hasattr(self._ui, "app_list_man") and self._ui.app_list_man:
@@ -1023,15 +1056,6 @@ class WebBridge(QObject):
             if not parsed:
                 return False
             _auto_update_was_registered = self._auto_update_was_registered(app_id)
-
-            # Step 3: set stats and achievements (Windows only)
-            self.download_progress.emit(json.dumps({
-                "app_id": app_id, "status": "Setting up achievements", "progress": 30
-            }))
-            try:
-                set_stats_and_achievements(app_id)
-            except Exception as e:
-                logger.warning("set_stats_and_achievements failed: %s", e)
 
             # Step 4: register app ID for injection
             self.download_progress.emit(json.dumps({
@@ -1704,6 +1728,174 @@ class WebBridge(QObject):
 
         self._run_async(_do)
 
+    def _emit_download_queue_state(self):
+        try:
+            from sff.game import download_queue as _dq
+            self.download_queue_state.emit(json.dumps(_dq.snapshot()))
+        except Exception:
+            pass
+
+    def _advance_download_queue(self):
+        """Start queued downloads up to the configured concurrency limit."""
+        try:
+            from sff.game import download_queue as _dq
+            from sff.core.storage.settings import get_setting
+            from sff.core.structs import Settings
+            snap = _dq.snapshot()
+            if snap["paused"]:
+                self._emit_download_queue_state()
+                return
+            concurrency = int(snap["concurrency"])
+            items = snap["items"]
+            active = [i for i in items if i["state"] == _dq.STATE_DOWNLOADING]
+            queued = [i for i in items if i["state"] == _dq.STATE_QUEUED]
+            free = concurrency - len(active)
+            for item in queued[:free]:
+                if not _dq.mark_started(item["id"]):
+                    continue
+                from sff.gui.bridges.download_bridge import _bridge_download_game_with_source
+                _bridge_download_game_with_source(
+                    self,
+                    item["app_id"],
+                    item["source"] or "oureveryday",
+                    "0", "", "", "", "",
+                )
+        except Exception as e:
+            logger.warning("_advance_download_queue failed: %s", e)
+        finally:
+            self._emit_download_queue_state()
+
+    @pyqtSlot(str, str)
+    def download_queue_enqueue(self, items_json, source):
+        """Enqueue one or more {app_id, name} entries and start them up
+        to the concurrency limit."""
+        try:
+            import json as _json
+            from sff.game import download_queue as _dq
+            try:
+                entries = _json.loads(items_json) if isinstance(items_json, str) else (items_json or [])
+            except Exception:
+                entries = []
+            added = 0
+            for entry in entries or []:
+                if not isinstance(entry, dict):
+                    continue
+                app_id = str(entry.get("app_id", "") or "").strip()
+                if not app_id.isdigit():
+                    continue
+                if _dq.enqueue(app_id, entry.get("name", ""), source or "oureveryday"):
+                    added += 1
+            self._advance_download_queue()
+            self._emit_task_result(
+                "queue_enqueued", True,
+                f"Added {added} game(s) to the download queue.",
+            )
+        except Exception as e:
+            logger.exception("download_queue_enqueue failed: %s", e)
+            self._emit_task_result("queue_enqueued", False, str(e))
+
+    @pyqtSlot(result=str)
+    def download_queue_get_state(self):
+        try:
+            from sff.game import download_queue as _dq
+            return json.dumps(_dq.snapshot())
+        except Exception as e:
+            return json.dumps({"items": [], "paused": False, "concurrency": 3, "error": str(e)})
+
+    @pyqtSlot()
+    def download_queue_pause(self):
+        try:
+            from sff.game import download_queue as _dq
+            _dq.set_paused(True)
+        finally:
+            self._emit_download_queue_state()
+
+    @pyqtSlot()
+    def download_queue_resume(self):
+        try:
+            from sff.game import download_queue as _dq
+            _dq.set_paused(False)
+        finally:
+            self._advance_download_queue()
+
+    @pyqtSlot(str)
+    def download_queue_remove(self, item_id):
+        try:
+            from sff.game import download_queue as _dq
+            _dq.remove_item(item_id)
+        finally:
+            self._emit_download_queue_state()
+
+    @pyqtSlot(str)
+    def download_queue_retry(self, item_id):
+        try:
+            from sff.game import download_queue as _dq
+            _dq.retry_item(item_id)
+        finally:
+            self._advance_download_queue()
+
+    @pyqtSlot()
+    def download_queue_clear_finished(self):
+        try:
+            from sff.game import download_queue as _dq
+            _dq.clear_finished()
+        finally:
+            self._emit_download_queue_state()
+
+    def _hourly_memory_cleanup(self):
+        try:
+            from PyQt6.QtWebEngineCore import QWebEngineProfile
+            QWebEngineProfile.defaultProfile().clearHttpCache()
+        except Exception:
+            pass
+
+        def _do():
+            try:
+                import gc
+                gc.collect()
+                rss = None
+                try:
+                    import psutil
+                    rss = psutil.Process().memory_info().rss
+                except Exception:
+                    try:
+                        import resource
+                        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+                    except Exception:
+                        rss = None
+                if rss:
+                    logger.info("memory check: python rss %.1f MB", rss / 1048576)
+            except Exception as e:
+                logger.debug("memory cleanup worker failed: %s", e)
+            return True
+
+        self._run_async(_do, on_done=lambda r: None, on_error=lambda e: None)
+
+    def _run_flat_file_repair(self):
+        """Background repair of 6.6.5 flat backslash filenames (Linux)."""
+
+        def _do():
+            try:
+                from sff.linux.flat_file_repair import repair_flat_files
+                return repair_flat_files(self._steam_path)
+            except Exception as e:
+                logger.debug("flat-file repair run failed: %s", e)
+                return {}
+
+        def _on_done(result):
+            try:
+                repaired = int((result or {}).get("repaired", 0))
+                failed = int((result or {}).get("failed", 0))
+                if repaired:
+                    msg = f"Repaired {repaired} flat game file(s) into proper subfolders."
+                    if failed:
+                        msg += f" ({failed} could not be moved — re-run Verify Files in Steam.)"
+                    self._emit_task_result("flat_file_repair", True, msg)
+            except Exception:
+                pass
+
+        self._run_async(_do, on_done=_on_done, on_error=lambda e: None)
+
     def _find_installed_game_dir(self, app_id):
         """Locate the installed game folder (steamapps/common/<installdir>)
         for an app id across all Steam libraries. Returns Path or None."""
@@ -1760,7 +1952,9 @@ class WebBridge(QObject):
                         provider.invalidate_app(int(app_id))
                     except Exception:
                         pass
-                info = provider.get_single_app_info(int(app_id))
+                # Bounded quick fetch: background branch fills must never
+                # hold the shared Steam lock through the full retry ladder.
+                info = provider.get_single_app_info(int(app_id), quick=True)
                 branches = info.get("depots", {}).get("branches", {})
                 if isinstance(branches, dict) and branches:
                     return self._branches_to_list(branches)

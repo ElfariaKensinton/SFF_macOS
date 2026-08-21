@@ -66,8 +66,9 @@ def _extract_to_game_folder(archive_path: Path, game_folder: Path, game_name: st
     try:
         if ext == ".zip":
             print(Fore.CYAN + "Extracting archive..." + Style.RESET_ALL)
+            from sff.zip import safe_extract_zip
             with zipfile.ZipFile(archive_path, "r") as zf:
-                zf.extractall(game_folder, pwd=b"cs.rin.ru")
+                safe_extract_zip(zf, game_folder, pwd=b"cs.rin.ru")
             print(Fore.GREEN + "Extraction complete." + Style.RESET_ALL)
             return True
         else:

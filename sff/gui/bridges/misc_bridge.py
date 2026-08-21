@@ -222,16 +222,21 @@ def _bridge_dlc_check_get_list(bridge, app_id):
                 # ui), so calling its methods from a ThreadPoolExecutor
                 # worker fires "would block forever". Build a
                 # throwaway provider inside the executor instead.
+                # Quick mode: single bounded attempt, no re-login
+                # ladder — and never wait on shutdown for a stuck task.
                 def _fetch_base_info():
                     from sff.network.steam_client import create_provider_for_current_thread as _mk
-                    return _mk().get_single_app_info(base_id)
-                with ThreadPoolExecutor(max_workers=1) as _ex:
+                    return _mk().get_single_app_info(base_id, quick=True)
+                _ex = ThreadPoolExecutor(max_workers=1)
+                try:
                     _fut = _ex.submit(_fetch_base_info)
                     try:
                         base_info = _fut.result(timeout=45)
                     except _FT:
                         logger.debug("dlc_check_get_list: Steam app-info timed out, falling back to store")
                         base_info = None
+                finally:
+                    _ex.shutdown(wait=False)
                 if base_info:
                     steam_api_ok = True
                     base_name = str(
@@ -930,7 +935,9 @@ def _bridge_lure_fix_acf(bridge, app_id):
             acf_data["AppState"] = state
             vdf_dump(acf_path, acf_data)
             try:
-                os.chmod(acf_path, 0o444)
+                # Windows must keep ACFs writable for Steam updates.
+                if sys.platform != "win32":
+                    os.chmod(acf_path, 0o444)
             except OSError:
                 pass
 
@@ -2244,6 +2251,7 @@ def _bridge_update_games_file(bridge):
             from sff.core.storage.settings import get_setting
             from sff.core.structs import Settings
             import urllib.request as _req
+            import urllib.error
             import json as _json
             from sff.gui.web_bridge import _should_show_software, _get_ssl_ctx
             all_games_file = root_folder(outside_internal=True) / "all_games.txt"
@@ -2287,11 +2295,20 @@ def _bridge_update_games_file(bridge):
             return len(games_str)
         except urllib.error.HTTPError as e:
             if e.code == 403:
+                # Valve revoked the bundled key again. The GitHub mirrors
+                # carry the same lists, so build from those instead of
+                # telling the user to wait for an update.
+                logger.warning("update_games_file: Steam API 403, falling back to mirrors")
+                try:
+                    from sff.gui.bridges.store_bridge import _load_steam_applist
+                    apps = _load_steam_applist()
+                    if apps:
+                        return len(apps)
+                except Exception as exc:
+                    logger.debug("update_games_file mirror fallback failed: %s", exc)
                 msg = (
-                    "Steam Web API key rejected (403 Forbidden). "
-                    "The default API key may have been revoked by Valve. "
-                    "Set your own Steam Web API key in Settings > Developer "
-                    "or wait for the next update."
+                    "Steam Web API key rejected (403 Forbidden), mirror refresh failed too. "
+                    "Set your own Steam Web API key in Settings or try again later."
                 )
                 logger.warning(msg)
                 return (False, msg)

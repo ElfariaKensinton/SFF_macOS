@@ -276,6 +276,13 @@ class SFFMainWindow(QMainWindow):
         self._web_view.page().settings().setAttribute(
             QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
         )
+        # Cap the Chromium HTTP cache so a long session doesn't balloon.
+        try:
+            from PyQt6.QtWebEngineCore import QWebEngineProfile
+            profile = self._web_view.page().profile()
+            profile.setHttpCacheMaximumSize(256 * 1024 * 1024)
+        except Exception:
+            pass
         self._web_view.page().settings().setAttribute(
             QWebEngineSettings.WebAttribute.Accelerated2dCanvasEnabled, True
         )

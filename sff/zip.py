@@ -158,3 +158,64 @@ def zip_folder(folder_path, output_path):
     tmp.seek(0)
     with output_path.open("wb") as f:
         f.write(tmp.read())
+
+
+def sanitize_archive_member(name):
+    # Archive members sometimes use Windows separators. On Linux a
+    # backslash is a legal filename char, so extracting verbatim creates
+    # flat files named ""Folder\file.dll"" instead of a real folder tree.
+    # Normalize to forward slashes, drop empty and dot parts, refuse .. .
+    if not name:
+        return None
+    cleaned = str(name).replace("\\", "/")
+    parts = [p for p in cleaned.split("/") if p and p != "."]
+    if any(p == ".." for p in parts):
+        return None
+    return "/".join(parts) if parts else None
+
+
+def safe_extract_zip(zf, dest_dir, pwd=None):
+    # zf: zipfile.ZipFile. Writes every member through sanitize_archive_member.
+    import shutil
+    dest = Path(dest_dir)
+    for member in zf.infolist():
+        rel = sanitize_archive_member(member.filename)
+        if not rel:
+            continue
+        target = dest / rel
+        if member.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with zf.open(member, pwd=pwd) as src, open(target, "wb") as out:
+                shutil.copyfileobj(src, out)
+        except RuntimeError:
+            raise
+
+
+def safe_extract_rar(rf, dest_dir):
+    # rf: rarfile.RarFile. Writes every member through sanitize_archive_member.
+    dest = Path(dest_dir)
+    for member in rf.infolist():
+        rel = sanitize_archive_member(member.filename)
+        if not rel:
+            continue
+        target = dest / rel
+        if member.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(rf.read(member))
+
+
+def safe_extract_7z(archive, dest_dir):
+    # archive: py7zr.SevenZipFile. Writes every member through sanitize_archive_member.
+    dest = Path(dest_dir)
+    for name, bio in archive.readall().items():
+        rel = sanitize_archive_member(name)
+        if not rel:
+            continue
+        target = dest / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(bio.read())

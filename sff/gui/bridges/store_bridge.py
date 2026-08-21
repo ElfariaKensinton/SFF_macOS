@@ -497,19 +497,27 @@ def _load_steam_applist():
     }
     _mirror_dir = root_folder(outside_internal=True) / "store_metadata"
     _mirror_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from sff.game_list_fallback import _iter_store_metadata_dirs as _sm_dirs
+        _mirror_dirs = list(_sm_dirs())
+    except Exception:
+        _mirror_dirs = [_mirror_dir]
 
     import concurrent.futures as _cf
 
     def _fetch_github_mirror(filename, url):
-        cache_file = _mirror_dir / filename
-        try:
-            if cache_file.is_file():
-                _age = _time.time() - cache_file.stat().st_mtime
-                if _age < 21600:
-                    _payload = json.loads(cache_file.read_bytes())
-                    return _payload
-        except Exception:
-            pass
+        for _md in _mirror_dirs:
+            cache_file = _md / filename
+            try:
+                if cache_file.is_file():
+                    _age = _time.time() - cache_file.stat().st_mtime
+                    if _age < 21600 or _md != _mirror_dir:
+                        # Bundled copies ship fresh with the release —
+                        # only the writable cache enforces the 6h refresh.
+                        _payload = json.loads(cache_file.read_bytes())
+                        return _payload
+            except Exception:
+                pass
         try:
             import httpx as _httpx
             _resp = _httpx.get(url, timeout=20, follow_redirects=True)
@@ -517,6 +525,7 @@ def _load_steam_applist():
                 return None
             _payload = _resp.json()
             try:
+                cache_file = _mirror_dir / filename
                 cache_file.write_bytes(_resp.content)
             except Exception:
                 pass
@@ -534,8 +543,13 @@ def _load_steam_applist():
                 if isinstance(_entry, dict) and "appid" in _entry:
                     _add_apps([{"name": _entry.get("name", ""), "appid": _entry["appid"]}])
 
-    _gj = _mirror_dir / "games.json"
-    if _gj.is_file():
+    _gj = None
+    for _md in _mirror_dirs:
+        _candidate = _md / "games.json"
+        if _candidate.is_file():
+            _gj = _candidate
+            break
+    if _gj is not None:
         try:
             _games_payload = json.loads(_gj.read_bytes())
             _add_mirror_payload(_games_payload)

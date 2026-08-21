@@ -92,7 +92,7 @@ class SLSManager(AppInjectionManager):
             try:
                 from sff.network.steam_client import create_provider_for_current_thread
                 provider = create_provider_for_current_thread()
-                app_info = provider.get_single_app_info(int(data.app_id))
+                app_info = provider.get_single_app_info(int(data.app_id), quick=True)
                 depots = app_info.get("depots", {})
                 if isinstance(depots, dict):
                     for depot_id, depot_meta in depots.items():
@@ -128,7 +128,7 @@ class SLSManager(AppInjectionManager):
             try:
                 from sff.network.steam_client import create_provider_for_current_thread
                 _provider = create_provider_for_current_thread()
-                _info = _provider.get_single_app_info(int(new_app_id))
+                _info = _provider.get_single_app_info(int(new_app_id), quick=True)
                 _depots = _info.get("depots", {})
                 if isinstance(_depots, dict):
                     for _did, _dmeta in _depots.items():
@@ -215,7 +215,7 @@ class SLSManager(AppInjectionManager):
     def dlc_check(self, provider, base_id, auto_add_depot_dlcs: bool = False):
         print("Checking for DLC...")
         try:
-            base_info = provider.get_single_app_info(base_id)
+            base_info = provider.get_single_app_info(base_id, quick=True)
         except Exception as e:
             logger.debug("Steam API failed for DLC check: %s", e)
             print("Steam connection failed. Using Steam Store instead (no login)...")
@@ -229,7 +229,7 @@ class SLSManager(AppInjectionManager):
             assert isinstance(dlcs, str)
             dlcs = [int(x) for x in dlcs.split(",")]
             try:
-                dlc_info = provider.get_app_info(dlcs)
+                dlc_info = provider.get_app_info(dlcs, quick=True)
             except Exception as e:
                 logger.debug("Steam API failed for DLC details: %s", e)
                 print("Steam connection failed. Using Steam Store instead (no login)...")

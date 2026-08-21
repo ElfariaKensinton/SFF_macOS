@@ -112,8 +112,9 @@ class GitHubReleaseDownloader:
                 logger.error(f"Failed to download {unlocker_type.value}")
                 return None
             try:
+                from sff.zip import safe_extract_zip
                 with ZipFile(temp_file, 'r') as zip_ref:
-                    zip_ref.extractall(cache_subdir)
+                    safe_extract_zip(zip_ref, cache_subdir)
                 logger.info(f"Extracted {unlocker_type.value} to {cache_subdir}")
                 # Find the actual DLL directory (may be in a subdirectory)
                 dll_dir = self._find_dll_directory(cache_subdir, unlocker_type)

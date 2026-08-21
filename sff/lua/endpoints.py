@@ -161,14 +161,30 @@ def get_oureverday(dest, app_id):
         def _fetch_app_info():
             from sff.network.steam_client import create_provider_for_current_thread as _mk
             _provider = _mk()
-            return _provider.get_single_app_info(int(app_id))
-        with ThreadPoolExecutor(max_workers=1) as _ex:
+            # Quick mode: single bounded attempt, no re-login escalation —
+            # a stuck shared Steam lock must never stall a download for
+            # minutes (the executor also never waits on shutdown).
+            app_data = _provider.get_single_app_info(int(app_id), quick=True)
+            depot_keys = [
+                d for d in app_data.get("depots", {}).keys() if str(d).isdigit()
+            ]
+            if not depot_keys:
+                # Stale/partial cache entry (e.g. an old CM payload with
+                # branches but no depots) — drop it and refetch so the
+                # SteamCMD mirror fills the full appinfo.
+                _provider.invalidate_app(int(app_id))
+                app_data = _provider.get_single_app_info(int(app_id), quick=True)
+            return app_data
+        app_info = None
+        _ex = ThreadPoolExecutor(max_workers=1)
+        try:
             _fut = _ex.submit(_fetch_app_info)
-            try:
-                app_info = _fut.result(timeout=30)
-            except _FT:
-                print(Fore.RED + f"Steam app-info timed out for {app_id} (CM probably down)." + Style.RESET_ALL)
-                return None
+            app_info = _fut.result(timeout=45)
+        except _FT:
+            print(Fore.RED + f"Steam app-info timed out for {app_id} (CM probably down)." + Style.RESET_ALL)
+            return None
+        finally:
+            _ex.shutdown(wait=False)
         if not app_info:
             print(Fore.RED + f"Failed to query Steam App Info for {app_id}." + Style.RESET_ALL)
             return None

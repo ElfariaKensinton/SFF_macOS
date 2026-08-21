@@ -113,6 +113,13 @@ all_games_txt = os.path.join(spec_root, 'all_games.txt')
 if os.path.exists(all_games_txt):
     datas.append((all_games_txt, '.'))
 
+# Bundle the offline store catalog (SteamTools GameList + steamappidlist
+# name maps). Without this a fresh install has an empty Store until the
+# GitHub mirrors are fetched — "Stray" and friends would not show up.
+store_metadata_dir = os.path.join(spec_root, 'store_metadata')
+if os.path.isdir(store_metadata_dir):
+    datas.append((store_metadata_dir, 'store_metadata'))
+
 # Add win10toast data
 win10toast_data = get_win10toast_data()
 if win10toast_data:

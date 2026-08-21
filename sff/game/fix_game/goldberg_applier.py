@@ -31,6 +31,7 @@ Mirrors Solus GoldbergApplier.cs
 import os
 import re
 import sys
+import time
 import stat
 import struct
 import shutil
@@ -54,8 +55,6 @@ def _retry_copy(src, target, description="file", max_retries=4, log_func=None):
             if log_func:
                 log_func(f"File locked ({e.errno if hasattr(e, 'errno') else ''}), retrying {description} in {wait:.1f}s...")
             time.sleep(wait)
-
-import time
 
 # interface version patterns to scan for in steam_api DLLs
 # these are the strings that Goldberg needs in steam_interfaces.txt
@@ -439,7 +438,7 @@ class GoldbergApplier:
             for bak in bak_files:
                 original = bak.with_suffix("")  # removes .bak → steam_api.dll / steam_api64.dll
                 try:
-                    shutil.copy2(bak, original)
+                    _retry_copy(bak, original)
                     bak.unlink()
                     log(f"✓ Restored {original.name} from backup")
                 except Exception as e:
@@ -464,7 +463,7 @@ class GoldbergApplier:
         for sc_name in ("steamclient.dll", "steamclient64.dll"):
             sc_src = self.cache_dir / sc_name
             if sc_src.exists():
-                shutil.copy2(sc_src, game_path / sc_name)
+                _retry_copy(sc_src, game_path / sc_name)
                 log(f"✓ Deployed {sc_name}")
             else:
                 log(f"Warning: {sc_name} not found in cache")
@@ -472,7 +471,7 @@ class GoldbergApplier:
         loader_name = "steamclient_loader_x64.exe" if is_64 else "steamclient_loader_x86.exe"
         src = self.cache_dir / loader_name
         if src.exists():
-            shutil.copy2(src, game_path / loader_name)
+            _retry_copy(src, game_path / loader_name)
             log(f"✓ Deployed {loader_name}")
         else:
             return False, f"{loader_name} not found in cache"
@@ -483,7 +482,7 @@ class GoldbergApplier:
         extra_name = "steamclient_extra_x64.dll" if is_64 else "steamclient_extra_x86.dll"
         extra_src = self.cache_dir / extra_name
         if extra_src.exists():
-            shutil.copy2(extra_src, extra_dir / extra_name)
+            _retry_copy(extra_src, extra_dir / extra_name)
             log(f"\u2713 Deployed {extra_name} \u2192 extra_dlls/")
         else:
             log(f"Warning: {extra_name} not found in cache")
@@ -493,7 +492,7 @@ class GoldbergApplier:
         stub_name = "steamstub_x64.dll" if is_64 else "steamstub_x32.dll"
         stub_src = self._find_tool(stub_name)
         if stub_src:
-            shutil.copy2(stub_src, extra_dir / stub_name)
+            _retry_copy(stub_src, extra_dir / stub_name)
             log(f"\u2713 Deployed {stub_name} \u2192 extra_dlls/ (SteamStub bypass)")
         # prefer .unpacked.exe if present (Steamless output — SteamStub removed)
         main_exe_path = Path(main_exe)
@@ -539,7 +538,7 @@ ResumeByDebugger=0
         gor_name = "GameOverlayRenderer64.dll" if is_64 else "GameOverlayRenderer.dll"
         gor_src = self._find_tool(gor_name)
         if gor_src:
-            shutil.copy2(gor_src, game_path / gor_name)
+            _retry_copy(gor_src, game_path / gor_name)
             log(f"\u2713 Deployed {gor_name} (overlay support)")
         # create desktop shortcut for the loader
         game_name = main_exe_path.stem
@@ -577,19 +576,19 @@ ResumeByDebugger=0
         if not coldloader_dll:
             return False, "coldloader.dll not found in third_party/coldloader/"
         # deploy coldloader.dll
-        shutil.copy2(coldloader_dll, game_path / "coldloader.dll")
+        _retry_copy(coldloader_dll, game_path / "coldloader.dll")
         log("✓ Deployed coldloader.dll")
         # deploy proxy DLL — strip arch suffix so game sees version.dll / winmm.dll
         if proxy_dll:
             raw_name = Path(proxy_dll).name
             proxy_name = raw_name.replace("_x64", "").replace("_x86", "")
-            shutil.copy2(proxy_dll, game_path / proxy_name)
+            _retry_copy(proxy_dll, game_path / proxy_name)
             log(f"✓ Deployed {proxy_name} (DLL proxy)")
         # deploy steamclient DLL
         sc_name = "steamclient64.dll" if is_64 else "steamclient.dll"
         src = self.cache_dir / sc_name
         if src.exists():
-            shutil.copy2(src, game_path / sc_name)
+            _retry_copy(src, game_path / sc_name)
             log(f"✓ Deployed {sc_name}")
         # generate coldloader.ini
         ini_content = f"""[ColdLoader]
@@ -703,7 +702,7 @@ SteamClient={'steamclient64.dll' if is_64 else 'steamclient.dll'}
                 continue  # handled by SteamStubUnpacker.restore
             original = bak.with_suffix("")
             try:
-                shutil.copy2(bak, original)
+                _retry_copy(bak, original)
                 bak.unlink()
                 restored += 1
                 log(f"Restored {original.name}")

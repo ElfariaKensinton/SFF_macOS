@@ -146,7 +146,8 @@ class ACFWriter:
             acf_contents = {"AppState": app_state}
             vdf_dump(acf_file, acf_contents)
             try:
-                os.chmod(acf_file, 0o444)
+                if sys.platform != "win32":
+                    os.chmod(acf_file, 0o444)
             except OSError:
                 pass
             print(f"Wrote .acf file to {acf_file}")
@@ -257,7 +258,8 @@ class ACFWriter:
             if patched:
                 vdf_dump(acf_file, data)
                 try:
-                    os.chmod(acf_file, 0o444)
+                    if sys.platform != "win32":
+                        os.chmod(acf_file, 0o444)
                 except OSError:
                     pass
                 print("Patched .acf error state (cleared UpdateResult / validation flags)")
@@ -296,7 +298,8 @@ class ACFWriter:
                 ws["WorkshopItemDetails"] = {}
             vdf_dump(ws_acf, data)
             try:
-                os.chmod(ws_acf, 0o444)
+                if sys.platform != "win32":
+                    os.chmod(ws_acf, 0o444)
             except OSError:
                 pass
             print(
@@ -338,7 +341,8 @@ class ACFWriter:
             data["AppState"] = app_state
             vdf_dump(acf_file, data)
             try:
-                os.chmod(acf_file, 0o444)
+                if sys.platform != "win32":
+                    os.chmod(acf_file, 0o444)
             except OSError:
                 pass
             print(

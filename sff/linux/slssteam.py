@@ -91,7 +91,8 @@ def _extract_with_py7zr(archive_path: Path, extract_dir: Path, print_fn=print) -
     try:
         import py7zr
         with py7zr.SevenZipFile(archive_path, mode="r") as archive:
-            archive.extractall(path=extract_dir)
+            from sff.zip import safe_extract_7z
+            safe_extract_7z(archive, extract_dir)
         return True
     except ImportError:
         print_fn(Fore.YELLOW + "py7zr not available, trying system 7z." + Style.RESET_ALL)

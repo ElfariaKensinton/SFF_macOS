@@ -1247,7 +1247,8 @@ class UI:
                 shutil.rmtree(tmp_update, ignore_errors=True)
             tmp_update.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(update_zip) as zf:
-                zf.extractall(tmp_update)
+                from sff.zip import safe_extract_zip
+                safe_extract_zip(zf, tmp_update)
             # If zip had a single top-level folder (e.g. SteaMidra-v4.5.3/), flatten so copy source is the contents
             entries = list(tmp_update.iterdir())
             if len(entries) == 1 and entries[0].is_dir():
@@ -1318,7 +1319,7 @@ class UI:
                 shutil.rmtree(tmp_update, ignore_errors=True)
             tmp_update.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(update_zip) as zf:
-                zf.extractall(tmp_update)
+                safe_extract_zip(zf, tmp_update)
             entries = list(tmp_update.iterdir())
             if len(entries) == 1 and entries[0].is_dir():
                 inner = entries[0]
@@ -1376,7 +1377,8 @@ class UI:
             tmp_update.mkdir(parents=True, exist_ok=True)
             try:
                 with zipfile.ZipFile(update_zip) as zf:
-                    zf.extractall(tmp_update)
+                    from sff.zip import safe_extract_zip
+                    safe_extract_zip(zf, tmp_update)
             except Exception as _ze:
                 logger.warning("Linux update: ZIP extraction failed: %s", _ze)
                 print(Fore.RED + f"ZIP extraction failed: {_ze}" + Style.RESET_ALL)

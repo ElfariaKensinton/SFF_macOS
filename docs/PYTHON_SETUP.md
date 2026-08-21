@@ -88,4 +88,4 @@ Then run `dist\SteaMidra_GUI.exe`.
 
 ## Problems?
 
-See [Troubleshooting](TROUBLESHOOTING.md) for common errors, or ask on [Discord](https://discord.gg/V8aZqnbB84).
+See [Troubleshooting](TROUBLESHOOTING.md) for common errors, or ask on [Discord](https://discord.gg/steamidra).

@@ -100,6 +100,40 @@ def _get_cache_dir() -> Path:
     return path
 
 
+def _bundled_store_metadata_dir() -> Path | None:
+    """Location of the store_metadata copy bundled with the app.
+
+    PyInstaller puts datas into sys._MEIPASS (the _internal folder in
+    one-dir builds); in dev mode it is the repo root. Always read-only.
+    """
+    try:
+        import sys as _sys
+        meipass = getattr(_sys, "_MEIPASS", None)
+        if meipass:
+            bundled = Path(meipass) / "store_metadata"
+        else:
+            from sff.core.utils import root_folder
+            bundled = root_folder(outside_internal=True) / "store_metadata"
+        if bundled.is_dir():
+            return bundled
+    except Exception:
+        pass
+    return None
+
+
+def _iter_store_metadata_dirs():
+    """Writable cache first, then the bundled read-only copy."""
+    cache = _get_cache_dir()
+    yield cache
+    bundled = _bundled_store_metadata_dir()
+    if bundled is not None:
+        try:
+            if bundled.resolve() != cache.resolve():
+                yield bundled
+        except Exception:
+            yield bundled
+
+
 def _atomic_json_write(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
@@ -162,22 +196,22 @@ def _normalize_name_data(data) -> dict:
 
 def _load_cached_games_json() -> bool:
     global _games_cache, _games_cache_time, _loaded
-    path = _get_cache_dir() / "games.json"
-    if not path.exists():
-        return False
-    try:
-        with path.open(encoding="utf-8") as f:
-            data = json.load(f)
-        cleaned = _normalize_games_data(data)
-        if not cleaned:
-            return False
-        _games_cache = cleaned
-        _games_cache_time = path.stat().st_mtime
-        _loaded = True
-        logger.info("games.json loaded from cache: %d entries", len(_games_cache))
-        return True
-    except Exception as e:
-        logger.debug("Failed to load cached games.json from %s: %s", path, e)
+    for path in [d / "games.json" for d in _iter_store_metadata_dirs()]:
+        if not path.exists():
+            continue
+        try:
+            with path.open(encoding="utf-8") as f:
+                data = json.load(f)
+            cleaned = _normalize_games_data(data)
+            if not cleaned:
+                continue
+            _games_cache = cleaned
+            _games_cache_time = path.stat().st_mtime
+            _loaded = True
+            logger.info("games.json loaded from cache: %d entries", len(_games_cache))
+            return True
+        except Exception as e:
+            logger.debug("Failed to load cached games.json from %s: %s", path, e)
     return False
 
 
@@ -217,7 +251,11 @@ def _load_games_json(force=False):
 
 
 def _load_name_source(fname: str, urls: list[str], *, force: bool, cache_dir: Path) -> tuple[dict, float]:
-    """Load one appid->name source, preferring cached data unless refresh is due."""
+    """Load one appid->name source, preferring cached data unless refresh is due.
+
+    When the writable cache has no copy, the bundled read-only copy is
+    used as the seed so fresh/offline installs still resolve names.
+    """
     path = cache_dir / fname
     cached = {}
     cached_mtime = 0.0
@@ -229,6 +267,17 @@ def _load_name_source(fname: str, urls: list[str], *, force: bool, cache_dir: Pa
         except Exception as cache_exc:
             logger.debug("Failed to load cached %s: %s", fname, cache_exc)
             cached = {}
+    if not cached:
+        try:
+            bundled = _bundled_store_metadata_dir()
+            if bundled is not None:
+                seed = bundled / fname
+                if seed.exists():
+                    with seed.open(encoding="utf-8") as f:
+                        cached = _normalize_name_data(json.load(f))
+                    cached_mtime = seed.stat().st_mtime
+        except Exception as seed_exc:
+            logger.debug("Failed to seed %s from bundled data: %s", fname, seed_exc)
 
     should_refresh = force or not cached or (time.time() - cached_mtime) >= _CACHE_TTL
     if not should_refresh:
@@ -315,30 +364,31 @@ def ensure_loaded_cached():
             _loaded = True
             _games_cache_time = time.time()
 
-        cache_dir = _get_cache_dir()
         names = {}
         dlc_names = {}
         latest_mtime = 0.0
         for fname in _NAME_JSON_URLS:
-            path = cache_dir / fname
-            if not path.exists():
-                continue
-            try:
-                with path.open(encoding="utf-8") as handle:
-                    names.update(_normalize_name_data(json.load(handle)))
-                latest_mtime = max(latest_mtime, path.stat().st_mtime)
-            except Exception as exc:
-                logger.debug("Failed to load cached %s: %s", fname, exc)
+            for cache_dir in _iter_store_metadata_dirs():
+                path = cache_dir / fname
+                if not path.exists():
+                    continue
+                try:
+                    with path.open(encoding="utf-8") as handle:
+                        names.update(_normalize_name_data(json.load(handle)))
+                    latest_mtime = max(latest_mtime, path.stat().st_mtime)
+                except Exception as exc:
+                    logger.debug("Failed to load cached %s: %s", fname, exc)
         for fname in _DLC_JSON_URLS:
-            path = cache_dir / fname
-            if not path.exists():
-                continue
-            try:
-                with path.open(encoding="utf-8") as handle:
-                    dlc_names.update(_normalize_name_data(json.load(handle)))
-                latest_mtime = max(latest_mtime, path.stat().st_mtime)
-            except Exception as exc:
-                logger.debug("Failed to load cached %s: %s", fname, exc)
+            for cache_dir in _iter_store_metadata_dirs():
+                path = cache_dir / fname
+                if not path.exists():
+                    continue
+                try:
+                    with path.open(encoding="utf-8") as handle:
+                        dlc_names.update(_normalize_name_data(json.load(handle)))
+                    latest_mtime = max(latest_mtime, path.stat().st_mtime)
+                except Exception as exc:
+                    logger.debug("Failed to load cached %s: %s", fname, exc)
         _name_cache = names
         _dlc_name_cache = dlc_names
         _name_mtime = latest_mtime

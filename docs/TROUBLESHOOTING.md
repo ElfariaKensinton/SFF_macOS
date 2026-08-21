@@ -237,4 +237,4 @@ Read the error message first — it often explains what went wrong. Check `debug
 
 - [User Guide](USER_GUIDE.md) — what each feature does
 - [Feature Guide](FEATURE_USAGE_GUIDE.md) — parallel downloads, backups, library scanner, and more
-- [Discord](https://discord.gg/V8aZqnbB84) — ask for help
+- [Discord](https://discord.gg/steamidra) — ask for help

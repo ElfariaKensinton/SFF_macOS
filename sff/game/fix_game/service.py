@@ -32,6 +32,7 @@ Mirrors Solus FixGameService.cs (588 lines).
 
 import os
 import sys
+import time
 import shutil
 import subprocess
 import logging
@@ -45,6 +46,46 @@ from sff.game.fix_game.goldberg_updater import GoldbergUpdater
 from sff.game.fix_game.config_generator import GoldbergConfigGenerator, _get_gbe_saves_root
 from sff.game.fix_game.steamstub_unpacker import SteamStubUnpacker
 from sff.game.fix_game.goldberg_applier import GoldbergApplier
+
+
+def _close_game_processes(game_dir, log):
+    # A running game locks its exe and steam_api DLLs, so fixing it dies
+    # with WinError 32. Kill any exe in the game folder before touching it.
+    if not game_dir or not Path(game_dir).is_dir():
+        return
+    try:
+        exe_names = []
+        for p in Path(game_dir).iterdir():
+            try:
+                if p.is_file() and p.suffix.lower() == ".exe":
+                    exe_names.append(p.name)
+            except OSError:
+                continue
+        if not exe_names:
+            return
+        killed_any = False
+        for name in exe_names:
+            try:
+                if sys.platform == "win32":
+                    res = subprocess.run(
+                        ["taskkill", "/F", "/IM", name],
+                        capture_output=True, timeout=15,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                else:
+                    res = subprocess.run(
+                        ["pkill", "-x", name],
+                        capture_output=True, timeout=15,
+                    )
+                if res.returncode == 0:
+                    killed_any = True
+            except Exception:
+                continue
+        if killed_any:
+            log(f"Closed running game process(es) before fixing: {', '.join(exe_names)}")
+            time.sleep(0.5)
+    except Exception as e:
+        logger.debug("close game processes failed: %s", e)
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +269,7 @@ class FixGameService:
         # --- Step 3: SteamStub Unpacking ---
         if not skip_steamstub:
             log("\n--- Step 3: SteamStub Unpacking ---")
+            _close_game_processes(game_dir, log)
             if self.unpacker.is_available():
                 count = self.unpacker.unpack_directory(game_dir, log_func=log, use_experimental=steamless_experimental)
                 if count > 0:
@@ -238,6 +280,7 @@ class FixGameService:
                 log("Steamless not available — skipping SteamStub check")
         # --- Step 4: Goldberg Application ---
         log("\n--- Step 4: Goldberg Application ---")
+        _close_game_processes(game_dir, log)
         mode = EmuMode(emu_mode)
         if sys.platform != "win32" and linux_native:
             success, msg = self.applier.apply_linux(game_dir, log_func=log)
@@ -283,6 +326,7 @@ class FixGameService:
                 log_func(msg)
             logger.info(msg)
         log("=== Restoring Game ===")
+        _close_game_processes(game_dir, log)
         # restore SteamStub backups
         stub_restored = self.unpacker.restore_directory(game_dir, log_func=log)
         # restore Goldberg changes

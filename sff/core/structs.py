@@ -195,6 +195,12 @@ class Settings(Enum):
         False,
         str,
     )
+    DOWNLOAD_QUEUE_CONCURRENCY = SettingItem(
+        "download_queue_concurrency",
+        "Download queue — max parallel downloads (1-10)",
+        False,
+        str,
+    )
     STEAM_PATH = SettingItem(
         "steam_path", "Steam Installation Path", False, SettingCustomTypes.DIR
     )

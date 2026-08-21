@@ -303,6 +303,31 @@ def _download_file(url: str, timeout: float = _CDN_TIMEOUT) -> bytes | None:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _normalize_manifest_path(filename: str) -> str | None:
+    r"""Normalize a manifest filename into a safe POSIX-style relative path.
+
+    Steam manifests store paths with Windows backslash separators. On
+    Linux a backslash is a legal filename character, so joining the raw
+    name once created single flat files like ``Some\File\Name.exe``
+    instead of subdirectories. Returns the normalized relative path, or
+    None when the path is empty or tries to escape via ``..``.
+    """
+    if not filename:
+        return None
+    cleaned = str(filename).replace("\\", "/")
+    parts = []
+    for part in cleaned.split("/"):
+        part = part.strip()
+        if not part or part in (".",):
+            continue
+        if part == "..":
+            return None
+        parts.append(part)
+    if not parts:
+        return None
+    return "/".join(parts)
+
+
 def download_depot(
     app_id: int | str,
     depot_id: int | str,
@@ -413,7 +438,7 @@ def download_depot(
     os_filtered_count = 0
 
     for mapping in mappings:
-        filename = mapping.get("filename", "")
+        filename = _normalize_manifest_path(mapping.get("filename", ""))
         flags = mapping.get("flags", 0)
         if flags & 0x40 or not filename:
             continue

@@ -276,15 +276,6 @@ def _bridge_run_local_import(bridge, app_id, lua_path, manifest_folder=''):
         ConfigVDFWriter(steam_path).add_decryption_keys_to_config(parsed)
 
         bridge.download_progress.emit(json.dumps({
-            "app_id": app_id, "status": "Setting up achievements", "progress": 50
-        }))
-        try:
-            from sff.registry_access import set_stats_and_achievements
-            set_stats_and_achievements(app_id)
-        except Exception as exc:
-            logger.debug("local import stats setup skipped: %s", exc)
-
-        bridge.download_progress.emit(json.dumps({
             "app_id": app_id, "status": "Registering app ID", "progress": 60
         }))
         if hasattr(bridge._ui, "app_list_man") and bridge._ui.app_list_man:
@@ -331,7 +322,6 @@ def _bridge_run_windows_fastest(bridge, app_id, source='', request_update=False,
         from sff.lua.writer import ACFWriter, ConfigVDFWriter
         from sff.steam_tools_compat import install_lua_to_steam
         from sff.core.storage.vdf import ensure_library_has_app
-        from sff.registry_access import set_stats_and_achievements
         from sff.core.structs import LuaEndpoint
 
         steam_path = bridge._steam_path
@@ -399,15 +389,6 @@ def _bridge_run_windows_fastest(bridge, app_id, source='', request_update=False,
         if not parsed:
             return False
         _auto_update_was_registered = _bridge_auto_update_was_registered(bridge, app_id)
-
-        # Step 3: set stats and achievements (Windows only)
-        bridge.download_progress.emit(json.dumps({
-            "app_id": app_id, "status": "Setting up achievements", "progress": 30
-        }))
-        try:
-            set_stats_and_achievements(app_id)
-        except Exception as e:
-            logger.warning("set_stats_and_achievements failed: %s", e)
 
         # Step 4: register app ID for injection
         bridge.download_progress.emit(json.dumps({
@@ -665,13 +646,18 @@ def _bridge_download_dlc_oureveryday(bridge, dlc_appid, parent_appid):
             from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FT
             def _fetch_parent_info():
                 from sff.network.steam_client import create_provider_for_current_thread as _mk
-                return _mk().get_single_app_info(int(parent_appid))
-            with ThreadPoolExecutor(max_workers=1) as _ex:
+                return _mk().get_single_app_info(int(parent_appid), quick=True)
+            parent_info = None
+            _ex = ThreadPoolExecutor(max_workers=1)
+            try:
                 _fut = _ex.submit(_fetch_parent_info)
-                try:
-                    parent_info = _fut.result(timeout=30)
-                except _FT:
-                    return (False, "Steam app-info timed out (CM down?)")
+                parent_info = _fut.result(timeout=45)
+            except _FT:
+                return (False, "Steam app-info timed out (CM down?)")
+            finally:
+                # Never block on a stuck task — the deadline already
+                # fired; just abandon the worker thread.
+                _ex.shutdown(wait=False)
         except Exception as e:
             logger.warning("download_dlc_oureveryday: provider failed: %s", e)
             return (False, f"Steam query failed: {e}")
@@ -851,7 +837,8 @@ def _bridge_download_dlc_oureveryday(bridge, dlc_appid, parent_appid):
                     _data["AppState"] = _state
                     _vd(_acf, _data)
                     try:
-                        os.chmod(_acf, 0o444)
+                        if sys.platform != "win32":
+                            os.chmod(_acf, 0o444)
                     except OSError:
                         pass
                     logger.info(
@@ -1046,7 +1033,11 @@ def _sync_acf_downgrade(acf_path, build_id, pins):
     except Exception:
         written = ""
     try:
-        os.chmod(acf_path, 0o444)
+        # Steam must stay able to write its own ACFs on Windows —
+        # marking them read-only causes "Disk write failure" during
+        # updates. Linux keeps the read-only attribute.
+        if sys.platform != "win32":
+            os.chmod(acf_path, 0o444)
     except OSError:
         pass
     if written != str(build_id):
@@ -1576,12 +1567,6 @@ def _bridge_download_game_ddmod(bridge, app_id, source, lua_path, manifest_folde
                     logger.warning("add_decryption_keys_to_config failed (non-fatal): %s", _kwe)
 
                 try:
-                    from sff.registry_access import set_stats_and_achievements
-                    set_stats_and_achievements(app_id)
-                except Exception as _se:
-                    logger.warning("set_stats_and_achievements failed (non-fatal): %s", _se)
-
-                try:
                     if hasattr(bridge._ui, 'app_list_man') and bridge._ui.app_list_man:
                         bridge._ui.app_list_man.add_ids(parsed)
                 except Exception as _aie:
@@ -1727,6 +1712,13 @@ def _bridge_download_game_ddmod(bridge, app_id, source, lua_path, manifest_folde
                             break
             if not installdir:
                 installdir = game_name or f"App_{parsed.app_id or app_id}"
+            # Folder names with Windows illegal chars (colons in game
+            # titles) break DDMod and Steam path handling. Clean them.
+            _clean_installdir = str(installdir or "")
+            for _bad in '<>:"/\\|?*':
+                _clean_installdir = _clean_installdir.replace(_bad, " ")
+            _clean_installdir = " ".join(_clean_installdir.split()).rstrip(" .")
+            installdir = _clean_installdir or f"App_{parsed.app_id or app_id}"
 
             # Pin info: tell the user if the Lua has setManifestid pins
             if source in ("hubcap", "ryuu"):
@@ -1893,7 +1885,7 @@ def _bridge_download_game_ddmod(bridge, app_id, source, lua_path, manifest_folde
             # Move manifests to library depotcache so Steam can validate
             try:
                 from sff.downloads.depot_downloader import move_manifests_to_depotcache
-                move_manifests_to_depotcache(dest, steam_path)
+                move_manifests_to_depotcache(dest, manifests_dict, print_fn=_print_fn)
             except Exception as _me:
                 logger.debug("Manifest move skipped: %s", _me)
 
@@ -2016,11 +2008,6 @@ def _bridge_import_local_lua(bridge, app_id, lua_path, manifest_folder=''):
             install_lua_to_steam(steam_path, app_id, lua_install_file)
             _bridge_apply_auto_update_default(bridge, app_id, _auto_update_was_registered)
             ConfigVDFWriter(steam_path).add_decryption_keys_to_config(parsed)
-            try:
-                from sff.registry_access import set_stats_and_achievements
-                set_stats_and_achievements(app_id)
-            except Exception as exc:
-                logger.debug("import_local_lua stats setup skipped: %s", exc)
             if hasattr(bridge._ui, "app_list_man") and bridge._ui.app_list_man:
                 bridge._ui.app_list_man.add_ids(parsed)
             elif sys.platform == "linux":

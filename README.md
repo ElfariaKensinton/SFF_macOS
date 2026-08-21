@@ -9,7 +9,7 @@
 
 SteaMidra helps you set up games to work with Steam using Lua scripts, manifests, and LumaCore. It writes the right files into your Steam folder so games and DLC can run. It does not replace or crack Steam itself.
 
-Need help? Chat with us on our Discord server: https://discord.gg/V8aZqnbB84
+Need help? Chat with us on our Discord server: https://discord.gg/steamidra
 
 **SteaMidra setup tutorial:** [Full walkthrough by @yensnc](https://www.reddit.com/user/YensNC/comments/1ttw2mm/tutorial_guide_on_installing_steamidra/?utm_source=share&utm_medium=web3x&utm_name=web3xcss&utm_term=1)
 
@@ -51,7 +51,7 @@ If the installer fails or your AV blocks it, grab the ZIP instead — `SteaMidra
 
 Open SteaMidra, go to the **Home** tab, click **Auto LC Setup**, then click **Install LumaCore**. SteaMidra downloads the latest LumaCore release from GitHub and installs `dwmapi.dll` + `LumaCore.dll` into the Steam folder, removing old GreenLuma files automatically.
 
-If the install fails, ask on [Discord](https://discord.gg/V8aZqnbB84).
+If the install fails, ask on [Discord](https://discord.gg/steamidra).
 
 ### Step 3: Launch Steam
 

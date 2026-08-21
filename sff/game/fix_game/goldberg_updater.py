@@ -301,7 +301,8 @@ class GoldbergUpdater:
                 all_files = archive.getnames()
                 log(f"Archive contains {len(all_files)} files")
                 with tempfile.TemporaryDirectory() as tmpdir:
-                    archive.extractall(path=tmpdir)
+                    from sff.zip import safe_extract_7z
+                    safe_extract_7z(archive, tmpdir)
                     extracted_count = 0
                     tmppath = Path(tmpdir)
                     for dest_name, archive_path in files_to_extract.items():
