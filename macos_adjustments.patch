@@ -1,0 +1,28 @@
+diff --git a/Main_gui.py b/Main_gui.py
+--- a/Main_gui.py
++++ b/Main_gui.py
+@@ -20,6 +20,9 @@ import os
+ import sys
+ from pathlib import Path
+ 
++os.environ["QT_QUICK_BACKEND"] = "software"
++os.environ["QT_OPENGL"] = "software"
++
+ # guard the PyQt6 import so a hollow build (CI accident) shows a useful
+ # message instead of just dumping ModuleNotFoundError to a console window
+ # that's already gone. happened once with the v6.3.1 workflow build —
+diff --git a/build_sff_gui.spec b/build_sff_gui.spec
+--- a/build_sff_gui.spec
++++ b/build_sff_gui.spec
+@@ -80,7 +80,10 @@ if win10toast_data:
+ a = Analysis(
+     ['Main_gui.py'],
+     pathex=[spec_root],
+-    binaries=[],
++    binaries=[
++        ('icuuc.dll', '.'),
++        ('icu.dll', '.')
++    ],
+     datas=datas,
+     hiddenimports=[
+         'PyQt6',

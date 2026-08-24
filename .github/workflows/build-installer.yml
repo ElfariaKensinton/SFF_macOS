@@ -1,0 +1,94 @@
+name: Build macOS Wine Installer
+on:
+  workflow_dispatch:
+    inputs:
+      push_as_release:
+        description: 'Push result as a GitHub Release?'
+        required: true
+        default: false
+        type: boolean
+      skip_lumacore:
+        description: 'Skip building LumaCore?'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install steam==1.4.4 --no-deps
+          pip install pyinstaller
+      - name: Setup NSIS Environment
+        shell: cmd
+        run: |
+          choco install nsis -y
+          echo C:\Program Files (x86)\NSIS>> %GITHUB_PATH%
+      - name: Setup MSVC
+        if: ${{ inputs.skip_lumacore == false }}
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Cache LumaCore build
+        if: ${{ inputs.skip_lumacore == false }}
+        uses: actions/cache@v4
+        with:
+          path: LumaCore/build
+          key: lumacore-${{ runner.os }}-${{ hashFiles('LumaCore/source/**') }}
+      - name: Build LumaCore
+        if: ${{ inputs.skip_lumacore == false }}
+        shell: cmd
+        working-directory: LumaCore
+        run: call build.bat --no-pause
+      - name: Rename LumaCore DLLs to avoid name collisions
+        if: ${{ inputs.skip_lumacore == false }}
+        shell: pwsh
+        run: |
+          Copy-Item "LumaCore/Releases/Release/dwmapi.dll" "LumaCore/Releases/dwmapi-release.dll"
+          Copy-Item "LumaCore/Releases/Release/LumaCore.dll" "LumaCore/Releases/LumaCore-release.dll"
+          Copy-Item "LumaCore/Releases/Debug/dwmapi.dll" "LumaCore/Releases/dwmapi-debug.dll"
+          Copy-Item "LumaCore/Releases/Debug/LumaCore.dll" "LumaCore/Releases/LumaCore-debug.dll"
+      - run: git apply macos_adjustments.patch
+      - shell: cmd
+        run: call build_installer.bat
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SteaMidra-Installer
+          path: SteaMidra-*-Setup.exe
+          if-no-files-found: warn
+      - name: Upload LumaCore DLLs
+        if: ${{ inputs.skip_lumacore == false }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: LumaCore-DLLs
+          path: |
+            LumaCore/Releases/dwmapi-release.dll
+            LumaCore/Releases/LumaCore-release.dll
+            LumaCore/Releases/dwmapi-debug.dll
+            LumaCore/Releases/LumaCore-debug.dll
+          if-no-files-found: warn
+      - if: ${{ inputs.push_as_release == true }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: release-${{ github.run_number }}
+          name: SteaMidra Release
+          files: |
+            SteaMidra-*-Setup.exe
+            LumaCore/Releases/dwmapi-release.dll
+            LumaCore/Releases/LumaCore-release.dll
+            LumaCore/Releases/dwmapi-debug.dll
+            LumaCore/Releases/LumaCore-debug.dll
+          token: ${{ secrets.GITHUB_TOKEN }}
